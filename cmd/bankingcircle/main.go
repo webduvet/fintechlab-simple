@@ -271,6 +271,14 @@ func (a *app) mux() *http.ServeMux {
 	mux.HandleFunc("GET /payments", a.requireBearer(a.listPayments))
 	mux.HandleFunc("GET /payments/{id}", a.requireBearer(a.getPayment))
 	mux.HandleFunc("GET /reconciliation", a.requireBearer(a.reconcile))
+
+	// The Connect reports surface. These are what a reconciliation sweep
+	// reads, so they carry the vendor's own paths and body shapes rather
+	// than this mock's convenience ones above.
+	mux.HandleFunc("GET /api/v1/reports/intraday-reconciliation-paged-report",
+		a.requireBearer(a.intradayReconciliationReport))
+	mux.HandleFunc("GET /api/v1/reports/rejection-report",
+		a.requireBearer(a.rejectionReport))
 	return mux
 }
 
@@ -458,6 +466,69 @@ func (a *app) reconcile(w http.ResponseWriter, r *http.Request) {
 	}
 	payments := bankingcircle.Reconcile(a.engine.List(), date, r.URL.Query().Get("account_id"))
 	httputilx.WriteJSON(w, 200, map[string]any{"payments": payments})
+}
+
+// intradayReconciliationReport implements
+// GET /api/v1/reports/intraday-reconciliation-paged-report.
+//
+// A row's existence is the booking signal — the report carries no status —
+// so this answers from the same payment records the notifications are built
+// from. If the two ever disagreed, a client would be reconciling against a
+// story rather than against the money.
+func (a *app) intradayReconciliationReport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	query := bankingcircle.ReconciliationQuery{
+		FromTransactionDate: q.Get("FromTransactionDate"),
+		ToTransactionDate:   q.Get("ToTransactionDate"),
+		FromCreatedAt:       q.Get("FromCreatedAt"),
+		ToCreatedAt:         q.Get("ToCreatedAt"),
+		PageNumber:          atoiOr(q.Get("PageNumber"), 1),
+		PageSize:            atoiOr(q.Get("PageSize"), 100),
+	}
+	if ids := q.Get("AccountId"); ids != "" {
+		query.AccountIDs = strings.Split(ids, ",")
+	}
+	rows := bankingcircle.IntradayReconciliation(a.engine.List(), query)
+	httputilx.WriteJSON(w, 200, map[string]any{"reconciliations": rows})
+}
+
+// rejectionReport implements GET /api/v1/reports/rejection-report: the
+// complement of the reconciliation report, carrying the payments that did
+// not book and why.
+func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	rows := bankingcircle.Rejections(a.engine.List(), bankingcircle.RejectionQuery{
+		TransactionDate:     q.Get("TransactionDate"),
+		IncludeReceived:     boolOr(q.Get("IncludeReceived"), true),
+		IncludeMissingFunds: boolOr(q.Get("IncludeMissingFunds"), true),
+		IncludeReversals:    boolOr(q.Get("IncludeReversals"), true),
+		ExcludeBooked:       boolOr(q.Get("ExcludeBooked"), false),
+	})
+	httputilx.WriteJSON(w, 200, map[string]any{"rejections": rows})
+}
+
+// atoiOr is lenient on purpose: a malformed page number should produce the
+// first page, not a 400 that hides the report from a sweep.
+func atoiOr(s string, def int) int {
+	if s == "" {
+		return def
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func boolOr(s string, def bool) bool {
+	if s == "" {
+		return def
+	}
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 // --- the B4B<->Banking-Circle bridge (INTERNAL_LISTEN, no auth) --------
