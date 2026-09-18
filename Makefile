@@ -23,7 +23,7 @@ COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 .PHONY: help certs sftp-dirs key-dirs console-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild
 
 help:
-	@echo "make up             generate certs if needed, compose up"
+	@echo "make up             build, replace the containers, start the lab"
 	@echo "make console        open the control panel (http://127.0.0.1:8090)"
 	@echo "make demo-payment   create a payment and wait for the webhook"
 	@echo "make harness        run the full scenario harness locally (go run)"
@@ -32,7 +32,6 @@ help:
 	@echo "make start          bring the lab back up without rebuilding"
 	@echo "make down           compose down"
 	@echo "make rebuild        no-cache rebuild of the console image"
-	@echo "                    if Pods breaks after pull (/recipes missing): make rebuild && make up"
 
 certs:
 	@mkdir -p certs
