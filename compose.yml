@@ -254,6 +254,10 @@ services:
       # shaped credentialed API and this bridge cannot share one).
       - "8095:8095"
     environment:
+      # A payout that leaves the safeguarding account arrives at the
+      # beneficiary's own bank. Without this the money would vanish at
+      # the edge of Banking Circle's books, which is not what happens.
+      BANK_CREDIT_URL: http://bank:8081/internal/credit
       LISTEN: ":8085"
       INTERNAL_LISTEN: ":8095"
       PROCESSING_DELAY: 2s
@@ -266,7 +270,7 @@ services:
       # host.containers.internal lets a client running on the host (rather than
       # in this compose network) register its own endpoint -- Podman and Docker
       # both resolve it. "localhost" above is this container, not the host.
-      WEBHOOK_ALLOWLIST: receiver,receiver:8443,localhost,127.0.0.1,host.containers.internal
+      WEBHOOK_ALLOWLIST: bank,bank:8081,receiver,receiver:8443,localhost,127.0.0.1,host.containers.internal
       # Real Banking Circle encrypts webhook notifications with AES-256-GCM
       # using the raw UTF-8 bytes of this 32-character key (NOT base64-
       # decoded -- see internal/bankingcircle's encryptNotification doc

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -53,6 +54,15 @@ type notificationParty struct {
 // own goroutines, so a down or slow subscriber never stalls payments.
 func (a *app) onTransition(p *bankingcircle.Payment) {
 	eventType := string(p.State)
+
+	// A payout that leaves the safeguarding account has to arrive
+	// somewhere. Notifying a subscriber that a payment processed is not
+	// the same statement as the beneficiary's bank holding the money, and
+	// a lab that only did the first teaches that the two are one thing.
+	if p.State == bankingcircle.NotificationOutgoingPaymentProcessed {
+		go a.creditBeneficiaryBank(*p)
+	}
+
 	// The accounts this payment touches are the targets a subscription may
 	// have scoped itself to.
 	recipients := a.subs.Recipients(eventType, p.ToAccountID, p.FromAccountID)
@@ -226,4 +236,71 @@ func (a *app) postNotification(dest string, ciphertext, nonce, tag, checksum []b
 		return resp.StatusCode, fmt.Errorf("notification: destination returned %s", resp.Status)
 	}
 	return resp.StatusCode, nil
+}
+
+// creditBeneficiaryBank posts an arriving payment to the receiving bank.
+//
+// Fire-and-forget on its own goroutine, and a failure is logged rather than
+// retried: this hop stands in for an interbank rail, and modelling its
+// retry semantics would be inventing a protocol rather than simulating one.
+// What matters here is that the money is observable on the other side.
+//
+// Disabled when BANK_CREDIT_URL is empty, so a stack without a beneficiary
+// bank behaves exactly as it did before.
+func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
+	if a.bankCreditURL == "" {
+		return
+	}
+	// The rail names the beneficiary by IBAN. Without one there is nothing
+	// for the receiving bank to open an account against, and inventing an
+	// identifier here would put money into an account nobody can reconcile.
+	iban := p.ToIBAN
+	if iban == "" {
+		log.Printf("banking-circle: payment %s has no beneficiary IBAN; not crediting the beneficiary bank", p.ID)
+		return
+	}
+	if err := a.list.Allowed(a.bankCreditURL); err != nil {
+		log.Printf("banking-circle: beneficiary bank %s not allowlisted: %v", a.bankCreditURL, err)
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"iban":      iban,
+		"holder":    p.ToHolder,
+		"amount":    p.Amount,
+		"currency":  p.Currency,
+		"reference": firstNonEmpty(p.Reference, p.SettlementID, p.ID),
+	})
+	if err != nil {
+		log.Printf("banking-circle: credit payload for %s: %v", p.ID, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.bankCreditURL, bytes.NewReader(body))
+	if err != nil {
+		log.Printf("banking-circle: credit request for %s: %v", p.ID, err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		log.Printf("banking-circle: crediting beneficiary bank for %s: %v", p.ID, err)
+		return
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		log.Printf("banking-circle: beneficiary bank returned %s for payment %s", resp.Status, p.ID)
+		return
+	}
+	log.Printf("banking-circle: %s %s credited to %s at the beneficiary bank", p.Amount, p.Currency, iban)
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

@@ -4,6 +4,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -21,6 +22,16 @@ type account struct {
 	Holder   string `json:"holder"`
 	Currency string `json:"currency"`
 	Balance  string `json:"balance"`
+	// Kind says whose money this is: "infinite" for the programme's own
+	// account, "merchant" for a settled outlet, "demo" for the seeded
+	// examples. The console groups by it, and a payout arriving into an
+	// account nobody can name is a thing worth being able to see.
+	Kind string `json:"kind"`
+	// OpenedBy records how the account came to exist — "seed" or the
+	// reference of the credit that auto-opened it. A beneficiary bank
+	// opens an account the first time money arrives for an IBAN, and
+	// which credit did that is the question asked afterwards.
+	OpenedBy string `json:"opened_by,omitempty"`
 	cents    int64
 }
 
@@ -42,18 +53,116 @@ type store struct {
 	seq     int
 }
 
+// newStore seeds the two accounts the settle path ends in, and nothing
+// else that matters.
+//
+// The programme has one account per currency — that is where
+// INFINITE_SETTLEMENT lands, and it is separate from every merchant's, so
+// "did the platform get its share" is a balance rather than an inference.
+// Merchant accounts are not seeded: a beneficiary bank does not know an
+// IBAN until money arrives for it, and opening them on demand is both more
+// honest and less coordination between this service and the console.
 func newStore() *store {
 	s := &store{accts: map[string]*account{}, byIBAN: map[string]*account{}}
-	s.mustSeed("acc_alice", "GB00SIM0000000000001", "Alice Simulator", "EUR", 1_000_000)
-	s.mustSeed("acc_bob", "GB00SIM0000000000002", "Bob Simulator", "EUR", 50_000)
-	s.mustSeed("acc_merchant", "GB00SIM0000000000003", "Merchant Simulator", "EUR", 0)
+	s.mustSeed("acc_infinite_eur", "GB00SIMINF00000001", "InfinitePay Ltd", "EUR", 0, kindInfinite)
+	s.mustSeed("acc_infinite_gbp", "GB00SIMINF00000002", "InfinitePay Ltd", "GBP", 0, kindInfinite)
+
+	// Two funded demo accounts, so `make demo-payment` and the payment-api
+	// scenario have somewhere to move money from without a settlement run.
+	s.mustSeed("acc_alice", "GB00SIM0000000000001", "Alice Simulator", "EUR", 1_000_000, kindDemo)
+	s.mustSeed("acc_bob", "GB00SIM0000000000002", "Bob Simulator", "EUR", 50_000, kindDemo)
+	s.mustSeed("acc_merchant", "GB00SIM0000000000003", "Merchant Simulator", "EUR", 0, kindDemo)
 	return s
 }
 
-func (s *store) mustSeed(id, iban, holder, ccy string, cents int64) {
-	a := &account{ID: id, IBAN: iban, Holder: holder, Currency: ccy, cents: cents, Balance: money.Format(cents)}
+const (
+	kindInfinite = "infinite"
+	kindMerchant = "merchant"
+	kindDemo     = "demo"
+)
+
+func (s *store) mustSeed(id, iban, holder, ccy string, cents int64, kind string) {
+	a := &account{ID: id, IBAN: iban, Holder: holder, Currency: ccy, cents: cents,
+		Balance: money.Format(cents), Kind: kind, OpenedBy: "seed"}
 	s.accts[id] = a
 	s.byIBAN[iban] = a
+}
+
+// creditReq is a payment arriving over a rail. The sending bank names the
+// beneficiary by IBAN, because that is all it has — it does not know this
+// bank's internal account ids, and a real one would not.
+type creditReq struct {
+	IBAN      string `json:"iban"`
+	Holder    string `json:"holder"`
+	Amount    string `json:"amount"`
+	Currency  string `json:"currency"`
+	Reference string `json:"reference"`
+	Kind      string `json:"kind"`
+}
+
+// credit implements POST /internal/credit: money arriving from outside.
+//
+// It auto-opens on first sight of an IBAN. That is what a beneficiary bank
+// does, and it means no coordination is needed between whoever creates a
+// merchant and this service — the account exists because a payout arrived,
+// which is also the only moment it is true.
+func (s *store) credit(w http.ResponseWriter, r *http.Request) {
+	var req creditReq
+	if err := httputilx.ReadJSON(r, &req); err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	if req.IBAN == "" {
+		httputilx.Error(w, 400, "iban required: a rail names the beneficiary by IBAN")
+		return
+	}
+	cents, err := money.Parse(req.Amount)
+	if err != nil {
+		httputilx.Error(w, 400, "amount: "+err.Error())
+		return
+	}
+	if cents <= 0 {
+		httputilx.Error(w, 400, "amount must be positive")
+		return
+	}
+	ccy := req.Currency
+	if ccy == "" {
+		ccy = "EUR"
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, existed := s.byIBAN[req.IBAN]
+	if !existed {
+		kind := req.Kind
+		if kind == "" {
+			kind = kindMerchant
+		}
+		holder := req.Holder
+		if holder == "" {
+			holder = "Beneficiary " + req.IBAN
+		}
+		a = &account{
+			ID: "acc_" + strings.ToLower(req.IBAN), IBAN: req.IBAN, Holder: holder,
+			Currency: ccy, Kind: kind, OpenedBy: req.Reference,
+		}
+		s.accts[a.ID] = a
+		s.byIBAN[a.IBAN] = a
+	}
+	if a.Currency != ccy {
+		httputilx.Error(w, 422, fmt.Sprintf("account %s is %s, credit is %s", a.IBAN, a.Currency, ccy))
+		return
+	}
+	a.cents += cents
+	a.Balance = money.Format(a.cents)
+	s.seq++
+	s.entries = append(s.entries, entry{
+		ID: fmt.Sprintf("ent_%d", s.seq), AccountID: a.ID, Amount: money.Format(cents),
+		Currency: ccy, Ref: req.Reference, At: time.Now().UTC().Format(time.RFC3339),
+	})
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"account": a, "opened": !existed, "credited": money.Format(cents),
+	})
 }
 
 func main() {
@@ -68,6 +177,11 @@ func main() {
 	mux.HandleFunc("POST /accounts", s.createAccount)
 	mux.HandleFunc("POST /transfers", s.transfer)
 	mux.HandleFunc("GET /ledger", s.listLedger)
+
+	// The rail hop: a payout leaving the settlement bank has to arrive
+	// somewhere, and this is where. No auth — it is a lab seam, and the
+	// allowlist on the sending side is what governs who may call it.
+	mux.HandleFunc("POST /internal/credit", s.credit)
 	log.Printf("bank listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }

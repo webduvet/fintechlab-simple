@@ -58,6 +58,9 @@ type app struct {
 	dispatch *bankingcircle.Dispatcher
 	mail     *bankingcircle.MailBox
 	tokenTTL time.Duration
+	// bankCreditURL is the beneficiary bank's rail endpoint. Empty
+	// disables the hop entirely, so a stack without one is unchanged.
+	bankCreditURL string
 	// delivery is the *effective* config after BC_TIME_SCALE is applied,
 	// kept so it can be reported. A reader of the config file alone sees
 	// the file's scale, not the one this process is running.
@@ -70,6 +73,7 @@ func main() {
 	delay := envDuration("PROCESSING_DELAY", 2*time.Second)
 	dest := env("WEBHOOK_URL", "https://receiver:8443/webhooks")
 	spec := env("WEBHOOK_ALLOWLIST", "receiver,receiver:8443,localhost,127.0.0.1")
+	bankCreditURL := strings.TrimSpace(env("BANK_CREDIT_URL", ""))
 	list, err := allowlist.Parse(spec)
 	if err != nil {
 		log.Fatalf("allowlist: %v", err)
@@ -133,6 +137,8 @@ func main() {
 		mail:     &bankingcircle.MailBox{},
 		tokenTTL: envDuration("TOKEN_TTL", time.Hour),
 		delivery: deliveryCfg,
+
+		bankCreditURL: bankCreditURL,
 	}
 	a.dispatch = bankingcircle.NewDispatcher(deliveryCfg, a.subs, a.mail, log.Printf)
 	a.dispatch.Send = a.sendEncrypted
@@ -550,8 +556,14 @@ func sgaAccountID(currency string) (string, error) {
 }
 
 type internalPaymentReq struct {
-	PaymentID   string `json:"paymentId"`
-	AccountID   string `json:"accountId"`
+	PaymentID string `json:"paymentId"`
+	AccountID string `json:"accountId"`
+	// IBAN is the beneficiary's account at their own bank. Optional, and
+	// carried rather than derived: the settlement bank knows where it is
+	// sending money, and without it the receiving bank has nothing to open
+	// an account against.
+	IBAN        string `json:"iban"`
+	Holder      string `json:"holder"`
 	Amount      string `json:"amount"`
 	Currency    string `json:"currency"`
 	ExternalRef string `json:"externalRef"`
@@ -602,6 +614,8 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 		SettlementID:  req.ExternalRef,
 		FromAccountID: from,
 		ToAccountID:   to.ID,
+		ToIBAN:        req.IBAN,
+		ToHolder:      req.Holder,
 		Amount:        money.Format(cents),
 		Currency:      ccy,
 		CreatedAt:     now,

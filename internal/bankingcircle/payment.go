@@ -45,17 +45,21 @@ const (
 // direction would duplicate the notify/onTransition plumbing for no
 // benefit — real Banking Circle has no such split either.
 type Payment struct {
-	ID            string           `json:"id"`
-	SettlementID  string           `json:"settlementId,omitempty"`
-	FromAccountID string           `json:"fromAccountId"`
-	ToAccountID   string           `json:"toAccountId,omitempty"`
-	ToIBAN        string           `json:"toIban,omitempty"`
-	Amount        string           `json:"amount"`
-	Currency      string           `json:"currency"`
-	Reference     string           `json:"reference,omitempty"`
-	State         NotificationType `json:"state"`
-	CreatedAt     string           `json:"createdAt"`
-	UpdatedAt     string           `json:"updatedAt"`
+	ID            string `json:"id"`
+	SettlementID  string `json:"settlementId,omitempty"`
+	FromAccountID string `json:"fromAccountId"`
+	ToAccountID   string `json:"toAccountId,omitempty"`
+	ToIBAN        string `json:"toIban,omitempty"`
+	// ToHolder is the beneficiary's name as the sender knows it. Carried so
+	// the receiving bank can put a name on the account it opens — an
+	// account identified only by its IBAN is reconcilable but not readable.
+	ToHolder  string           `json:"toHolder,omitempty"`
+	Amount    string           `json:"amount"`
+	Currency  string           `json:"currency"`
+	Reference string           `json:"reference,omitempty"`
+	State     NotificationType `json:"state"`
+	CreatedAt string           `json:"createdAt"`
+	UpdatedAt string           `json:"updatedAt"`
 }
 
 // ErrPaymentNotFound is returned by Get and Reverse for an unknown payment ID.
