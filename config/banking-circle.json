@@ -1,0 +1,42 @@
+{
+  "_comment": [
+    "Banking Circle notification delivery. Retry schedule and step count are",
+    "the documented ones; time_scale is what makes them watchable.",
+    "",
+    "time_scale divides every delay below. At 3600 an hour becomes a second,",
+    "so the full eleven-retry schedule -- which really ends 48 hours after",
+    "the first failure -- plays out in about 90 seconds, with the shape and",
+    "step count intact. Set it to 1 for real timing.",
+    "",
+    "deactivate_after_retries: the retry guide documents 11 while the OpenAPI",
+    "statusMessage text says 10. 11 is the schedule of record here.",
+    "",
+    "batch_flush_interval: how long a partly-filled batch waits before going",
+    "out anyway. Without it a subscription with maxNotificationsPerMessage",
+    "of 1000 would never deliver until a thousand payments happened.",
+    "",
+    "Per-subscription batch size is set by the client on the subscription",
+    "itself (maxNotificationsPerMessage, 5-1000); the default below only",
+    "applies when a subscription does not choose one."
+  ],
+
+  "time_scale": 3600,
+  "deactivate_after_retries": 11,
+  "batch_flush_interval": "2s",
+  "default_max_notifications_per_message": 1000,
+  "request_timeout": "10s",
+
+  "retry_schedule": [
+    { "after": "15s" },
+    { "after": "30s" },
+    { "after": "1m" },
+    { "after": "10m" },
+    { "after": "30m" },
+    { "after": "1h" },
+    { "after": "2h",  "email": "warning" },
+    { "after": "6h" },
+    { "after": "12h" },
+    { "after": "24h", "email": "warning" },
+    { "after": "48h", "email": "deactivation" }
+  ]
+}

@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+FROM docker.io/library/golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/settlement ./cmd/settlement
+
+FROM docker.io/library/alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/settlement /usr/local/bin/settlement
+# /data is a named volume (persisted settlement state); /sftp/* are host
+# bind mounts. Either way, pre-create and own them as the non-root runtime
+# user now, before USER switches away from root — a bind mount can still
+# shadow this with host ownership if the host directory doesn't already
+# grant this UID write access (see Makefile's sftp-dirs target).
+RUN mkdir -p /data /sftp/out /sftp/staging /sftp/outbound && \
+    chown -R 65532:65532 /data /sftp
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/settlement"]

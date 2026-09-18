@@ -1,0 +1,143 @@
+package console
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+)
+
+func TestCoreLedgerBankListsAndOpens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/accounts":
+			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]string{
+				{"id": "acc_b", "iban": "GB00SIM2", "holder": "Bob", "currency": "EUR", "balance": "50.00"},
+				{"id": "acc_a", "iban": "GB00SIM1", "holder": "Alice", "currency": "EUR", "balance": "10.00"},
+			}})
+		case r.Method == http.MethodPost && r.URL.Path == "/accounts":
+			var req map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			w.WriteHeader(201)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"id": "acc_new", "iban": "GB00SIM9", "holder": req["holder"],
+				"currency": req["currency"], "balance": req["openingBalance"],
+			})
+		default:
+			http.Error(w, "no", 404)
+		}
+	}))
+	defer srv.Close()
+
+	b := &CoreLedgerBank{BaseURL: srv.URL, Client: srv.Client()}
+	got, err := b.Accounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Ordered, so the list does not reshuffle itself between polls.
+	if len(got) != 2 || got[0].ID != "acc_a" {
+		t.Fatalf("accounts = %+v", got)
+	}
+	if got[0].Number != "GB00SIM1" {
+		t.Fatalf("IBAN not mapped onto the common shape: %+v", got[0])
+	}
+
+	made, err := b.OpenAccount(context.Background(), "Carol", "GBP", "12.34")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made.Holder != "Carol" || made.Currency != "GBP" || made.Balance != "12.34" {
+		t.Fatalf("opened account = %+v", made)
+	}
+}
+
+func TestBankErrorsCarryTheServersOwnMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"holder required"}`, 400)
+	}))
+	defer srv.Close()
+	b := &CoreLedgerBank{BaseURL: srv.URL, Client: srv.Client()}
+	_, err := b.OpenAccount(context.Background(), "", "EUR", "")
+	if err == nil {
+		t.Fatal("a 400 was reported as success")
+	}
+	// The UI shows this verbatim; a bare "request failed" would make the
+	// operator go and read container logs for a form-validation error.
+	if got := err.Error(); !strings.Contains(got, "holder required") {
+		t.Fatalf("error = %q, lost the server's message", got)
+	}
+}
+
+func TestBankingCircleUsesRealCredentialsAndCachesTheToken(t *testing.T) {
+	var authorizes int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/authorizations/authorize":
+			if u, p, ok := r.BasicAuth(); !ok || u == "" || p == "" {
+				http.Error(w, "basic auth required", 401)
+				return
+			}
+			atomic.AddInt64(&authorizes, 1)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "tok", "expires_in": 900, "token_type": "bearer",
+			})
+		case "/accounts":
+			if r.Header.Get("Authorization") != "Bearer tok" {
+				http.Error(w, "unauthorized", 401)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]string{
+				{"id": "bc_acc_sga_eur", "viban": "BC00SIM1", "holder": "SGA", "currency": "EUR", "balance": "1000.00"},
+			}})
+		default:
+			http.Error(w, "no", 404)
+		}
+	}))
+	defer srv.Close()
+
+	b := &BankingCircleBank{BaseURL: srv.URL, Client: srv.Client(), User: "sim", Password: "sim"}
+	for i := 0; i < 3; i++ {
+		got, err := b.Accounts(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].Number != "BC00SIM1" {
+			t.Fatalf("accounts = %+v", got)
+		}
+	}
+	// One exchange for three reads: re-authorizing per request would be a
+	// different thing from what a real client does.
+	if n := atomic.LoadInt64(&authorizes); n != 1 {
+		t.Fatalf("authorize called %d times, want 1", n)
+	}
+}
+
+func TestBankingCircleCannotOpenAccounts(t *testing.T) {
+	b := &BankingCircleBank{}
+	// Real Banking Circle has no account-creation endpoint. The UI needs
+	// to be able to tell "not supported" from "failed".
+	if _, err := b.OpenAccount(context.Background(), "X", "EUR", ""); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("err = %v, want ErrUnsupported", err)
+	}
+	if b.Meta().CanOpen {
+		t.Fatal("the UI would offer an account-opening form that cannot work")
+	}
+}
+
+func TestBanksLookup(t *testing.T) {
+	core := &CoreLedgerBank{}
+	bs := NewBanks(core, &BankingCircleBank{})
+	if got := bs.List(); len(got) != 2 {
+		t.Fatalf("List = %d banks", len(got))
+	}
+	if _, ok := bs.Backend("core-ledger"); !ok {
+		t.Fatal("core-ledger not found by id")
+	}
+	if _, ok := bs.Backend("nope"); ok {
+		t.Fatal("Backend invented a bank")
+	}
+}

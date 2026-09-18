@@ -1,0 +1,13 @@
+certs
+.git
+docs
+**/*_test.go
+**/testdata
+
+# Pod runtime output. file-drop writes its SFTP tree and its generated
+# host/PGP keys to <recipe>/pod-data/, so running the tests leaves private
+# keys inside the build context. .gitignore hides them from `git status`,
+# which is exactly why this file has to exclude them too: without it,
+# `COPY recipes /recipes` bakes one machine's keys into every image, and
+# the copied root-owned tree leaves the pod user unable to write uploads.
+**/pod-data

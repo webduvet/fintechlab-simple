@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+FROM docker.io/library/golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod ./
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/worldline ./cmd/worldline
+
+FROM docker.io/library/alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/worldline /usr/local/bin/worldline
+# /sftp/* are host bind mounts for human-browsability (a merchant would
+# literally ls their own SFTP directory); pre-creating here only helps if
+# they end up as named volumes instead — see Makefile's sftp-dirs target
+# for the real fix (host directories created with this UID able to write).
+RUN mkdir -p /sftp/inbound /sftp/outbound /sftp/config /sftp/archive && \
+    chown -R 65532:65532 /sftp
+# /wlsftp is the real Worldline SFTP+PGP channel's served root (in-container
+# only, not a host bind mount — see docs/ARCHITECTURE-vendor-corrections.md
+# section 2; the app itself creates the four real subdirectories at
+# startup via wlsftp.EnsureLayout, but the parent /wlsftp itself needs to
+# already be writable by the non-root USER below, same reasoning as /sftp
+# above).
+RUN mkdir -p /wlsftp && chown -R 65532:65532 /wlsftp
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/worldline"]

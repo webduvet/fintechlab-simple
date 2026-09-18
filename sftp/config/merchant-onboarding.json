@@ -1,0 +1,16 @@
+{
+  "merchant_id": "GB00SIM0000000000003",
+  "sftp_directory": "/sftp/outbound/GB00SIM0000000000003",
+  "report_types": [
+    "WX",
+    "Financial"
+  ],
+  "report_formats": [
+    "CSV",
+    "XML",
+    "ASCII"
+  ],
+  "cut_off_time": "00:00 CET",
+  "remittance_frequency": "daily",
+  "sftp_directory_count": 3
+}

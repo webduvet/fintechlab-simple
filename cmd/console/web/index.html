@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fintech sim lab — console</title>
+<link rel="stylesheet" href="/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23a855f7'/><path d='M9 21V11h6.5a3.5 3.5 0 0 1 0 7H12v3z' fill='white'/></svg>">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">◈</div>
+      <div class="brand-text">
+        <strong>fintech sim lab</strong>
+        <span>control panel</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <button class="nav-item is-active" data-view="services">
+        <span class="nav-icon">▤</span><span class="nav-label">Standalone</span>
+        <span class="nav-badge" id="badge-services"></span>
+      </button>
+      <button class="nav-item" data-view="banks">
+        <span class="nav-icon">▦</span><span class="nav-label">Banks</span>
+        <span class="nav-badge" id="badge-banks"></span>
+      </button>
+      <button class="nav-item" data-view="merchants">
+        <span class="nav-icon">◍</span><span class="nav-label">Merchants</span>
+        <span class="nav-badge" id="badge-merchants"></span>
+      </button>
+      <button class="nav-item" data-view="config">
+        <span class="nav-icon">⚙</span><span class="nav-label">Configuration</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="legend">
+        <span><i class="dot up"></i>up</span>
+        <span><i class="dot down"></i>down</span>
+        <span><i class="dot unknown"></i>unknown</span>
+      </div>
+      <button class="ghost small" id="theme-toggle">◐ theme</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="view-title">Pods</h1>
+        <p id="view-sub" class="sub">Mocked vendors as compositions of kernels. The brand lives in the recipe.</p>
+      </div>
+      <div class="topbar-actions" id="topbar-actions"></div>
+    </header>
+    <div class="content" id="content"><div class="empty">Loading…</div></div>
+  </main>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<div class="modal-backdrop" id="modal-backdrop" hidden>
+  <div class="modal" id="modal"></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

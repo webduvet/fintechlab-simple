@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1
+FROM docker.io/library/golang:1.22-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+# The UI is embedded (//go:embed web) rather than mounted or fetched: the
+# console has to work on a laptop with no network, which is the situation
+# this whole lab exists for.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/console ./cmd/console
+
+FROM docker.io/library/alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /out/console /usr/local/bin/console
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/console"]
