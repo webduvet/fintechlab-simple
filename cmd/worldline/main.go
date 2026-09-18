@@ -53,13 +53,16 @@ func main() {
 		log.Fatalf("worldline: seed default config: %v", err)
 	}
 
-	acq := startWorldlineSFTP()
+	acq, desk := startWorldlineSFTP()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "worldline"})
 	})
 	acq.routes(mux)
+	if desk != nil {
+		desk.routes(mux)
+	}
 	mux.HandleFunc("POST /inbound/onboarding/{merchant_id}", uploadInbound(ch, sftpgateway.CategoryOnboarding))
 	mux.HandleFunc("POST /inbound/corrections/{merchant_id}", uploadInbound(ch, sftpgateway.CategoryCorrections))
 	mux.HandleFunc("GET /inbound/onboarding/{merchant_id}", listInbound(ch, sftpgateway.CategoryOnboarding))
@@ -303,7 +306,7 @@ func envDuration(k string, def time.Duration) time.Duration {
 // background goroutines so the HTTP listener is unaffected; a setup
 // failure (bad host key, unparsable keys, bind failure) is fatal at
 // startup rather than silently leaving the service half-configured.
-func startWorldlineSFTP() *settlementApp {
+func startWorldlineSFTP() (*settlementApp, *enrolmentDesk) {
 	root := env("WORLDLINE_SFTP_ROOT", "/wlsftp")
 	if err := wlsftp.EnsureLayout(root); err != nil {
 		log.Fatalf("worldline: sftp layout: %v", err)
@@ -386,10 +389,18 @@ func startWorldlineSFTP() *settlementApp {
 			log.Fatalf("worldline: sftp listener: %v", err)
 		}
 	}()
+	// The boarding desk answers enrolment batches uploaded to to_WLNORDIC.
+	// It shares the acquirer's SFTP root and PGP keys: same channel, same
+	// crypto, different conversation.
+	desk := newEnrolmentDesk(root, keys,
+		envDuration("WORLDLINE_ENROLMENT_DELAY", 30*time.Second),
+		envDuration("WORLDLINE_ENROLMENT_SWEEP", 5*time.Second))
+	go desk.watch()
+
 	go acq.schedule()
 	log.Printf("worldline: sftp+pgp listening on %s root=%s source=%s morning=%s afternoon=%s",
 		sshAddr, root, source, acq.cfg.MorningAt, acq.cfg.AfternoonAt)
-	return acq
+	return acq, desk
 }
 
 func logReq(next http.Handler) http.Handler {

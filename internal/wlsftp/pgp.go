@@ -156,6 +156,22 @@ type PGPKeys struct {
 	Recipient *openpgp.Entity // optional Infinite public key; nil => self-encrypt
 }
 
+// Keyring is the set of entities that can open a message addressed to this
+// side. Own carries the private half; Recipient is included because a
+// self-encrypted message — what EncryptAndSign produces when no recipient
+// is configured — is addressed to Own anyway, and a caller decrypting
+// should not have to know which of the two paths produced the file.
+func (k *PGPKeys) Keyring() openpgp.EntityList {
+	var ring openpgp.EntityList
+	if k.Own != nil {
+		ring = append(ring, k.Own)
+	}
+	if k.Recipient != nil {
+		ring = append(ring, k.Recipient)
+	}
+	return ring
+}
+
 // EncryptAndSign implements the Addendum §E encryption direction described
 // on PGPKeys.
 func (k *PGPKeys) EncryptAndSign(plaintext []byte) ([]byte, error) {
