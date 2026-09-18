@@ -20,7 +20,7 @@ ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
 # podman-compose 1.x does not implement Compose "profiles".
 COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 
-.PHONY: help certs sftp-dirs key-dirs console-dir up down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild
+.PHONY: help certs sftp-dirs key-dirs console-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild
 
 help:
 	@echo "make up             generate certs if needed, compose up"
@@ -29,6 +29,7 @@ help:
 	@echo "make harness        run the full scenario harness locally (go run)"
 	@echo "make harness-docker build+run the harness as one container against the compose network"
 	@echo "make test           unit tests + vet + gofmt check (no Docker required)"
+	@echo "make start          bring the lab back up without rebuilding"
 	@echo "make down           compose down"
 	@echo "make rebuild        no-cache rebuild of the console image"
 	@echo "                    if Pods breaks after pull (/recipes missing): make rebuild && make up"
@@ -81,8 +82,32 @@ b4b-dir:
 	@mkdir -p b4b-data
 	@chmod 777 b4b-data
 
+# Why `up` tears down first under podman.
+#
+# podman-compose 1.x does not replace a container when its image changes:
+# `up --build` builds a fresh binary and then keeps serving the old one. The
+# failure is silent and it points somewhere else — a request body or a
+# config field looks wrong when the truth is that the parser is older than
+# the thing it is parsing.
+#
+# --force-recreate is not the fix. It removes and creates in one pass and
+# races itself ("container name is already in use"), and it cannot replace a
+# service others depend on ("has dependent containers which must be removed
+# before it"). Both failures are noisy and partial, which is worse than
+# either working or not.
+#
+# So: build, down, up. It costs a few seconds — the image layers are cached,
+# only the containers are replaced — and it always runs what you just built.
+# Named volumes survive `down`, so settlement-data and the console registry
+# are not lost.
+ifeq ($(COMPOSE_IS_PODMAN),podman)
+COMPOSE_UP = $(COMPOSE) build && $(COMPOSE) down && $(COMPOSE) up -d
+else
+COMPOSE_UP = $(COMPOSE) up -d --build
+endif
+
 up: certs sftp-dirs key-dirs console-dir b4b-dir
-	$(COMPOSE) up -d --build
+	$(COMPOSE_UP)
 	@echo "lab is up. payment-api :8080  bank :8081  notifier :8082  receiver :8443"
 	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088"
 	@echo ""
@@ -95,6 +120,23 @@ up: certs sftp-dirs key-dirs console-dir b4b-dir
 rebuild:
 	$(COMPOSE) build --no-cache console
 	@echo "rebuilt console (no cache). next: make up"
+
+# start is `up` without the build step: it still replaces the containers,
+# so the lab reaches a known state, but it does not recompile anything. Use
+# it when you have changed no Go code and just want the stack back.
+#
+# It tears down first for the same reason `up` does — `up -d` against a
+# stack that is already running reports "container already exists" once per
+# service and changes nothing, which reads like a failure and is not.
+ifeq ($(COMPOSE_IS_PODMAN),podman)
+COMPOSE_START = $(COMPOSE) down && $(COMPOSE) up -d
+else
+COMPOSE_START = $(COMPOSE) up -d
+endif
+
+start: certs sftp-dirs key-dirs console-dir b4b-dir
+	$(COMPOSE_START)
+	@echo "lab restarted from the images already built. Use 'make up' after a code change."
 
 down:
 	$(COMPOSE) down
