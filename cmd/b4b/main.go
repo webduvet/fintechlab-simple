@@ -363,6 +363,18 @@ func shortID() string {
 	return hex.EncodeToString(b[:])
 }
 
+// paymentID is a UUIDv4, because that is what a client validates it as: the
+// platform's own payment-callback schema declares the id a uuid and answers
+// 422 to anything else, so a prettier "b4bp_<hex>" is not a cosmetic choice —
+// it makes every callback for that payment undeliverable.
+func paymentID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v

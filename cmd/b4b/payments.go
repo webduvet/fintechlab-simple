@@ -169,7 +169,7 @@ func (a *app) createPayment(w http.ResponseWriter, r *http.Request) {
 		remittance = req.RemittanceInformation.Line1
 	}
 	p := &b4b.Payment{
-		ID:                     "b4bp_" + shortID(),
+		ID:                     paymentID(),
 		ExternalRef:            req.ExternalRef,
 		BeneficiaryID:          req.BeneficiaryID,
 		CompanyID:              req.CompanyID,
