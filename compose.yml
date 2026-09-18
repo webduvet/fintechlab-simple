@@ -411,6 +411,20 @@ services:
   # nothing more -- every button it offers is one call to a service's own
   # public API, so nothing in this lab can only be reached through a UI and
   # the console being down is never why a scenario cannot run.
+  # The four external checks the platform runs before it will move a
+  # merchant's money. One process, four path prefixes — nothing is shared
+  # between them except the address. Every check passes; POST /sim/outcome
+  # to make one fail.
+  verification:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.verification
+    ports:
+      - "8089:8089"
+    environment:
+      LISTEN: ":8089"
+
+
   console:
     build:
       context: .
