@@ -361,6 +361,21 @@ func (a *app) settlementPull(w http.ResponseWriter, r *http.Request) {
 	a.proxyPost(w, r, a.baseURL("settlement")+"/worldline/pull")
 }
 
+// runnerSettle asks the local runner to drive one settlement end to end.
+//
+// One button rather than four terminals, but it is still exactly one POST a
+// human could make with curl: the runner owns the sequence — upload under a
+// name not used before, trigger, wait for the balance check, fund, tick,
+// follow the stages — because that sequence is the platform's, not the
+// lab's. This console only asks.
+func (a *app) runnerSettle(w http.ResponseWriter, r *http.Request) {
+	a.proxyPost(w, r, a.baseURL("local-runner")+"/sim/run")
+}
+
+func (a *app) runnerFundSGA(w http.ResponseWriter, r *http.Request) {
+	a.proxyPost(w, r, a.baseURL("local-runner")+"/sim/fund-sga")
+}
+
 func (a *app) proxyPost(w http.ResponseWriter, r *http.Request, url string) {
 	ctx, cancel := reqContext(r)
 	defer cancel()

@@ -449,6 +449,13 @@ services:
       CONSOLE_URL_NOTIFIER: http://notifier:8082
       CONSOLE_BROWSE_HOST: 127.0.0.1
       CONSOLE_PROBE_INTERVAL: 5s
+      # The platform under test, when there is one: infinite-local-runner's
+      # control API. It runs on the host, not in this network, so it is
+      # named the way a container reaches the host. Set
+      # CONSOLE_LOCAL_RUNNER=off to drop the card entirely — the lab stands
+      # alone and a permanently red row for something nobody started is
+      # worse than no row.
+      CONSOLE_URL_LOCAL_RUNNER: http://host.containers.internal:3109
       # The Pods view. The recipes are read from disk for the declared
       # schematic, by compose service name rather than the loopback address
       # the recipe's own `listen:` implies.

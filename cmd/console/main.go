@@ -138,6 +138,8 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("POST /api/actions/worldline-cycle", a.runWorldlineCycle)
 	mux.HandleFunc("POST /api/actions/settlement-pull", a.settlementPull)
+	mux.HandleFunc("POST /api/actions/runner-settle", a.runnerSettle)
+	mux.HandleFunc("POST /api/actions/runner-fund-sga", a.runnerFundSGA)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

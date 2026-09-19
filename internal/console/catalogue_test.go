@@ -63,3 +63,39 @@ func TestEnvKeyShape(t *testing.T) {
 		}
 	}
 }
+
+// TestLocalRunnerCardIsDroppedWhenSwitchedOff. The lab has to stand alone:
+// most of the time there is no platform runner, and a permanently red row
+// for something nobody started teaches an operator to ignore red.
+func TestLocalRunnerCardIsDroppedWhenSwitchedOff(t *testing.T) {
+	if _, ok := DefaultCatalogue().Get("local-runner"); !ok {
+		t.Fatal("the runner card should be present by default")
+	}
+	t.Setenv("CONSOLE_LOCAL_RUNNER", "off")
+	cat := DefaultCatalogue()
+	if _, ok := cat.Get("local-runner"); ok {
+		t.Error("CONSOLE_LOCAL_RUNNER=off must drop the card")
+	}
+	// And drop only that one.
+	for _, id := range []string{"worldline", "b4b", "banking-circle"} {
+		if _, ok := cat.Get(id); !ok {
+			t.Errorf("%s went missing with it", id)
+		}
+	}
+}
+
+// TestLocalRunnerIsReachableByEnv, because it runs on the host while the
+// console runs in a container, where "127.0.0.1" means the console itself.
+func TestLocalRunnerIsReachableByEnv(t *testing.T) {
+	t.Setenv("CONSOLE_URL_LOCAL_RUNNER", "http://host.containers.internal:3109")
+	s, ok := DefaultCatalogue().Get("local-runner")
+	if !ok {
+		t.Fatal("no runner card")
+	}
+	if s.BaseURL != "http://host.containers.internal:3109" {
+		t.Errorf("BaseURL = %q, want the override", s.BaseURL)
+	}
+	if s.Activity == "" {
+		t.Error("the runner keeps a log of its runs; the card must declare it")
+	}
+}

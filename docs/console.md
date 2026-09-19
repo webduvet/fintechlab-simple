@@ -91,12 +91,39 @@ an ordinary accepted call is left uncoloured, so the two that went wrong
 are the two you see. A service that keeps no log shows no panel, and its
 endpoint answers `501` rather than an empty list.
 
-Two services offer actions, because they are the two that drive the money:
+Three cards offer actions, because they are the ones that drive the money:
 
 - **Worldline** — run the morning (`ER`) or afternoon (`AR`) cycle now,
   instead of waiting for 08:00.
 - **Settlement** — pull from Worldline now, instead of waiting out
   `WORLDLINE_PULL_INTERVAL`.
+- **Local runner** — run a whole settlement through the real platform, and
+  watch the vendor panels above it fill as it goes.
+
+### Local runner: the platform under test
+
+The card is a client of
+[infinite-local-runner](../../infinite/pr_ly/infinite-local-runner)'s control
+API — the harness that runs the platform's settle path locally. It shows
+which of the three processes (orchestrator, workers, gateway) are up, keeps
+its runs as an activity panel, and offers two buttons:
+
+- **Run settlement** — one `POST /sim/run`. The runner uploads a fixture
+  under a name not used before, triggers the pipeline, waits for the balance
+  check, funds the safeguarding accounts, ticks the check and follows the
+  stages to the end. It answers `202` at once: the run takes about forty
+  seconds, and the part worth watching is the traffic arriving in the vendor
+  panels, not a spinner.
+- **Fund safeguarding accounts** — the same top-up `POST /sim/fund-sga` a
+  human would curl.
+
+It is configured with `CONSOLE_URL_LOCAL_RUNNER` (compose points it at
+`host.containers.internal:3109`, since the runner is a host process and this
+console is in a container). `CONSOLE_LOCAL_RUNNER=off` drops the card: the lab
+stands alone, and a permanently red row for something nobody started is worse
+than no row at all. When the runner is configured but not running, the card
+shows no buttons — it says what to start instead, because a button that
+cannot work is a worse answer than a sentence.
 
 ## Banks
 

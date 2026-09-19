@@ -248,12 +248,41 @@ func DefaultCatalogue() *Catalogue {
 				{"GET", "/subscriptions", ""}, {"GET", "/deliveries", ""},
 			},
 		},
+		{
+			ID: "local-runner", Name: "Local runner", Kind: KindPlatform,
+			Summary:    "The platform's own settle path, run locally: the settle-processing orchestrator, the SQS workers, and gateway for B4B callbacks. Press Run settlement and the vendor panels above fill as it goes.",
+			BaseURL:    "http://127.0.0.1:3109",
+			HealthPath: "/status",
+			Activity:   "/sim/activity",
+			Ports:      []string{"3109/http"},
+			Transport:  "HTTP",
+			Auth:       "none — local control plane",
+			SwapFor:    "Nothing. This is the platform under test, not a vendor: in a real environment it is the deployed stack.",
+			Endpoints: []Endpoint{
+				{"GET", "/status", "what is up, and how the last run went"},
+				{"POST", "/sim/run", "run a settlement end to end"},
+				{"POST", "/sim/fund-sga", "top up the safeguarding accounts"},
+			},
+		},
 	}
 	for i := range svcs {
 		if v := os.Getenv(envKeyFor(svcs[i].ID)); v != "" {
 			svcs[i].BaseURL = v
 		}
 		svcs[i].Browse = browseURL(svcs[i])
+	}
+	// The local runner is the platform under test, not part of the lab, and
+	// most of the time there is not one. Dropping the card when it is
+	// switched off is the honest rendering: a permanently red row for
+	// something nobody asked for teaches an operator to ignore red.
+	if os.Getenv("CONSOLE_LOCAL_RUNNER") == "off" {
+		kept := svcs[:0]
+		for _, s := range svcs {
+			if s.ID != "local-runner" {
+				kept = append(kept, s)
+			}
+		}
+		svcs = kept
 	}
 	return &Catalogue{Services: svcs}
 }

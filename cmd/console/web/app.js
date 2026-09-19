@@ -364,6 +364,18 @@ function serviceCard(s) {
    service that performs them is. Each is one call to that service's own
    endpoint -- nothing here is reachable only from this UI. */
 function serviceExtras(s) {
+  if (s.id === 'local-runner') {
+    // Offered only when the runner is actually up. A run button on a
+    // process that is not listening would fail in a way that reads as the
+    // lab being broken rather than the platform not being started.
+    if (s.status && s.status.state === 'up') {
+      return `<button class="btn small" data-action="runner-settle">Run settlement</button>
+              <button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
+    }
+    return `<div class="note warn">Not running. Start it with
+      <span class="mono">pnpm nx up infinite-local-runner</span> — it brings up the orchestrator,
+      the workers and gateway together, and this card then drives it.</div>`;
+  }
   if (s.id === 'worldline') {
     return `<button class="btn small" data-action="cycle" data-slot="morning">Run morning cycle (ER)</button>
             <button class="ghost small" data-action="cycle" data-slot="afternoon">Afternoon confirmation (AR)</button>`;
@@ -652,6 +664,19 @@ const ACTIONS = {
   pull: async () => {
     const r = await api('POST', '/api/actions/settlement-pull');
     toast('Pulled from Worldline', r, 'good');
+  },
+
+  /* The runner answers 202 and keeps going: a settlement run takes the best
+     part of a minute, and a button that sat spinning through it would hide
+     the thing worth watching, which is the stages arriving in the panels. */
+  'runner-settle': async () => {
+    const r = await api('POST', '/api/actions/runner-settle');
+    toast('Settlement run started', `${r.run}\nWatch the panels below — this takes about a minute.`, 'good');
+  },
+
+  'runner-fund-sga': async () => {
+    const r = await api('POST', '/api/actions/runner-fund-sga');
+    toast('Safeguarding accounts funded', r.output || r, 'good');
   },
 
   'open-account': async (d, btn) => {
