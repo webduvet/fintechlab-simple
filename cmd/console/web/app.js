@@ -338,6 +338,7 @@ function serviceCard(s) {
           <td class="mono">${esc(e.method)}</td>
           <td class="mono">${esc(e.path)}</td>
           <td>${esc(e.note || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}
+      ${serviceNote(s)}
       <div class="form">
         <button class="ghost small" data-action="probe" data-id="${esc(s.id)}">Probe now</button>
         ${s.browse_url ? `<a class="ghost small" href="${esc(s.browse_url)}" target="_blank" rel="noreferrer">Open ${esc(s.browse_url)}</a>` : ''}
@@ -363,6 +364,19 @@ function serviceCard(s) {
 /* The two actions that drive the whole money flow, offered where the
    service that performs them is. Each is one call to that service's own
    endpoint -- nothing here is reachable only from this UI. */
+/* A sentence where a button would be wrong. Prose belongs above the action
+   row, not inside it: .form is a flex row of fields and a note dropped in
+   between two buttons gets squeezed to nothing. */
+function serviceNote(s) {
+  if (s.id === 'local-runner' && !(s.status && s.status.state === 'up')) {
+    return `<div class="note warn">Not running, so there is nothing to drive. Start it with
+      <span class="mono">pnpm nx up infinite-local-runner</span> — one command brings up the
+      orchestrator, the workers and gateway together, and this card then runs settlements
+      against them.</div>`;
+  }
+  return '';
+}
+
 function serviceExtras(s) {
   if (s.id === 'local-runner') {
     // Offered only when the runner is actually up. A run button on a
@@ -372,9 +386,7 @@ function serviceExtras(s) {
       return `<button class="btn small" data-action="runner-settle">Run settlement</button>
               <button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
     }
-    return `<div class="note warn">Not running. Start it with
-      <span class="mono">pnpm nx up infinite-local-runner</span> — it brings up the orchestrator,
-      the workers and gateway together, and this card then drives it.</div>`;
+    return '';
   }
   if (s.id === 'worldline') {
     return `<button class="btn small" data-action="cycle" data-slot="morning">Run morning cycle (ER)</button>
