@@ -341,3 +341,175 @@ func TestActivityReportsAnUnreachableServiceRatherThanAnEmptyList(t *testing.T) 
 		t.Errorf("the failure should name what could not be reached: %s", w.Body.String())
 	}
 }
+
+// --- system in test ---------------------------------------------------
+
+// flowPeers stands in for the four services the diagram reads, each under
+// its own path prefix so one server can be all of them.
+func flowPeers(t *testing.T) *httptest.Server {
+	t.Helper()
+	logs := map[string]string{
+		"/worldline/sim/activity": `{"logs":[{"name":"sftp","total":9,"events":[
+			{"seq":9,"at":"2026-09-18T21:00:03Z","op":"sftp.download","summary":"infinitepay collected file.csv.pgp","status":"ok"},
+			{"seq":8,"at":"2026-09-18T21:00:02Z","op":"sftp.list","summary":"listed /download","status":"ok"},
+			{"seq":7,"at":"2026-09-18T21:00:01Z","op":"sftp.session","summary":"infinitepay connected over SFTP","status":"ok"}]}]}`,
+		"/b4b/sim/activity": `{"logs":[
+			{"name":"payments","total":6,"events":[
+				{"seq":6,"at":"2026-09-18T21:01:00Z","op":"payment.create","summary":"payout 951.98 EUR","status":"ok"},
+				{"seq":5,"at":"2026-09-18T21:01:00Z","op":"payment.create","summary":"payout 12.00 EUR","status":"warn"}]},
+			{"name":"callbacks","total":30,"events":[
+				{"seq":30,"at":"2026-09-18T21:02:00Z","op":"callback","summary":"delivered","status":"ok"},
+				{"seq":29,"at":"2026-09-18T21:02:00Z","op":"callback","summary":"refused by the client","status":"bad"}]}]}`,
+		"/bc/sim/activity": `{"logs":[
+			{"name":"payments","total":3,"events":[
+				{"seq":3,"at":"2026-09-18T21:03:00Z","op":"payment.create","summary":"payout at the bank","status":"ok"},
+				{"seq":2,"at":"2026-09-18T21:02:00Z","op":"payment.incoming","summary":"funds in","status":"ok"}]},
+			{"name":"notifications","total":2,"events":[
+				{"seq":2,"at":"2026-09-18T21:04:00Z","op":"notification","summary":"batch of 5","status":"ok"}]}]}`,
+		"/runner/sim/activity": `{"logs":[{"name":"runs","total":4,"events":[]}]}`,
+		"/runner/status": `{"status":"ok","running_now":null,"last_run":{"id":"run-1","root":"r1",
+			"payouts":{"count":6,"total":"27698.78"},
+			"stages":[{"stage":"SETTLEMENT_FILE_INGESTION","status":"COMPLETED"},
+			          {"stage":"DAILY_MOVEMENT_PROCESSING","status":"COMPLETED"},
+			          {"stage":"DAILY_SETTLEMENT_REPORT","status":"FAILED"}]}}`,
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/authorizations/authorize") {
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
+			return
+		}
+		body, ok := logs[r.URL.Path]
+		if !ok {
+			w.WriteHeader(404)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+func flowApp(t *testing.T, peers *httptest.Server) *app {
+	t.Helper()
+	a := testApp(t, peers)
+	a.cat.Services = []console.Service{
+		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: peers.URL + "/worldline", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "b4b", Name: "B4B Payments", Kind: console.KindVendor, BaseURL: peers.URL + "/b4b", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "banking-circle", Name: "Banking Circle", Kind: console.KindVendor, BaseURL: peers.URL + "/bc", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: peers.URL + "/runner", Activity: "/sim/activity", HealthPath: "/status"},
+		{ID: "receiver", Name: "Webhook receiver", Kind: console.KindPlatform, BaseURL: peers.URL, HealthPath: "/health"},
+	}
+	a.bc.BaseURL = peers.URL + "/bc"
+	return a
+}
+
+func flowOf(t *testing.T, a *app) map[string]flowStep {
+	t.Helper()
+	w := call(t, a, http.MethodGet, "/api/flow", "")
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var got flowResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	steps := map[string]flowStep{}
+	for _, s := range got.Steps {
+		steps[s.ID] = s
+	}
+	return steps
+}
+
+// TestFlowCountsWhatEachHopActuallyCarried. The diagram's whole vocabulary
+// is these numbers: the browser diffs them to decide what just lit up, so a
+// hop counted against the wrong log would animate the wrong arrow.
+func TestFlowCountsWhatEachHopActuallyCarried(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	steps := flowOf(t, flowApp(t, peers))
+
+	for _, tc := range []struct {
+		id    string
+		count int
+		from  string
+		to    string
+	}{
+		{"pull", 2, "platform", "worldline"},    // session + list
+		{"collect", 1, "worldline", "platform"}, // the download
+		{"payouts", 2, "platform", "b4b"},
+		{"bridge", 1, "b4b", "banking-circle"},    // payment.create only
+		{"fund", 1, "platform", "banking-circle"}, // payment.incoming only
+		{"callbacks", 2, "b4b", "platform"},
+		{"notify", 1, "banking-circle", "receiver"},
+	} {
+		got := steps[tc.id]
+		if got.Count != tc.count {
+			t.Errorf("%s carried %d, want %d", tc.id, got.Count, tc.count)
+		}
+		if got.From != tc.from || got.To != tc.to {
+			t.Errorf("%s goes %s->%s, want %s->%s", tc.id, got.From, got.To, tc.from, tc.to)
+		}
+	}
+}
+
+// TestFlowSeparatesAFailureFromARefusal: red and amber mean different
+// things on this diagram — one is the vendor breaking, the other is the
+// vendor refusing, and an operator reacts to them differently.
+func TestFlowSeparatesAFailureFromARefusal(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	steps := flowOf(t, flowApp(t, peers))
+
+	if steps["callbacks"].Failed != 1 {
+		t.Errorf("a refused callback should count as failed, got %+v", steps["callbacks"])
+	}
+	if steps["payouts"].Refused != 1 {
+		t.Errorf("a 4xx payout should count as refused, not failed: %+v", steps["payouts"])
+	}
+	if steps["payouts"].Failed != 0 {
+		t.Errorf("a refusal must not be reported as a failure: %+v", steps["payouts"])
+	}
+}
+
+// TestFlowReadsStagesForTheHopsThatNeverLeaveThePlatform.
+func TestFlowReadsStagesForTheHopsThatNeverLeaveThePlatform(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	steps := flowOf(t, flowApp(t, peers))
+
+	if steps["ingest"].Count != 2 {
+		t.Errorf("ingest should count its two stages, got %d", steps["ingest"].Count)
+	}
+	if steps["reports"].Count != 1 || steps["reports"].Failed != 1 {
+		t.Errorf("the failed report stage should show as failed: %+v", steps["reports"])
+	}
+}
+
+// TestFlowSurvivesAVendorBeingDown. The view is the first thing an operator
+// opens; it must render with one participant unreachable and say which,
+// rather than 500 and leave them with nothing.
+func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	a := flowApp(t, peers)
+	for i := range a.cat.Services {
+		if a.cat.Services[i].ID == "b4b" {
+			a.cat.Services[i].BaseURL = "http://127.0.0.1:1"
+		}
+	}
+
+	w := call(t, a, http.MethodGet, "/api/flow", "")
+	if w.Code != 200 {
+		t.Fatalf("status %d, want the page to still render: %s", w.Code, w.Body.String())
+	}
+	var got flowResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Errors["b4b"] == "" {
+		t.Error("the unreachable vendor should be named in errors")
+	}
+	if len(got.Participants) != 5 || len(got.Steps) != 9 {
+		t.Errorf("the diagram should still be whole: %d participants, %d steps",
+			len(got.Participants), len(got.Steps))
+	}
+}

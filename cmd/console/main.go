@@ -116,6 +116,7 @@ func (a *app) routes() http.Handler {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "console"})
 	})
 
+	mux.HandleFunc("GET /api/flow", a.flow)
 	mux.HandleFunc("GET /api/overview", a.overview)
 	mux.HandleFunc("POST /api/services/{id}/probe", a.probeService)
 	mux.HandleFunc("GET /api/services/{id}/activity", a.serviceActivity)

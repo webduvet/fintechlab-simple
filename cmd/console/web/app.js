@@ -5,7 +5,7 @@
    the active view wholesale on every change. */
 
 const state = {
-  view: 'vendors',
+  view: 'flow',
   open: new Set(),      // "view:id" of expanded cards, so a poll does not collapse them
   data: {},
   activity: {},         // service id -> {logs} | {error}, fetched only while a card is open
@@ -17,6 +17,10 @@ const state = {
    item was still called "Standalone" — a leftover from an architecture this
    tree no longer has. */
 const VIEWS = {
+  flow: {
+    title: 'System in test',
+    sub: 'One settlement run as it happens: the platform down the middle, the vendors it talks to either side, and every hop between them.',
+  },
   vendors: {
     title: 'Vendors',
     sub: 'The third parties this lab simulates. These are the deliverable: point your code at one and it should not notice the difference.',
@@ -158,6 +162,10 @@ function isServiceView(view = state.view) { return !!(VIEWS[view] && VIEWS[view]
 
 async function load() {
   try {
+    if (state.view === 'flow') {
+      state.data.flow = await api('GET', '/api/flow');
+      flowObserve(state.data.flow);
+    }
     if (isServiceView()) {
       state.data.overview = await api('GET', '/api/overview');
       await loadActivity();
@@ -287,6 +295,13 @@ function clock(iso) {
 }
 
 function renderBadges() {
+  const run = state.data.flow && state.data.flow.run;
+  const el = $('#badge-flow');
+  if (el) {
+    const stages = (run && run.stages) || [];
+    const done = stages.filter((s) => s.status === 'COMPLETED').length;
+    el.textContent = stages.length ? `${done}/${stages.length}` : '';
+  }
   const ov = state.data.overview;
   if (ov) {
     // Per section, because the whole-lab number stopped being answerable
@@ -309,6 +324,283 @@ function renderBadges() {
   if (banks) $('#badge-banks').textContent = String(banks.banks.length);
   const m = state.data.merchants;
   if (m) $('#badge-merchants').textContent = String(m.merchants.length);
+}
+
+
+/* --- system in test ------------------------------------------------------
+
+   A sequence diagram of one settlement run, drawn as SVG by hand.
+
+   Not Mermaid, and not reluctantly: the repo's first non-negotiable is that
+   these pages run from `git clone` with no network, which rules out a CDN
+   and makes a ~1MB vendored bundle a poor trade for one diagram. The
+   deciding reason is the animation, though — the whole point here is that an
+   individual arrow lights as its own traffic arrives, and a diagram library
+   that re-renders from a text description on every change cannot do that
+   without throwing away the DOM it would need to animate.
+
+   State lives in two places on purpose. The server says how many messages
+   each hop has carried; the browser remembers what that number was a second
+   ago. "Something just happened" is a difference between two observations,
+   and only one end of this is in a position to notice it. */
+
+const FLOW_HOLD_MS = 1200;   // a hop that takes 3ms is still worth a look
+const FLOW_LIVE_MS = 1000;   // poll while a run is in flight
+const FLOW_IDLE_MS = 5000;   // and at the console's usual rate when not
+
+const flow = {
+  counts: {},      // step id -> count at the last poll
+  lit: {},         // step id -> when it last moved
+  runID: null,
+  baseline: {},    // step id -> count when this run started
+  boxBaseline: {}, // participant id -> stat values when this run started
+  timer: null,
+};
+
+function flowRunID(data) {
+  const run = data && data.run;
+  if (!run) return null;
+  return run.id || run.root || null;
+}
+
+/* Diff first, render second. Every visual state below is derived from these
+   two numbers and a clock, so the drawing code stays a pure function of
+   state and can be reasoned about on its own. */
+function flowObserve(data) {
+  const id = flowRunID(data);
+  if (id !== flow.runID) {
+    // A new run rebases "this run" counters without losing the totals: the
+    // vendors' rings are older than any one run and saying otherwise would
+    // be the view lying about what it knows.
+    flow.runID = id;
+    flow.baseline = {};
+    flow.boxBaseline = {};
+    for (const s of data.steps || []) flow.baseline[s.id] = s.count;
+    for (const p of data.participants || []) {
+      flow.boxBaseline[p.id] = (p.stats || []).map((st) => Number(st.value) || 0);
+    }
+  }
+  let moved = false;
+  for (const s of data.steps || []) {
+    const was = flow.counts[s.id];
+    if (was !== undefined && s.count > was) {
+      flow.lit[s.id] = Date.now();
+      moved = true;
+    }
+    flow.counts[s.id] = s.count;
+  }
+  // Re-render once when the hold expires, or an arrow that lit on the last
+  // poll of a run would stay green until something else happened.
+  if (moved) setTimeout(() => { if (state.view === 'flow') renderView(); }, FLOW_HOLD_MS + 60);
+}
+
+function flowIsLit(id) {
+  return flow.lit[id] && Date.now() - flow.lit[id] < FLOW_HOLD_MS;
+}
+
+/* The colour rules, in one place:
+     idle      nothing has ever come this way          dark grey
+     active    something arrived in the last second    green
+     busy      a batch is in flight                    bright neutral
+     partial   some of a batch was refused             amber
+     failed    something broke                         red
+     done      finished, and it was fine               dark green
+   A box is green while its own traffic is moving and light grey once it has
+   been through — the participants tell you where you are, the arrows tell
+   you what happened. */
+function flowStepClass(s) {
+  const lit = flowIsLit(s.id);
+  if (s.count === 0) return s.failed > 0 ? 'is-failed' : 'is-idle';
+  if (lit) {
+    // A batch in flight is neither good nor bad news yet, so it gets the
+    // brightest neutral rather than a verdict it has not earned.
+    if (s.failed > 0) return 'is-failed is-lit';
+    return s.multi ? 'is-busy is-lit' : 'is-active is-lit';
+  }
+  if (s.failed > 0) {
+    // Four of five report stages landing and one failing on the mail hop is
+    // a partial success, and painting it the same red as "nothing arrived"
+    // would make the two indistinguishable at a glance.
+    return s.multi && s.failed < s.count ? 'is-partial' : 'is-failed';
+  }
+  if (s.multi && s.refused > 0) return 'is-partial';
+  return 'is-done-ok';
+}
+
+/* A box reports on the participant, not on its traffic. One report stage
+   failing on the mail hop does not make Banking Circle unwell, and a red
+   box that means "something that touched this went wrong" is a box you
+   stop believing. Red here is the service itself being unreachable. */
+function flowBoxClass(p, steps) {
+  if (p.error || p.status === 'down') return 'is-failed';
+  const mine = steps.filter((s) => s.from === p.id || s.to === p.id);
+  if (mine.some((s) => flowIsLit(s.id))) return 'is-active';
+  if (mine.some((s) => s.count > 0)) return 'is-done';
+  return 'is-idle';
+}
+
+function flowDelta(id, count) {
+  const base = flow.baseline[id];
+  if (base === undefined || count - base <= 0) return '';
+  return `+${count - base}`;
+}
+
+/* --- the drawing ------------------------------------------------------- */
+
+const FLOW_W = 1120;
+const FLOW_PAD = 110;        // half a box, so the outer lifelines sit inside
+const FLOW_BOX_W = 196;
+const FLOW_BOX_H = 92;
+const FLOW_TOP = 14;
+const FLOW_ROW = 64;
+const FLOW_FIRST_ROW = 152;
+
+function flowColumns(participants) {
+  const span = FLOW_W - FLOW_PAD * 2;
+  const step = participants.length > 1 ? span / (participants.length - 1) : 0;
+  const at = {};
+  participants.forEach((p, i) => { at[p.id] = FLOW_PAD + i * step; });
+  return at;
+}
+
+function flowBox(p, x, klass, deltas) {
+  const left = x - FLOW_BOX_W / 2;
+  const stats = (p.stats || []).map((st, i) => {
+    const d = deltas[i] ? ` <tspan class="flow-delta">${esc(deltas[i])}</tspan>` : '';
+    return `<text class="flow-stat" x="${left + 12}" y="${FLOW_TOP + 56 + i * 15}">${esc(st.label)}: <tspan class="flow-stat-v">${esc(st.value)}</tspan>${d}</text>`;
+  }).join('');
+  return `<g class="flow-box ${klass}">
+    <rect x="${left}" y="${FLOW_TOP}" width="${FLOW_BOX_W}" height="${FLOW_BOX_H}" rx="10"></rect>
+    <text class="flow-title" x="${left + 12}" y="${FLOW_TOP + 22}">${esc(p.label)}</text>
+    <text class="flow-role" x="${left + 12}" y="${FLOW_TOP + 38}">${esc(p.role || '')}</text>
+    <circle class="flow-health ${esc(p.status || 'unknown')}" cx="${left + FLOW_BOX_W - 14}" cy="${FLOW_TOP + 17}" r="4"></circle>
+    ${stats}
+  </g>`;
+}
+
+/* The tooltip carries what the line cannot: why the hop exists, and the
+   vendor's own words for the last thing that came through it. */
+function flowTip(s) {
+  const parts = [s.note, s.last_summary].filter(Boolean);
+  return parts.length ? `<title>${esc(parts.join(' — '))}</title>` : '';
+}
+
+function flowArrow(s, at, y) {
+  const klass = flowStepClass(s);
+  const delta = flowDelta(s.id, s.count);
+  const badge = s.count
+    ? `${s.count}${delta ? ' (' + delta + ')' : ''}${s.failed ? ' · ' + s.failed + ' failed' : ''}`
+    : '';
+
+  if (s.from === s.to) {
+    // A self-call: a small loop off the lifeline, because a hop that never
+    // leaves the platform is still a step in the sequence.
+    const x = at[s.from];
+    const w = 58;
+    return `<g class="flow-step ${klass}" data-step="${esc(s.id)}">
+      ${flowTip(s)}
+      <path class="flow-line" d="M ${x} ${y - 10} h ${w} v 20 h ${-w}"></path>
+      <polygon class="flow-head" points="${x},${y + 10} ${x + 9},${y + 6} ${x + 9},${y + 14}"></polygon>
+      <text class="flow-label" text-anchor="start" x="${x + w + 10}" y="${y - 2}">${esc(s.label)}</text>
+      ${badge ? `<text class="flow-count" text-anchor="start" x="${x + w + 10}" y="${y + 14}">${esc(badge)}</text>` : ''}
+    </g>`;
+  }
+
+  const x1 = at[s.from];
+  const x2 = at[s.to];
+  const dir = x2 > x1 ? 1 : -1;
+  const tipX = x2 - 8 * dir;
+  const mid = (x1 + x2) / 2;
+  return `<g class="flow-step ${klass}" data-step="${esc(s.id)}">
+    ${flowTip(s)}
+    <line class="flow-line" x1="${x1}" y1="${y}" x2="${tipX}" y2="${y}"></line>
+    <polygon class="flow-head" points="${x2},${y} ${tipX},${y - 5} ${tipX},${y + 5}"></polygon>
+    <text class="flow-label" x="${mid}" y="${y - 9}">${esc(s.label)}</text>
+    ${badge ? `<text class="flow-count" x="${mid}" y="${y + 17}">${esc(badge)}</text>` : ''}
+  </g>`;
+}
+
+function renderFlow() {
+  const d = state.data.flow;
+  if (!d) return `<div class="empty">${esc(state.error || 'Loading…')}</div>`;
+
+  const parts = d.participants || [];
+  const steps = d.steps || [];
+  const at = flowColumns(parts);
+  const height = FLOW_FIRST_ROW + steps.length * FLOW_ROW + 20;
+
+  const boxes = parts.map((p) => {
+    const base = flow.boxBaseline[p.id] || [];
+    const deltas = (p.stats || []).map((st, i) => {
+      const now = Number(st.value) || 0;
+      const was = base[i];
+      return was !== undefined && now - was > 0 ? `+${now - was}` : '';
+    });
+    return flowBox(p, at[p.id], flowBoxClass(p, steps), deltas);
+  }).join('');
+
+  const lifelines = parts.map((p) =>
+    `<line class="flow-life" x1="${at[p.id]}" y1="${FLOW_TOP + FLOW_BOX_H}" x2="${at[p.id]}" y2="${height - 12}"></line>`
+  ).join('');
+
+  const arrows = steps.map((s, i) => flowArrow(s, at, FLOW_FIRST_ROW + i * FLOW_ROW)).join('');
+
+  const run = d.run;
+  const live = run && !run.finished_at;
+  const banner = run
+    ? `<div class="note${live ? '' : ' flow-note-done'}">${live ? 'Running now' : 'Last run'} —
+        <span class="mono">${esc(run.id || run.root || '')}</span>${run.error ? ' — ' + esc(run.error) : ''}</div>`
+    : `<div class="note">No run yet. Start one from
+        <a href="#platform">Platform → Local runner → Run settlement</a>, and this diagram lights up as it goes.</div>`;
+
+  const unreachable = Object.entries(d.errors || {})
+    .map(([id, msg]) => `<div class="note bad">${esc(id)} could not be read — ${esc(msg)}</div>`).join('');
+
+  return `${banner}${unreachable}
+    <div class="flow-wrap">
+      <svg class="flow" viewBox="0 0 ${FLOW_W} ${height}" role="img"
+           aria-label="Sequence diagram of one settlement run">
+        ${lifelines}${boxes}${arrows}
+      </svg>
+    </div>
+    ${flowLegend()}
+    ${flowReport(d)}`;
+}
+
+function flowLegend() {
+  const keys = [
+    ['is-idle', 'not yet'],
+    ['is-active', 'happening now'],
+    ['is-busy', 'batch in flight'],
+    ['is-done-ok', 'done'],
+    ['is-partial', 'partly refused'],
+    ['is-failed', 'failed'],
+  ];
+  return `<div class="flow-legend">${keys.map(([k, label]) =>
+    `<span class="flow-key ${k}"><i></i>${esc(label)}</span>`).join('')}</div>`;
+}
+
+function flowReport(d) {
+  const open = isOpen('report');
+  const stats = d.report || [];
+  const body = open ? `<div class="card-body">
+      <dl class="kv">${stats.map((s) =>
+        `<dt>${esc(s.label)}</dt><dd>${esc(s.value)}</dd>`).join('')}</dl>
+      <div class="note">Fees are not here: they are computed inside the platform's own
+        workers and never leave them, so this would have to invent a number. The rest is
+        read from the services themselves.</div>
+    </div>` : '';
+  const headline = stats.slice(0, 3).map((s) => `${s.label} ${s.value}`).join(' · ');
+  return `<div class="card ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="report" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">Run report</span>
+        <span class="desc">${esc(headline || 'Nothing to report yet.')}</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
 }
 
 /* --- services ---------------------------------------------------------- */
@@ -887,6 +1179,7 @@ function renderView() {
     : `<button class="ghost small" data-action="refresh">Refresh</button>`;
 
   const html =
+    state.view === 'flow' ? renderFlow() :
     isServiceView() ? renderServices() :
     state.view === 'banks' ? renderBanks() :
     state.view === 'merchants' ? renderMerchants() :
@@ -945,18 +1238,29 @@ function init() {
   // #services was the old single list; a bookmark to it should still land
   // somewhere sensible rather than on an empty view.
   const landing = hash === 'services' ? 'vendors' : hash;
-  setView(VIEWS[landing] ? landing : 'vendors');
+  setView(VIEWS[landing] ? landing : 'flow');
 
   // Poll, so a service coming up or going down shows without a reload.
   // Paused while a modal is open or a field has focus: re-rendering
   // replaces the DOM, and doing that under a half-typed form throws the
   // operator's input away.
+  // The base rate is the console's usual five seconds. The diagram runs at
+  // one, but only while a run is actually in flight: a settlement takes
+  // forty seconds and an arrow that lights up four seconds after its
+  // traffic arrived is not showing you a sequence, it is showing you a
+  // summary.
+  let sinceLoad = 0;
   state.timer = setInterval(() => {
     if (!$('#modal-backdrop').hidden) return;
     if (document.hidden) return;
     if (isEditing()) return;
+    sinceLoad += 250;
+    const run = state.data.flow && state.data.flow.run;
+    const live = state.view === 'flow' && run && !run.finished_at;
+    if (sinceLoad < (live ? FLOW_LIVE_MS : FLOW_IDLE_MS)) return;
+    sinceLoad = 0;
     load();
-  }, 5000);
+  }, 250);
 }
 
 init();

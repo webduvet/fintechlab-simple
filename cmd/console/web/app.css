@@ -512,3 +512,116 @@ input:focus, select:focus, textarea:focus {
 @media (max-width: 760px) {
   .log-op, .log-peer { display: none; }
 }
+
+/* --- system in test: the sequence diagram ------------------------------- */
+
+/* Six states, and they are all data, so they are all allowed colour. The
+   rest of the diagram is grey on purpose: if the resting state carried any
+   colour at all, the one arrow that just moved would have to compete with
+   eleven that did not. */
+:root {
+  --flow-idle: #4b4560;      /* nothing has come this way */
+  --flow-done: #8d86a3;      /* been through, at rest */
+  --flow-active: var(--up);  /* happening now */
+  --flow-done-ok: #2c8f56;   /* finished, and it was fine */
+  --flow-busy: #e6e2f2;      /* a batch in flight — the brightest neutral */
+  --flow-partial: var(--warn);
+  --flow-failed: var(--down);
+  --flow-text: var(--text-dim);
+}
+:root[data-theme="light"] {
+  --flow-idle: #b3abc6;
+  --flow-done: #7d7595;
+  --flow-done-ok: #15803d;
+  --flow-busy: #2a2340;      /* the brightest neutral here is the darkest ink */
+}
+
+.flow-wrap { overflow-x: auto; margin: 6px 0 12px; }
+.flow { width: 100%; min-width: 760px; height: auto; display: block; }
+
+/* participants */
+.flow-box rect {
+  fill: var(--panel); stroke: var(--flow-idle); stroke-width: 1.5;
+  transition: stroke .3s, fill .3s;
+}
+.flow-box.is-active rect { stroke: var(--flow-active); fill: color-mix(in srgb, var(--up) 8%, var(--panel)); }
+.flow-box.is-done rect { stroke: var(--flow-done); }
+.flow-box.is-failed rect { stroke: var(--flow-failed); fill: color-mix(in srgb, var(--down) 9%, var(--panel)); }
+
+.flow-title { font: 600 13px var(--sans); fill: var(--text); }
+.flow-role { font: 10.5px var(--sans); fill: var(--text-faint); letter-spacing: .04em; text-transform: uppercase; }
+.flow-stat { font: 11px var(--sans); fill: var(--text-faint); }
+.flow-stat-v { font-family: var(--mono); fill: var(--text-dim); }
+.flow-delta { font-family: var(--mono); fill: var(--flow-active); }
+
+.flow-health { fill: var(--unknown); }
+.flow-health.up { fill: var(--up); }
+.flow-health.down { fill: var(--down); }
+.flow-health.not-probed { fill: none; stroke: var(--text-faint); stroke-dasharray: 2 2; }
+
+.flow-life { stroke: var(--border-soft); stroke-width: 1; stroke-dasharray: 3 5; }
+
+/* arrows */
+.flow-line, .flow-step path.flow-line {
+  stroke: var(--flow-idle); stroke-width: 1.6; fill: none;
+  transition: stroke .3s, stroke-width .3s;
+}
+.flow-head { fill: var(--flow-idle); transition: fill .3s; }
+.flow-label { font: 12px var(--sans); fill: var(--flow-text); text-anchor: middle; }
+.flow-count {
+  font: 11px var(--mono); fill: var(--text-faint); text-anchor: middle;
+  font-variant-numeric: tabular-nums;
+}
+
+.flow-step.is-active .flow-line { stroke: var(--flow-active); stroke-width: 2.4; }
+.flow-step.is-active .flow-head { fill: var(--flow-active); }
+.flow-step.is-busy .flow-line { stroke: var(--flow-busy); stroke-width: 2.4; }
+.flow-step.is-busy .flow-head { fill: var(--flow-busy); }
+.flow-step.is-done-ok .flow-line { stroke: var(--flow-done-ok); }
+.flow-step.is-done-ok .flow-head { fill: var(--flow-done-ok); }
+.flow-step.is-partial .flow-line { stroke: var(--flow-partial); }
+.flow-step.is-partial .flow-head { fill: var(--flow-partial); }
+.flow-step.is-failed .flow-line { stroke: var(--flow-failed); stroke-width: 2.2; }
+.flow-step.is-failed .flow-head { fill: var(--flow-failed); }
+.flow-step.is-active .flow-label,
+.flow-step.is-busy .flow-label { fill: var(--text); }
+
+/* The hold. A hop can take three milliseconds; without this it would repaint
+   twice between two frames and you would never see it. The glow ramps up and
+   back down across the same 1.2s the state is held for, so the eye is drawn
+   to it and then let go. */
+.flow-step.is-lit .flow-line { animation: flow-pulse 1.2s ease-in-out; }
+.flow-step.is-lit .flow-head { animation: flow-pulse-head 1.2s ease-in-out; }
+
+@keyframes flow-pulse {
+  0%   { stroke-width: 1.6; filter: none; }
+  35%  { stroke-width: 3.6; filter: drop-shadow(0 0 5px currentColor); }
+  100% { stroke-width: 2.4; filter: none; }
+}
+@keyframes flow-pulse-head {
+  0%   { filter: none; }
+  35%  { filter: drop-shadow(0 0 5px currentColor); }
+  100% { filter: none; }
+}
+.flow-step.is-lit .flow-line, .flow-step.is-lit .flow-head { color: inherit; }
+.flow-step.is-active.is-lit { color: var(--flow-active); }
+.flow-step.is-busy.is-lit { color: var(--flow-busy); }
+.flow-step.is-failed.is-lit { color: var(--flow-failed); }
+
+/* legend */
+.flow-legend { display: flex; flex-wrap: wrap; gap: 14px; margin: 0 0 14px; font-size: 11.5px; color: var(--text-faint); }
+.flow-key { display: inline-flex; align-items: center; gap: 6px; }
+.flow-key i { width: 16px; height: 0; border-top: 2px solid var(--flow-idle); display: inline-block; }
+.flow-key.is-active i { border-top-color: var(--flow-active); }
+.flow-key.is-busy i { border-top-color: var(--flow-busy); }
+.flow-key.is-done-ok i { border-top-color: var(--flow-done-ok); }
+.flow-key.is-partial i { border-top-color: var(--flow-partial); }
+.flow-key.is-failed i { border-top-color: var(--flow-failed); }
+
+.flow-note-done { opacity: .8; }
+
+@media (prefers-reduced-motion: reduce) {
+  /* The colour still changes and the state is still held for its second —
+     only the ramp goes. */
+  .flow-step.is-lit .flow-line, .flow-step.is-lit .flow-head { animation: none; }
+}

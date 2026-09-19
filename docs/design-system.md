@@ -373,6 +373,64 @@ keyboard — `tabindex="0"`, `role="button"`, `aria-expanded`, and Enter/Space
 handled alongside the click. The console does not do this yet; new apps
 should.
 
+### Sequence diagram
+
+The home view of an app that drives a system: participants as boxes across
+the top, lifelines down, one arrow per hop, lighting as its own traffic
+arrives.
+
+**Hand-drawn SVG, not a diagram library.** Two reasons, and the second is
+the deciding one. A CDN breaks the first non-negotiable in this document,
+and a vendored bundle is a megabyte for one picture. More importantly, a
+library that renders from a text description rebuilds its DOM on every
+change — and the whole value here is that *one* arrow animates while the
+rest hold still. You cannot animate an element you replace every second.
+
+**Six states, and they are the vocabulary:**
+
+| State | Means | Colour |
+| --- | --- | --- |
+| idle | nothing has come this way | `--flow-idle`, a dark grey |
+| active | something arrived in the last second | `--up` |
+| busy | a batch is in flight, verdict unknown | `--flow-busy`, the brightest neutral |
+| done | finished, and it was fine | `--flow-done-ok`, a dark green |
+| partial | some of a batch was refused | `--warn` |
+| failed | it broke | `--down` |
+
+Everything at rest is grey **on purpose**: if the resting state carried any
+colour, the one arrow that just moved would compete with eleven that did
+not. Participants get their own, quieter scale — active while their traffic
+moves, `--flow-done` light grey once it has been through.
+
+**A box reports on the participant, an arrow on the hop.** One report stage
+failing on a mail hop does not make the bank unwell. Red on a box means the
+service is unreachable; red on an arrow means that traffic failed. A box
+that means "something that touched this went wrong" is a box people stop
+believing.
+
+**Hold every state for at least a second.** A hop can take three
+milliseconds; without a hold it repaints twice between two frames and is
+never seen. The glow ramps up and back down across the same 1.2s
+(`@keyframes flow-pulse`), so the eye is drawn and then released. Under
+`prefers-reduced-motion` the colour still changes and the hold still
+applies — only the ramp goes.
+
+**The server counts, the browser notices.** The endpoint reports how many
+messages each hop has carried; the view remembers what that number was a
+poll ago. "Something just happened" is a difference between two
+observations, and only the client is in a position to see it. It also means
+the server stays a pure function of what the services say.
+
+**Poll faster, but only while it matters.** The base rate stays the app's
+usual 5s; the diagram runs at 1s *while a run is in flight*. A run takes
+forty seconds, and an arrow lighting four seconds late is not a sequence,
+it is a summary.
+
+**Say what a hop is for.** Each arrow carries a `<title>`: why it exists,
+and the peer's own words for the last thing through it. An arrow that lights
+from background polling rather than from the run says so there, rather than
+implying a story that did not happen.
+
 ### Activity panel
 
 A vendor that is being driven by another system needs somewhere to say what

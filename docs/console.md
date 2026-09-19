@@ -4,8 +4,9 @@
 
 A control panel for the lab — the thing that turns a set of containers and
 a page of `curl` invocations into something you can hand to someone who
-has not read the repo. Views: **Vendors**, **Platform**, **Verification**,
-**Banks**, **Merchants**, **Configuration**.
+has not read the repo. Views: **System in test** (the home page — one run as
+a sequence diagram), **Vendors**, **Platform**, **Verification**, **Banks**,
+**Merchants**, **Configuration**.
 
 ## What it is, and what it deliberately is not
 
@@ -29,6 +30,44 @@ That constraint is the whole design, and it is worth stating plainly:
 It owns exactly one piece of state of its own: the merchant registry, in
 `console-data/registry.json`. That is a plain file you can read, diff and
 delete.
+
+## System in test
+
+The home view, and the one to open first: a **sequence diagram of one
+settlement run**. The platform sits in the middle, the vendors it talks to
+either side, and each hop between them is an arrow that lights as its own
+traffic arrives — the SFTP pull, the payouts into B4B, B4B's bridge into
+Banking Circle, the lifecycle callbacks coming back, the notification
+batches going out.
+
+It is drawn by hand in SVG rather than with a diagram library, for the
+reasons in [design-system.md](design-system.md#sequence-diagram): no CDN is
+allowed here, and a library that re-renders from a text description cannot
+animate one arrow while the others hold still.
+
+**What the colours mean** (they are the design system's, and they are all
+data): grey is *nothing has come this way*, green *is happening now*, the
+brightest neutral *a batch is in flight*, dark green *done and fine*, amber
+*partly refused*, red *broke*. Everything at rest is grey so that the one
+thing that just moved is the one thing you see. A state is held for at
+least a second with a glow that ramps up and back down, because a hop that
+takes three milliseconds is still worth looking at.
+
+Boxes carry the participant's own title, role, health dot and two counters,
+with a `+N` for what this run added. A **red box means that service is
+unreachable** — not that something that touched it went wrong; the arrows
+carry those verdicts.
+
+At the bottom, **Run report** expands into what the run did: files
+collected, stages completed, merchant payouts and the amount settled,
+payouts at the bank, callbacks delivered, notification batches. Fees are
+deliberately absent — they are computed inside the platform's own workers
+and never leave them, and the panel says so rather than inventing a figure.
+
+The data is `GET /api/flow`, which reads the vendors' activity rings and the
+runner's stage chain and puts them in the shape a sequence needs. The server
+counts; the browser remembers what the count was a second ago and lights
+what changed.
 
 ## Vendors, Platform, Verification
 
