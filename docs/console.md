@@ -162,6 +162,20 @@ its runs as an activity panel, and offers two buttons:
 - **Fund safeguarding accounts** — the same top-up `POST /sim/fund-sga` a
   human would curl.
 
+The card also carries the runner's **simulated clock**, because settlement
+only runs on a business day and that makes the calendar a test input rather
+than an obstacle. The note says what day the stack thinks it is, in both
+calendars the platform checks, and whether settlement will run at all. The
+buttons — *Move to Sunday*, *±1 day*, *Nearest business day*, *Real clock* —
+are each one `POST /sim/clock`, and every one of the runner's processes
+picks the change up within a second without restarting.
+
+The scenario worth knowing: move to a Sunday and run, and the balance check
+completes as `NON_BUSINESS_DAY` with **0 payouts**; advance a day and run
+again, and the same money settles — in one measured pair, 6 payouts of
+55,397.56, exactly twice the usual daily figure, because Sunday's movements
+were booked and not paid. A move is refused while a run is in flight.
+
 It is configured with `CONSOLE_URL_LOCAL_RUNNER` (compose points it at
 `host.containers.internal:3109`, since the runner is a host process and this
 console is in a container). `CONSOLE_LOCAL_RUNNER=off` drops the card: the lab

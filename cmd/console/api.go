@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -375,6 +377,50 @@ func (a *app) runnerSettle(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) runnerFundSGA(w http.ResponseWriter, r *http.Request) {
 	a.proxyPost(w, r, a.baseURL("local-runner")+"/sim/fund-sga")
+}
+
+// The runner's clock. Every one of its processes follows one shared offset,
+// so "what happens on a Sunday" is a button rather than a restart — and
+// "…and then on Monday, with the same money" is the button after it.
+func (a *app) runnerClock(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	var out any
+	if err := a.getJSON(ctx, a.client, a.baseURL("local-runner")+"/sim/clock", &out); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, out)
+}
+
+// setRunnerClock forwards the operator's intent verbatim — {"at": …},
+// {"advance": "1d"} or {"mode": …} — because the runner owns what those
+// mean and a console that re-interpreted them would be a second place to
+// keep that correct.
+func (a *app) setRunnerClock(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<10))
+	if err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		a.baseURL("local-runner")+"/sim/clock", bytes.NewReader(body))
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.client.Do(req)
+	if err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	var out any
+	_ = json.NewDecoder(resp.Body).Decode(&out)
+	httputilx.WriteJSON(w, resp.StatusCode, out)
 }
 
 func (a *app) proxyPost(w http.ResponseWriter, r *http.Request, url string) {

@@ -192,6 +192,56 @@ async function load() {
    "subscribed, pointing at the wrong host" both show up downstream as
    silence. The card names the endpoint, the events behind it, and offers a
    probe, so the two can be told apart in one look. */
+/* The simulated clock.
+   Settlement only runs on a business day, so "what happens on a Sunday" is a
+   real test and so is "…and then on Monday, with the same money". Every
+   supervised process follows one shared offset, which is what makes this two
+   buttons rather than a restart of four processes with a different env. */
+function clockPanel(s) {
+  if (s.id !== 'local-runner') return '';
+  const c = state.clock;
+  if (!c) return '';
+  if (c.error) return `<div class="note bad">Clock unavailable — ${esc(c.error)}</div>`;
+
+  const shifted = Math.abs(c.offset_hours) >= 0.05;
+  const when = (c.now || '').replace('T', ' ').slice(0, 16);
+  return `<div class="note${c.business_day ? '' : ' warn'}">
+      Simulated clock <span class="mono">${esc(when)}</span> —
+      ${esc(c.stockholm)} in Stockholm, ${esc(c.london)} in London.
+      ${c.business_day
+        ? 'A business day, so settlement will run.'
+        : '<b>Not a business day</b>: the balance check will skip and settlement will not leave the safeguarding account.'}
+      ${shifted ? ` Shifted ${esc(String(c.offset_hours))}h from the real clock${c.pinned ? ', pinned' : ''}.` : ''}
+    </div>
+    <div class="form">
+      <button class="ghost small" data-action="clock-sunday">Move to Sunday</button>
+      <button class="ghost small" data-action="clock-advance" data-spec="1d">+1 day</button>
+      <button class="ghost small" data-action="clock-advance" data-spec="-1d">−1 day</button>
+      <button class="ghost small" data-action="clock-auto">Nearest business day</button>
+      <button class="ghost small" data-action="clock-real">Real clock</button>
+    </div>`;
+}
+
+/* The next occurrence of a weekday at 11:00 UTC — late enough that every
+   calendar the platform checks is on the same date. */
+function nextWeekday(day) {
+  const d = new Date();
+  d.setUTCHours(11, 0, 0, 0);
+  while (d.getUTCDay() !== day) d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString();
+}
+
+async function moveClock(body) {
+  const r = await api('POST', '/api/runner/clock', body);
+  const a = r.applied || r;
+  toast(
+    a.business_day ? 'Clock moved — a business day' : 'Clock moved — not a business day',
+    `${a.now}\n${a.stockholm} in Stockholm, ${a.london} in London.\n` +
+      (a.business_day ? 'Settlement will run.' : 'The balance check will skip and settlement will not leave the bank.'),
+    a.business_day ? 'good' : ''
+  );
+}
+
 function subscriptionPanel(s) {
   if (s.id !== 'banking-circle') return '';
   const d = state.subs;
@@ -242,6 +292,13 @@ async function loadActivity() {
   // Banking Circle's card carries one more thing: who is subscribed to its
   // notifications. It is fetched on the same condition — the card is open —
   // for the same reason.
+  if (watched.some((s) => s.id === 'local-runner')) {
+    try {
+      state.clock = await api('GET', '/api/runner/clock');
+    } catch (err) {
+      state.clock = { error: err.message };
+    }
+  }
   if (watched.some((s) => s.id === 'banking-circle')) {
     try {
       state.subs = await api('GET', '/api/banking-circle/subscriptions');
@@ -719,6 +776,7 @@ function serviceCard(s) {
         <dt>Swap for the real thing</dt><dd style="font-family:var(--sans)">${esc(s.swap_for)}</dd>
         ${s.docs ? `<dt>Design doc</dt><dd>${esc(s.docs)}</dd>` : ''}
       </dl>
+      ${clockPanel(s)}
       ${subscriptionPanel(s)}
       ${activityPanels(s)}
       ${(s.endpoints || []).length ? `<div class="table-scroll"><table>
@@ -1078,6 +1136,17 @@ const ACTIONS = {
   /* The probe is the vendor's own clienttest, and the answer is whatever the
      endpoint did with it — reported from Banking Circle's notification log
      rather than from the 200 that only means "queued". */
+  /* Each of these is one POST the runner owns the meaning of. The toast
+     reports the day it landed on, because "it worked" is not the answer —
+     "you are now on Sunday, and settlement will skip" is. */
+  'clock-sunday': async () => {
+    const next = nextWeekday(0); // Sunday
+    await moveClock({ at: next, reason: 'non-business-day scenario' });
+  },
+  'clock-advance': async (d) => moveClock({ advance: d.spec }),
+  'clock-auto': async () => moveClock({ mode: 'auto-business-day' }),
+  'clock-real': async () => moveClock({ mode: 'real' }),
+
   'bc-test': async (d) => {
     const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/test`);
     toast(r.delivered ? 'Endpoint took it' : 'Nothing took it', r.result, r.delivered ? 'good' : 'bad');
