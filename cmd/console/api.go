@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/console"
 
@@ -483,4 +484,180 @@ func (a *app) serviceActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputilx.WriteJSON(w, 200, out)
+}
+
+// --- banking circle subscriptions -------------------------------------
+
+// The notification half of Banking Circle is the half that is invisible
+// until it is wrong. A subscription is a URL the bank will POST to, and
+// "nobody subscribed" and "subscribed, pointing at the wrong host" look
+// identical from the settlement side — both produce silence. So the card
+// shows what is registered, for which events, and offers a probe.
+
+type subscriptionEventView struct {
+	Type    string `json:"type"`
+	Active  bool   `json:"active"`
+	Targets int    `json:"targets"`
+}
+
+type subscriptionView struct {
+	ID            string                  `json:"id"`
+	Endpoint      string                  `json:"endpoint"`
+	Active        bool                    `json:"active"`
+	Status        string                  `json:"status"`
+	StatusMessage string                  `json:"status_message,omitempty"`
+	Version       int                     `json:"version"`
+	MaxPerMessage int                     `json:"max_per_message"`
+	MTLS          bool                    `json:"mtls"`
+	Email         string                  `json:"email,omitempty"`
+	Events        []subscriptionEventView `json:"events"`
+	Pending       int                     `json:"pending"`
+}
+
+// bcSubscriptionStatus names the numeric status the API returns. The number
+// is what the vendor sends and the word is what an operator needs; showing
+// "2" would make the card a lookup table.
+func bcSubscriptionStatus(n int) string {
+	switch n {
+	case 1:
+		return "inactive"
+	case 2:
+		return "active"
+	case 4:
+		return "retired"
+	default:
+		return "none"
+	}
+}
+
+func (a *app) bcSubscriptions(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+
+	var listed struct {
+		Result []struct {
+			ID            string `json:"id"`
+			Endpoint      string `json:"endpoint"`
+			IsActive      bool   `json:"isActive"`
+			Status        int    `json:"status"`
+			StatusMessage string `json:"statusMessage"`
+			Version       int    `json:"version"`
+			MTLSEnabled   bool   `json:"mtlsEnabled"`
+			Email         string `json:"email"`
+			MaxPer        int    `json:"maxNotificationsPerMessage"`
+			Events        []struct {
+				EventType string `json:"eventType"`
+				IsActive  bool   `json:"isActive"`
+				Targets   []any  `json:"subscriptionEventTargetDetails"`
+			} `json:"subscriptionEvents"`
+		} `json:"result"`
+	}
+	if err := a.bc.AuthorizedGet(ctx, "/api/v1/notificationselfservice/subscription?PageSize=50", &listed); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+
+	out := make([]subscriptionView, 0, len(listed.Result))
+	for _, s := range listed.Result {
+		v := subscriptionView{
+			ID: s.ID, Endpoint: s.Endpoint, Active: s.IsActive,
+			Status: bcSubscriptionStatus(s.Status), StatusMessage: s.StatusMessage,
+			Version: s.Version, MaxPerMessage: s.MaxPer, MTLS: s.MTLSEnabled, Email: s.Email,
+			Events: []subscriptionEventView{},
+		}
+		for _, e := range s.Events {
+			v.Events = append(v.Events, subscriptionEventView{
+				Type: e.EventType, Active: e.IsActive, Targets: len(e.Targets),
+			})
+		}
+		// A queue that is not draining is the thing you want to know before
+		// you start doubting your own endpoint.
+		var pending struct {
+			Pending int `json:"pending"`
+		}
+		if err := a.bc.AuthorizedGet(ctx, "/sim/subscription/"+url.PathEscape(s.ID)+"/pending", &pending); err == nil {
+			v.Pending = pending.Pending
+		}
+		out = append(out, v)
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"subscriptions": out})
+}
+
+// bcSubscriptionTest fires the vendor's own clienttest and then reports
+// what the endpoint did with it.
+//
+// The POST only says "sent", because delivery is asynchronous — so this
+// waits for the delivery to land in Banking Circle's own notification log
+// and answers with that. "Sent" is not the question anyone is asking; the
+// question is whether anything took it.
+func (a *app) bcSubscriptionTest(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	id := r.PathValue("id")
+
+	before := a.bcNotificationTotal(ctx)
+
+	var sent map[string]any
+	if err := a.bc.AuthorizedPost(ctx,
+		"/api/v1/notificationselfservice/clienttest/"+url.PathEscape(id), &sent); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+
+	// Up to three seconds, which is the retry schedule's first backoff plus
+	// room: past that the answer is "it has not landed yet", which is also
+	// worth saying out loud.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		ev, total := a.bcLatestNotification(ctx)
+		if total <= before || ev == nil {
+			continue
+		}
+		httputilx.WriteJSON(w, 200, map[string]any{
+			"subscription": id,
+			"delivered":    ev.Status == activity.StatusOK,
+			"result":       ev.Summary,
+			"detail":       ev.Detail,
+		})
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"subscription": id,
+		"delivered":    false,
+		"result": "queued, but nothing had been delivered three seconds later — " +
+			"the batch may be waiting for its delivery window, or the endpoint is not answering",
+	})
+}
+
+func (a *app) bcNotificationTotal(ctx context.Context) int64 {
+	_, total := a.bcLatestNotification(ctx)
+	return total
+}
+
+// bcLatestNotification reads the newest entry from Banking Circle's own
+// notification ring — the same one the activity panel and the diagram read,
+// so all three agree about what happened.
+func (a *app) bcLatestNotification(ctx context.Context) (*activity.Event, int64) {
+	var logs struct {
+		Logs []struct {
+			Name   string           `json:"name"`
+			Total  int64            `json:"total"`
+			Events []activity.Event `json:"events"`
+		} `json:"logs"`
+	}
+	if err := a.bc.AuthorizedGet(ctx, "/sim/activity?limit=1", &logs); err != nil {
+		return nil, 0
+	}
+	for _, l := range logs.Logs {
+		if l.Name != "notifications" {
+			continue
+		}
+		if len(l.Events) == 0 {
+			return nil, l.Total
+		}
+		e := l.Events[0]
+		return &e, l.Total
+	}
+	return nil, 0
 }

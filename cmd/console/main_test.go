@@ -513,3 +513,154 @@ func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
 			len(got.Participants), len(got.Steps))
 	}
 }
+
+// --- banking circle subscriptions -------------------------------------
+
+// bcFake is Banking Circle's notification surface, enough of it to drive
+// the card: the token exchange, the subscription list, the queue depth, the
+// clienttest, and the notification ring the result is read back from.
+type bcFake struct {
+	sent          int
+	deliveredWith string // the status the ring reports for the delivery
+}
+
+func (f *bcFake) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/authorizations/authorize"):
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
+		case strings.HasSuffix(r.URL.Path, "/notificationselfservice/subscription"):
+			_, _ = w.Write([]byte(`{"result":[{
+				"id":"sub_1","endpoint":"https://receiver:8443/raw-events","isActive":true,
+				"status":2,"statusMessage":"Subscription successfully created","version":1,
+				"mtlsEnabled":false,"maxNotificationsPerMessage":5,
+				"subscriptionEvents":[
+					{"eventType":"OutgoingPaymentBooked","isActive":true,"subscriptionEventTargetDetails":[]},
+					{"eventType":"MissingFunding","isActive":false,"subscriptionEventTargetDetails":[{"id":"t1"}]}]}]}`))
+		case strings.Contains(r.URL.Path, "/sim/subscription/") && strings.HasSuffix(r.URL.Path, "/pending"):
+			_, _ = w.Write([]byte(`{"pending":3}`))
+		case strings.Contains(r.URL.Path, "/clienttest/"):
+			f.sent++
+			_, _ = w.Write([]byte(`{"status":"sent"}`))
+		case strings.HasPrefix(r.URL.Path, "/sim/activity"):
+			if f.sent == 0 {
+				_, _ = w.Write([]byte(`{"logs":[{"name":"notifications","total":0,"events":[]}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"logs":[{"name":"notifications","total":1,"events":[
+				{"seq":1,"at":"2026-09-19T10:00:00Z","op":"notification","status":"` + f.deliveredWith + `",
+				 "summary":"batch of 1 to https://receiver:8443/raw-events",
+				 "detail":{"http":"200"}}]}]}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+}
+
+// TestSubscriptionsAreNamedNotNumbered. The vendor sends status 2; an
+// operator needs the word. A card that printed the number would be a lookup
+// table, and the point of the card is not having to hold one.
+func TestSubscriptionsAreNamedNotNumbered(t *testing.T) {
+	fake := &bcFake{}
+	srv := fake.server(t)
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.bc.BaseURL = srv.URL
+
+	w := call(t, a, http.MethodGet, "/api/banking-circle/subscriptions", "")
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Subscriptions []subscriptionView `json:"subscriptions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Subscriptions) != 1 {
+		t.Fatalf("got %d subscriptions", len(got.Subscriptions))
+	}
+	s := got.Subscriptions[0]
+	if s.Status != "active" {
+		t.Errorf("status = %q, want the word", s.Status)
+	}
+	if s.Endpoint != "https://receiver:8443/raw-events" {
+		t.Errorf("endpoint = %q", s.Endpoint)
+	}
+	if len(s.Events) != 2 || s.Events[0].Type != "OutgoingPaymentBooked" {
+		t.Errorf("events = %+v — the card is about which events go where", s.Events)
+	}
+	if s.Events[1].Active {
+		t.Error("an inactive event must not be shown as active")
+	}
+	if s.Events[1].Targets != 1 {
+		t.Errorf("targets = %d, want the count that makes an event narrower", s.Events[1].Targets)
+	}
+	if s.Pending != 3 {
+		t.Errorf("pending = %d — a queue that is not draining is the first thing to check", s.Pending)
+	}
+}
+
+// TestProbeReportsWhatTheEndpointDidNotThatItWasSent. The vendor's
+// clienttest answers 200 "sent" whether or not anything took it, and "sent"
+// is not the question being asked.
+func TestProbeReportsWhatTheEndpointDidNotThatItWasSent(t *testing.T) {
+	for _, tc := range []struct {
+		ring      string
+		delivered bool
+	}{
+		{"ok", true},
+		{"bad", false},
+	} {
+		fake := &bcFake{deliveredWith: tc.ring}
+		srv := fake.server(t)
+		a := testApp(t, srv)
+		a.bc.BaseURL = srv.URL
+
+		w := call(t, a, http.MethodPost, "/api/banking-circle/subscriptions/sub_1/test", "")
+		if w.Code != 200 {
+			srv.Close()
+			t.Fatalf("status %d: %s", w.Code, w.Body.String())
+		}
+		var got struct {
+			Delivered bool   `json:"delivered"`
+			Result    string `json:"result"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			srv.Close()
+			t.Fatal(err)
+		}
+		if got.Delivered != tc.delivered {
+			t.Errorf("ring said %q, console reported delivered=%v", tc.ring, got.Delivered)
+		}
+		if !strings.Contains(got.Result, "batch of 1") {
+			t.Errorf("the vendor's own line should be the answer, got %q", got.Result)
+		}
+		if fake.sent != 1 {
+			t.Errorf("clienttest fired %d times, want 1", fake.sent)
+		}
+		srv.Close()
+	}
+}
+
+// TestSubscriptionListIsAnArrayWhenEmpty, because the card decides between
+// "nothing is subscribed" and rows by counting, and null renders neither.
+func TestSubscriptionListIsAnArrayWhenEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/authorizations/authorize") {
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"result":[]}`))
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.bc.BaseURL = srv.URL
+
+	w := call(t, a, http.MethodGet, "/api/banking-circle/subscriptions", "")
+	if !strings.Contains(w.Body.String(), `"subscriptions":[]`) {
+		t.Errorf("empty list marshalled as %s", w.Body.String())
+	}
+}

@@ -170,6 +170,34 @@ than no row at all. When the runner is configured but not running, the card
 shows no buttons — it says what to start instead, because a button that
 cannot work is a worse answer than a sentence.
 
+### Banking Circle: who is subscribed
+
+Expanding the Banking Circle card shows its notification subscriptions
+before its activity panels: the **endpoint** it will POST to, the **event
+types** behind it (an inactive one is amber, and a count appears when the
+event is narrowed to specific targets), the subscription's **status**, and
+the **queue depth** if a batch is not draining.
+
+This is the half of the vendor that is invisible until it is wrong. A
+subscription is a URL the bank calls, and *nobody subscribed* and
+*subscribed, pointing at the wrong host* both look the same from the
+settlement side — silence. A service that subscribes on boot (as
+`apps/banking-circle` does: authenticate, list, subscribe if there is none)
+will have pointed its `BC_*` configuration somewhere else, and the empty
+state says so rather than showing a blank table.
+
+**Send test** fires the vendor's own
+`POST /api/v1/notificationselfservice/clienttest/{id}` — a reachability
+probe, not an event, so it is not filtered by event type or target. The
+vendor answers `200 "sent"` whether or not anything took it, so the console
+then reads Banking Circle's own notification log and reports what the
+endpoint actually did:
+
+```
+Endpoint took it     batch of 1 to https://receiver:8443/raw-events — PaymentStatus
+Nothing took it      … — Post "https://receiver:8443/raw-events": dial tcp: lookup …
+```
+
 ## Banks
 
 Two "sim banks", and they are not the same kind of thing:

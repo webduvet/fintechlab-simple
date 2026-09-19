@@ -226,6 +226,42 @@ func (b *BankingCircleBank) AuthorizedGet(ctx context.Context, path string, out 
 	return getJSON(ctx, b.Client, b.BaseURL+path, http.Header{"Authorization": []string{"Bearer " + tok}}, out)
 }
 
+// AuthorizedPost is AuthorizedGet's counterpart for the endpoints that do
+// something. Same token, same client, so a console action goes through the
+// credentialed path the Banks view already established rather than a
+// second one that would have to learn mTLS all over again.
+func (b *BankingCircleBank) AuthorizedPost(ctx context.Context, path string, out any) error {
+	tok, err := b.bearer(ctx)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := b.Client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// The vendor's own words, not a status code translated into ours.
+		var body struct {
+			Error string `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		if body.Error != "" {
+			return fmt.Errorf("banking-circle POST %s: %s", path, body.Error)
+		}
+		return fmt.Errorf("banking-circle POST %s: HTTP %d", path, resp.StatusCode)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
 func (b *BankingCircleBank) OpenAccount(ctx context.Context, holder, currency, opening string) (BankAccount, error) {
 	return BankAccount{}, fmt.Errorf("%w: banking circle accounts are auto-vivified on first payment", ErrUnsupported)
 }

@@ -186,6 +186,47 @@ async function load() {
   renderView();
 }
 
+/* Who Banking Circle will call, and about what.
+   This is the half of the vendor that is invisible until it is wrong: a
+   subscription is a URL the bank POSTs to, and "nobody subscribed" and
+   "subscribed, pointing at the wrong host" both show up downstream as
+   silence. The card names the endpoint, the events behind it, and offers a
+   probe, so the two can be told apart in one look. */
+function subscriptionPanel(s) {
+  if (s.id !== 'banking-circle') return '';
+  const d = state.subs;
+  if (!d) return '';
+  if (d.error) return `<div class="note bad">Subscriptions unavailable — ${esc(d.error)}</div>`;
+
+  const subs = d.subscriptions || [];
+  if (!subs.length) {
+    return `<div class="note warn">Nothing is subscribed, so every notification this
+      vendor produces goes nowhere. A service that subscribes on boot — as
+      <span class="mono">apps/banking-circle</span> does — will have pointed its
+      <span class="mono">BC_*</span> configuration at another host.</div>`;
+  }
+
+  const rows = subs.map((sub) => {
+    const events = (sub.events || []).map((e) =>
+      `<span class="pill ${e.active ? '' : 'warn'}">${esc(e.type)}${e.targets ? ` ·&nbsp;${e.targets}` : ''}</span>`
+    ).join(' ') || '<span class="pill warn">no events</span>';
+    return `<tr>
+      <td class="mono">${esc(sub.endpoint)}</td>
+      <td>${events}</td>
+      <td><span class="pill ${sub.status === 'active' ? 'ok' : 'warn'}">${esc(sub.status)}</span></td>
+      <td class="num">${sub.pending ? `<span class="pill warn">${sub.pending} queued</span>` : '—'}</td>
+      <td><button class="ghost small" data-action="bc-test" data-id="${esc(sub.id)}">Send test</button></td>
+    </tr>`;
+  }).join('');
+
+  return `<div class="note">Banking Circle POSTs to these, encrypted per subscription, in
+      batches of up to ${esc(String(subs[0].max_per_message || 5))}.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Endpoint</th><th>Events</th><th>Status</th><th class="num">Queue</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+}
+
 /* A service's recent history is fetched only while its card is open. Every
    vendor polling its own log every five seconds would be a lot of traffic
    to show nobody, and the panel is the thing that says you are watching. */
@@ -197,6 +238,16 @@ async function loadActivity() {
   );
   for (const id of Object.keys(state.activity)) {
     if (!watched.some((s) => s.id === id)) delete state.activity[id];
+  }
+  // Banking Circle's card carries one more thing: who is subscribed to its
+  // notifications. It is fetched on the same condition — the card is open —
+  // for the same reason.
+  if (watched.some((s) => s.id === 'banking-circle')) {
+    try {
+      state.subs = await api('GET', '/api/banking-circle/subscriptions');
+    } catch (err) {
+      state.subs = { error: err.message };
+    }
   }
   await Promise.all(watched.map(async (s) => {
     try {
@@ -668,6 +719,7 @@ function serviceCard(s) {
         <dt>Swap for the real thing</dt><dd style="font-family:var(--sans)">${esc(s.swap_for)}</dd>
         ${s.docs ? `<dt>Design doc</dt><dd>${esc(s.docs)}</dd>` : ''}
       </dl>
+      ${subscriptionPanel(s)}
       ${activityPanels(s)}
       ${(s.endpoints || []).length ? `<div class="table-scroll"><table>
         <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
@@ -1021,6 +1073,14 @@ const ACTIONS = {
   'runner-settle': async () => {
     const r = await api('POST', '/api/actions/runner-settle');
     toast('Settlement run started', `${r.run}\nWatch the panels below — this takes about a minute.`, 'good');
+  },
+
+  /* The probe is the vendor's own clienttest, and the answer is whatever the
+     endpoint did with it — reported from Banking Circle's notification log
+     rather than from the 200 that only means "queued". */
+  'bc-test': async (d) => {
+    const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/test`);
+    toast(r.delivered ? 'Endpoint took it' : 'Nothing took it', r.result, r.delivered ? 'good' : 'bad');
   },
 
   'runner-fund-sga': async () => {
