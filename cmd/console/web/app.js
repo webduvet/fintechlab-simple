@@ -5,17 +5,32 @@
    the active view wholesale on every change. */
 
 const state = {
-  view: 'services',
+  view: 'vendors',
   open: new Set(),      // "view:id" of expanded cards, so a poll does not collapse them
   data: {},
   activity: {},         // service id -> {logs} | {error}, fetched only while a card is open
   timer: null,
 };
 
+/* One view per kind, rather than one page listing every service under three
+   headings. The headings were doing the work of navigation while the nav
+   item was still called "Standalone" — a leftover from an architecture this
+   tree no longer has. */
 const VIEWS = {
-  services: {
-    title: 'Standalone',
-    sub: 'Process catalogue: deep protocol standalones (cmd/*). Prefer Pods for the composable mocked-vendor model — each vendor twin is a recipe of kernels.',
+  vendors: {
+    title: 'Vendors',
+    sub: 'The third parties this lab simulates. These are the deliverable: point your code at one and it should not notice the difference.',
+    kind: 'vendor',
+  },
+  platform: {
+    title: 'Platform',
+    sub: 'Your own stack — the local runner that actually runs the settle path, and the stand-ins that exist so a hop can be proved connected.',
+    kind: 'platform',
+  },
+  verification: {
+    title: 'Verification',
+    sub: 'The checks a merchant passes before any money exists. Every one answers positively by default, and every outcome can be flipped.',
+    kind: 'verification',
   },
   banks: {
     title: 'Banks',
@@ -139,9 +154,11 @@ function fieldsIn(scope) {
 
 /* --- data -------------------------------------------------------------- */
 
+function isServiceView(view = state.view) { return !!(VIEWS[view] && VIEWS[view].kind); }
+
 async function load() {
   try {
-    if (state.view === 'services') {
+    if (isServiceView()) {
       state.data.overview = await api('GET', '/api/overview');
       await loadActivity();
     }
@@ -150,7 +167,9 @@ async function load() {
     if (state.view === 'config') state.data.config = await api('GET', '/api/config');
     // The services badge is wanted on every view, so it is refreshed even
     // when the Services view is not the one on screen.
-    if (state.view !== 'services') state.data.overview = await api('GET', '/api/overview');
+    // The badges are wanted on every view, so the overview is refreshed even
+    // when the view on screen is not a service list.
+    if (!isServiceView()) state.data.overview = await api('GET', '/api/overview');
     state.error = null;
   } catch (err) {
     state.error = err.message;
@@ -165,7 +184,9 @@ async function load() {
 async function loadActivity() {
   const ov = state.data.overview;
   if (!ov) return;
-  const watched = ov.services.filter((s) => s.activity_path && isOpen(s.id));
+  const watched = ov.services.filter(
+    (s) => s.activity_path && s.kind === VIEWS[state.view].kind && isOpen(s.id)
+  );
   for (const id of Object.keys(state.activity)) {
     if (!watched.some((s) => s.id === id)) delete state.activity[id];
   }
@@ -268,9 +289,17 @@ function clock(iso) {
 function renderBadges() {
   const ov = state.data.overview;
   if (ov) {
-    const up = ov.counts.up || 0;
-    const total = ov.services.filter((s) => s.health_path).length;
-    $('#badge-services').textContent = `${up}/${total}`;
+    // Per section, because the whole-lab number stopped being answerable
+    // from one screen the moment the list was split. Only services with a
+    // health endpoint are counted: a CA script that cannot be probed is not
+    // a service that is down.
+    for (const [view, meta] of Object.entries(VIEWS)) {
+      if (!meta.kind) continue;
+      const group = ov.services.filter((s) => s.kind === meta.kind && s.health_path);
+      const up = group.filter((s) => (s.status || {}).state === 'up').length;
+      const el = $(`#badge-${view}`);
+      if (el) el.textContent = group.length ? `${up}/${group.length}` : '';
+    }
   }
   const pods = state.data.pods;
   // "2/4" — running out of declared. A pod that is not running still has a
@@ -284,32 +313,38 @@ function renderBadges() {
 
 /* --- services ---------------------------------------------------------- */
 
-const KIND_LABEL = {
-  vendor: ['Vendor simulations', 'the deliverable — point these at a real host and your code should not notice'],
-  platform: ['Platform scaffolding', 'a stand-in for your own stack, kept so a hop can be proved connected'],
-  supporting: ['Supporting', 'PKI and stubs'],
-};
+/* Some cards earn the top of their list. The local runner is the thing
+   being tested and the thing with the buttons; below it the stand-ins are
+   reference material. */
+const FIRST = { platform: 'local-runner' };
 
 function renderServices() {
   const ov = state.data.overview;
   if (!ov) return `<div class="empty">${esc(state.error || 'Loading…')}</div>`;
+  const kind = VIEWS[state.view].kind;
+  const group = ov.services.filter((s) => s.kind === kind);
 
-  const c = ov.counts;
+  // Three tiles for this section, one for the lab. Splitting the list took
+  // away the screen that answered "is everything up?", and that answer is
+  // worth keeping somewhere you always are.
+  const state_ = (s) => (s.status || {}).state;
+  const probed = group.filter((s) => s.health_path);
+  const labUp = ov.counts.up || 0;
+  const labProbed = ov.services.filter((s) => s.health_path).length;
   let html = `<div class="stats">
-    <div class="stat up"><b>${c.up || 0}</b><span>up</span></div>
-    <div class="stat down"><b>${c.down || 0}</b><span>down</span></div>
-    <div class="stat"><b>${(c.unknown || 0) + (c['not-probed'] || 0)}</b><span>not reporting</span></div>
-    <div class="stat accent"><b>${ov.services.filter((s) => s.kind === 'vendor').length}</b><span>vendor sims</span></div>
+    <div class="stat up"><b>${probed.filter((s) => state_(s) === 'up').length}</b><span>up</span></div>
+    <div class="stat down"><b>${probed.filter((s) => state_(s) === 'down').length}</b><span>down</span></div>
+    <div class="stat"><b>${probed.filter((s) => state_(s) !== 'up' && state_(s) !== 'down').length}</b><span>not reporting</span></div>
+    <div class="stat accent"><b>${labUp}/${labProbed}</b><span>whole lab</span></div>
   </div>`;
 
-  for (const kind of ['vendor', 'platform', 'supporting']) {
-    const group = ov.services.filter((s) => s.kind === kind);
-    if (!group.length) continue;
-    const [title, note] = KIND_LABEL[kind];
-    html += `<div class="section-title">${esc(title)} <small>${esc(note)}</small></div>`;
-    html += group.map(serviceCard).join('');
-  }
-  return html;
+  if (!group.length) return html + `<div class="empty">Nothing in this section yet.</div>`;
+
+  const first = FIRST[state.view];
+  const ordered = first
+    ? [...group.filter((s) => s.id === first), ...group.filter((s) => s.id !== first)]
+    : group;
+  return html + ordered.map(serviceCard).join('');
 }
 
 function serviceCard(s) {
@@ -321,7 +356,7 @@ function serviceCard(s) {
   let body = '';
   if (open) {
     body = `<div class="card-body">
-      <div class="note">${esc(s.summary)}${s.pod_recipe ? `<div class="card-meta" style="margin-top:0.5rem"><span class="pill">pod twin</span> <a href="#" data-view-pods="${esc(s.pod_recipe)}">recipes/${esc(s.pod_recipe)}</a> — composable kernel bundle</div>` : ''}</div>
+      <div class="note">${esc(s.summary)}</div>
       <dl class="kv">
         <dt>Reached at</dt><dd>${esc(s.base_url)}${s.health_path ? esc(s.health_path) : ''}</dd>
         <dt>Ports</dt><dd>${esc((s.ports || []).join('  '))}</dd>
@@ -353,7 +388,7 @@ function serviceCard(s) {
       <i class="dot ${esc(st.state || 'unknown')}"></i>
       <div class="card-title">
         <span class="name">${esc(s.name)} <span class="pill ${esc(s.kind)}">${esc(s.kind)}</span></span>
-        <span class="desc">${esc(s.summary)}${s.pod_recipe ? `<div class="card-meta" style="margin-top:0.5rem"><span class="pill">pod twin</span> <a href="#" data-view-pods="${esc(s.pod_recipe)}">recipes/${esc(s.pod_recipe)}</a> — composable kernel bundle</div>` : ''}</span>
+        <span class="desc">${esc(s.summary)}</span>
       </div>
       <div class="card-meta">${spark(st.history)}<span>${esc(latency)}</span></div>
     </div>
@@ -852,7 +887,7 @@ function renderView() {
     : `<button class="ghost small" data-action="refresh">Refresh</button>`;
 
   const html =
-    state.view === 'services' ? renderServices() :
+    isServiceView() ? renderServices() :
     state.view === 'banks' ? renderBanks() :
     state.view === 'merchants' ? renderMerchants() :
     renderConfig();
@@ -907,7 +942,10 @@ function init() {
   document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeModal(); });
 
   const hash = location.hash.replace('#', '');
-  setView(VIEWS[hash] ? hash : 'services');
+  // #services was the old single list; a bookmark to it should still land
+  // somewhere sensible rather than on an empty view.
+  const landing = hash === 'services' ? 'vendors' : hash;
+  setView(VIEWS[landing] ? landing : 'vendors');
 
   // Poll, so a service coming up or going down shows without a reload.
   // Paused while a modal is open or a field has focus: re-rendering

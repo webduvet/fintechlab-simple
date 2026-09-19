@@ -203,7 +203,9 @@ button:disabled { opacity: .5; cursor: not-allowed; filter: none; }
 }
 .pill.vendor { color: var(--accent-hi); border-color: var(--accent-line); background: var(--accent-ghost); }
 .pill.platform { color: var(--text-dim); }
-.pill.supporting { color: var(--text-faint); }
+/* A new classification is a grey: purple is the identity and the status
+   colours are data. */
+.pill.verification { color: var(--text-faint); }
 .pill.ok { color: var(--up); border-color: color-mix(in srgb, var(--up) 35%, transparent); }
 .pill.bad { color: var(--down); border-color: color-mix(in srgb, var(--down) 35%, transparent); }
 .pill.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }

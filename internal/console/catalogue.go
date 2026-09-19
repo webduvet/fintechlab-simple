@@ -21,9 +21,13 @@ import (
 type Kind string
 
 const (
-	KindVendor     Kind = "vendor"
-	KindPlatform   Kind = "platform"
-	KindSupporting Kind = "supporting"
+	KindVendor   Kind = "vendor"
+	KindPlatform Kind = "platform"
+	// KindVerification is its own kind rather than a vendor because of what
+	// an operator does with these: every other vendor is driven by the
+	// money path, while these are the checks that gate a merchant before
+	// any money exists, and they are the ones you go and flip an outcome on.
+	KindVerification Kind = "verification"
 )
 
 // Endpoint is one route worth showing a human. Not exhaustive -- the
@@ -52,7 +56,6 @@ type Service struct {
 	Auth       string   `json:"auth"`
 	SwapFor    string   `json:"swap_for"`
 	Docs       string   `json:"docs,omitempty"`
-	PodRecipe  string   `json:"pod_recipe,omitempty"` // recipes/<dir> composable twin, if any
 	// Activity names the service's recent-history endpoint, when it keeps
 	// one. Empty means the console draws no activity panel for it — which
 	// is the honest rendering: "this service is not telling us" rather than
@@ -89,7 +92,6 @@ func DefaultCatalogue() *Catalogue {
 	svcs := []Service{
 		{
 			ID: "worldline", Name: "Worldline", Kind: KindVendor,
-			PodRecipe:  "acquirer-edge",
 			Summary:    "The acquirer. Holds acquired card transactions per submerchant (MID), cuts the daily Bambora settlement file in two slots, publishes it PGP-encrypted over real SSH/SFTP, and wires the lump sum to the safeguarding account.",
 			BaseURL:    "http://127.0.0.1:8084",
 			HealthPath: "/health",
@@ -109,7 +111,6 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "b4b", Name: "B4B Payments", Kind: KindVendor,
-			PodRecipe:  "b4b-oversight",
 			Summary:    "Oversight API, both halves: boarding a company (people, documents, the create-once extended profile, vIBANs) and paying it (beneficiary registration with pass/review/fail sanctions, the gates, the payout lifecycle and its callbacks, and the bridge into Banking Circle once approved).",
 			BaseURL:    "http://127.0.0.1:8086",
 			HealthPath: "/health",
@@ -140,7 +141,6 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "banking-circle", Name: "Banking Circle", Kind: KindVendor,
-			PodRecipe:  "bank-rails",
 			Summary:    "Connect API: the safeguarding-account ledger, the full notification self-service surface (subscriptions, If-Match, per-subscription keys, batching, event targets) and the eleven-step retry schedule ending in auto-deactivation.",
 			BaseURL:    "https://127.0.0.1:8085",
 			HealthPath: "/health",
@@ -161,7 +161,6 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "aci", Name: "ACI", Kind: KindVendor,
-			PodRecipe:  "gateway-facade",
 			Summary:    "Online card-payment gateway. A sender, not a callee: it emits an AES-256-GCM encrypted webhook that stands in for \"a card payment just happened\".",
 			BaseURL:    "http://127.0.0.1:8087",
 			HealthPath: "/health",
@@ -175,7 +174,7 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "verify", Name: "Merchant verification", Kind: KindSupporting,
+			ID: "verify", Name: "AML decision", Kind: KindVerification,
 			Summary:    "Stub verification/compliance service gating a payout. Always approves unless an id is force-declined.",
 			BaseURL:    "http://127.0.0.1:8088",
 			HealthPath: "/api/v1/verification/health",
@@ -186,6 +185,27 @@ func DefaultCatalogue() *Catalogue {
 			Endpoints: []Endpoint{
 				{"POST", "/api/v1/verification/verify/aml-decision", "trigger"},
 				{"GET", "/api/v1/verification/verify/data/verify-decision/{id}", "read the decision"},
+			},
+		},
+		{
+			ID: "verification", Name: "Verification vendors", Kind: KindVerification,
+			Summary:    "The four checks the platform runs before a merchant may trade, behind one address: Creditsafe bank verification, iban.com, KYC6 screening and LexisNexis identity. Each answers positively by default and each outcome can be flipped, so the unhappy paths are reachable without a real vendor account.",
+			BaseURL:    "http://127.0.0.1:8089",
+			HealthPath: "/health",
+			Ports:      []string{"8089/http"},
+			Transport:  "HTTP",
+			Auth:       "per vendor: bearer (Creditsafe, LexisNexis) or api key (iban.com, KYC6)",
+			SwapFor:    "Point CREDITSAFE_URL, IBAN_API_URL, KYC6_URL and LEXISNEXIS_URL at the real vendors.",
+			Endpoints: []Endpoint{
+				{"POST", "/creditsafe/authenticate", "Creditsafe: username/password -> token"},
+				{"POST", "/creditsafe/localSolutions/GB/bankVerification/search", "UK bank account + name match"},
+				{"POST", "/iban/verify", "iban.com: IBAN validity and name match"},
+				{"POST", "/kyc6/individuals", "KYC6: sanctions/PEP screening"},
+				{"POST", "/kyc6/businesses", "KYC6: business screening"},
+				{"POST", "/lexisnexis/oauth/token", "LexisNexis: OAuth"},
+				{"POST", "/lexisnexis/idu/api/attribute-query", "identity assessment"},
+				{"GET", "/sim/outcome", "what each check currently answers"},
+				{"POST", "/sim/outcome", "lab-only: flip one check to a failure"},
 			},
 		},
 		{

@@ -20,7 +20,9 @@ the harness can prove each vendor hop is really connected.**
 | **settlement** | scaffolding | replacing it with your own platform |
 | **receiver** | scaffolding | pointing the vendors' webhook URLs at your own listener |
 | **bank**, **payment-api**, **notifier** | scaffolding | — generic shapes, not vendor-specific |
-| **ca**, **verify** | supporting | a real PKI; a real verification vendor |
+| **verify**, **verification** | verification | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
+| **local-runner** | platform | nothing — it *is* the platform, run locally (see [console.md](console.md)) |
+| **ca** | supporting | a real PKI |
 | **console** | control panel | — it is a client of the others; see [console.md](console.md) |
 
 The scaffolding is deliberately kept, and deliberately not grown. It is

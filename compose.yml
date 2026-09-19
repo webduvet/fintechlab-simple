@@ -442,6 +442,7 @@ services:
       CONSOLE_URL_BANKING_CIRCLE: https://banking-circle:8085
       CONSOLE_URL_ACI: http://aci:8087
       CONSOLE_URL_VERIFY: http://verify:8088
+      CONSOLE_URL_VERIFICATION: http://verification:8089
       CONSOLE_URL_SETTLEMENT: http://settlement:8083
       CONSOLE_URL_RECEIVER: https://receiver:8443
       CONSOLE_URL_PAYMENT_API: http://payment-api:8080

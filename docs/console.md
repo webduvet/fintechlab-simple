@@ -4,8 +4,8 @@
 
 A control panel for the lab — the thing that turns a set of containers and
 a page of `curl` invocations into something you can hand to someone who
-has not read the repo. Views: **Pods** (composable mocked vendors), **Standalone** (deep
-protocol `cmd/*` processes), **Banks**, **Merchants**, **Configuration**.
+has not read the repo. Views: **Vendors**, **Platform**, **Verification**,
+**Banks**, **Merchants**, **Configuration**.
 
 ## What it is, and what it deliberately is not
 
@@ -30,21 +30,27 @@ It owns exactly one piece of state of its own: the merchant registry, in
 `console-data/registry.json`. That is a plain file you can read, diff and
 delete.
 
-## Pods
+## Vendors, Platform, Verification
 
-The preferred model for mocked vendors: each pod is a recipe of
+Three views over the same catalogue, one per kind — the distinction
+[catalogue.md](catalogue.md#which-half-is-which) draws, promoted from
+headings on one page to the navigation itself. They used to be three
+sections under a nav item called *Standalone*, a name left over from an
+architecture this tree no longer has.
 
-Kernels that declare `inputs:` on their recipe grow a form in their panel
-(the ui-plane). File fields POST to the pod's public
-`/pod/input/{kernel}/{name}?filename=` route; the console is only a client.
+- **Vendors** — the third parties the lab simulates. The deliverable.
+- **Platform** — your own stack: the local runner that actually runs the
+  settle path, listed first because it is the thing under test, then the
+  stand-ins that exist so a hop can be proved connected.
+- **Verification** — the checks a merchant passes before any money exists.
+  Their own view rather than filed under vendors, because they are what an
+  operator goes and flips an outcome on.
 
-## Standalone (formerly Services)
-
-Every deep-protocol process the lab still runs, grouped by which half it belongs to — vendor
-simulations first, because they are the deliverable, then the platform
-scaffolding, then supporting pieces. The grouping is the same distinction
-[catalogue.md](catalogue.md#which-half-is-which) draws, and the console is
-where most people will meet it.
+Each view carries four tiles: up, down and not reporting **for that
+section**, and the whole lab's `up/total` in accent. Splitting the list took
+away the one screen that answered *is everything up?*, and that answer is
+worth keeping somewhere you always are. The nav badges carry the same
+per-section count.
 
 Each row carries a live health state, the last two minutes of probe
 outcomes as a sparkline, and the round-trip latency. Expanding one shows

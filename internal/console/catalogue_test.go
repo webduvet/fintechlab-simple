@@ -99,3 +99,33 @@ func TestLocalRunnerIsReachableByEnv(t *testing.T) {
 		t.Error("the runner keeps a log of its runs; the card must declare it")
 	}
 }
+
+// TestEveryServiceHasAViewToLiveIn. The console renders one view per kind;
+// a service whose kind matches none of them is in the catalogue, probed,
+// counted in no badge and rendered on no page — invisible in exactly the
+// way a catalogue exists to prevent.
+func TestEveryServiceHasAViewToLiveIn(t *testing.T) {
+	views := map[Kind]bool{KindVendor: true, KindPlatform: true, KindVerification: true}
+	for _, s := range DefaultCatalogue().Services {
+		if !views[s.Kind] {
+			t.Errorf("%s has kind %q, which no view renders", s.ID, s.Kind)
+		}
+	}
+}
+
+// TestBothVerificationServicesAreListed: the four-vendor mock (Creditsafe,
+// iban.com, KYC6, LexisNexis) was running on 8089 and missing from the
+// catalogue entirely, so the console showed one verification card for two
+// services and nobody could tell.
+func TestBothVerificationServicesAreListed(t *testing.T) {
+	cat := DefaultCatalogue()
+	for _, id := range []string{"verify", "verification"} {
+		s, ok := cat.Get(id)
+		if !ok {
+			t.Fatalf("%s is not in the catalogue", id)
+		}
+		if s.Kind != KindVerification {
+			t.Errorf("%s has kind %q, want %q", id, s.Kind, KindVerification)
+		}
+	}
+}
