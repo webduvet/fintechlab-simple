@@ -447,13 +447,16 @@ function flowDelta(id, count) {
 
 /* --- the drawing ------------------------------------------------------- */
 
-const FLOW_W = 1120;
-const FLOW_PAD = 110;        // half a box, so the outer lifelines sit inside
-const FLOW_BOX_W = 196;
-const FLOW_BOX_H = 92;
-const FLOW_TOP = 14;
-const FLOW_ROW = 64;
-const FLOW_FIRST_ROW = 152;
+/* The canvas is measured in CSS pixels and rendered at 1:1 (see app.css):
+   an SVG stretched to the viewport magnifies its own text, which is how a
+   diagram ends up shouting over the prose around it. */
+const FLOW_W = 1000;
+const FLOW_PAD = 96;         // half a box, so the outer lifelines sit inside
+const FLOW_BOX_W = 178;
+const FLOW_BOX_H = 78;
+const FLOW_TOP = 10;
+const FLOW_ROW = 52;
+const FLOW_FIRST_ROW = 124;
 
 function flowColumns(participants) {
   const span = FLOW_W - FLOW_PAD * 2;
@@ -467,13 +470,18 @@ function flowBox(p, x, klass, deltas) {
   const left = x - FLOW_BOX_W / 2;
   const stats = (p.stats || []).map((st, i) => {
     const d = deltas[i] ? ` <tspan class="flow-delta">${esc(deltas[i])}</tspan>` : '';
-    return `<text class="flow-stat" x="${left + 12}" y="${FLOW_TOP + 56 + i * 15}">${esc(st.label)}: <tspan class="flow-stat-v">${esc(st.value)}</tspan>${d}</text>`;
+    return `<text class="flow-stat" x="${left + 10}" y="${FLOW_TOP + 48 + i * 13}">${esc(st.label)}: <tspan class="flow-stat-v">${esc(st.value)}</tspan>${d}</text>`;
   }).join('');
+  // The catalogue's full name is the one to keep in the tooltip; the box
+  // gets what fits in it, because a title clipped by the viewBox reads as a
+  // rendering bug rather than as a long name.
+  const short = String(p.label || '').replace(/\s*\(.*\)\s*$/, '');
   return `<g class="flow-box ${klass}">
-    <rect x="${left}" y="${FLOW_TOP}" width="${FLOW_BOX_W}" height="${FLOW_BOX_H}" rx="10"></rect>
-    <text class="flow-title" x="${left + 12}" y="${FLOW_TOP + 22}">${esc(p.label)}</text>
-    <text class="flow-role" x="${left + 12}" y="${FLOW_TOP + 38}">${esc(p.role || '')}</text>
-    <circle class="flow-health ${esc(p.status || 'unknown')}" cx="${left + FLOW_BOX_W - 14}" cy="${FLOW_TOP + 17}" r="4"></circle>
+    <title>${esc(p.label)}${p.error ? ' — ' + esc(p.error) : ''}</title>
+    <rect x="${left}" y="${FLOW_TOP}" width="${FLOW_BOX_W}" height="${FLOW_BOX_H}" rx="9"></rect>
+    <text class="flow-title" x="${left + 10}" y="${FLOW_TOP + 19}">${esc(short)}</text>
+    <text class="flow-role" x="${left + 10}" y="${FLOW_TOP + 33}">${esc(p.role || '')}</text>
+    <circle class="flow-health ${esc(p.status || 'unknown')}" cx="${left + FLOW_BOX_W - 12}" cy="${FLOW_TOP + 15}" r="3.5"></circle>
     ${stats}
   </g>`;
 }
@@ -488,21 +496,23 @@ function flowTip(s) {
 function flowArrow(s, at, y) {
   const klass = flowStepClass(s);
   const delta = flowDelta(s.id, s.count);
+  // "256" from a 256-event window is not a count, it is the window. Say so.
+  const n = s.capped ? `${s.count}+` : `${s.count}`;
   const badge = s.count
-    ? `${s.count}${delta ? ' (' + delta + ')' : ''}${s.failed ? ' · ' + s.failed + ' failed' : ''}`
+    ? `${n}${delta ? ' (' + delta + ')' : ''}${s.failed ? ' · ' + s.failed + ' failed' : ''}`
     : '';
 
   if (s.from === s.to) {
     // A self-call: a small loop off the lifeline, because a hop that never
     // leaves the platform is still a step in the sequence.
     const x = at[s.from];
-    const w = 58;
+    const w = 48;
     return `<g class="flow-step ${klass}" data-step="${esc(s.id)}">
       ${flowTip(s)}
-      <path class="flow-line" d="M ${x} ${y - 10} h ${w} v 20 h ${-w}"></path>
-      <polygon class="flow-head" points="${x},${y + 10} ${x + 9},${y + 6} ${x + 9},${y + 14}"></polygon>
-      <text class="flow-label" text-anchor="start" x="${x + w + 10}" y="${y - 2}">${esc(s.label)}</text>
-      ${badge ? `<text class="flow-count" text-anchor="start" x="${x + w + 10}" y="${y + 14}">${esc(badge)}</text>` : ''}
+      <path class="flow-line" d="M ${x} ${y - 8} h ${w} v 16 h ${-w}"></path>
+      <polygon class="flow-head" points="${x},${y + 8} ${x + 8},${y + 4.5} ${x + 8},${y + 11.5}"></polygon>
+      <text class="flow-label at-start" x="${x + w + 10}" y="${y - 1}">${esc(s.label)}</text>
+      ${badge ? `<text class="flow-count at-start" x="${x + w + 10}" y="${y + 13}">${esc(badge)}</text>` : ''}
     </g>`;
   }
 
@@ -515,8 +525,8 @@ function flowArrow(s, at, y) {
     ${flowTip(s)}
     <line class="flow-line" x1="${x1}" y1="${y}" x2="${tipX}" y2="${y}"></line>
     <polygon class="flow-head" points="${x2},${y} ${tipX},${y - 5} ${tipX},${y + 5}"></polygon>
-    <text class="flow-label" x="${mid}" y="${y - 9}">${esc(s.label)}</text>
-    ${badge ? `<text class="flow-count" x="${mid}" y="${y + 17}">${esc(badge)}</text>` : ''}
+    <text class="flow-label" x="${mid}" y="${y - 7}">${esc(s.label)}</text>
+    ${badge ? `<text class="flow-count" x="${mid}" y="${y + 14}">${esc(badge)}</text>` : ''}
   </g>`;
 }
 

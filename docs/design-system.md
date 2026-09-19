@@ -431,6 +431,25 @@ and the peer's own words for the last thing through it. An arrow that lights
 from background polling rather than from the run says so there, rather than
 implying a story that did not happen.
 
+**Render at 1:1 and never magnify.** An SVG at `width: 100%` scales its own
+text with the viewport: on a wide screen the labels come out half again the
+size of the prose beside them and the page reads as two documents. Cap it at
+its natural width (`max-width`), let it shrink below that, and give the
+wrapper `overflow-x: auto`.
+
+**Annotations are annotations.** Everything inside the diagram sits *below*
+the body size: 12px participant titles, 11px arrow labels, 10px stats, 9.5px
+counts, 9px roles. If a label needs to be as loud as the prose, it is not a
+label.
+
+**A count off a bounded window is a floor, not a total.** Print `256+`, never
+`256`, or the diagram is reporting the size of its own buffer as traffic.
+
+One trap: **CSS `text-anchor` beats the `text-anchor` attribute.** A
+self-call's label set to `text-anchor="start"` inline will still be centred
+by a `.label { text-anchor: middle }` rule — and it lands on top of the loop
+it is labelling. Use a class.
+
 ### Activity panel
 
 A vendor that is being driven by another system needs somewhere to say what

@@ -59,8 +59,12 @@ type flowStep struct {
 	// payouts, thirty callbacks — which the diagram colours differently
 	// because "some of them worked" is a real answer for those and not for
 	// the others.
-	Multi       bool   `json:"multi"`
-	Count       int    `json:"count"`
+	Multi bool `json:"multi"`
+	Count int  `json:"count"`
+	// Capped says the window was full, so Count is a floor rather than a
+	// total. A diagram that prints "256" off a 256-event buffer is printing
+	// the size of its own window and calling it traffic.
+	Capped      bool   `json:"capped,omitempty"`
 	Failed      int    `json:"failed"`
 	Refused     int    `json:"refused"`
 	LastAt      string `json:"last_at,omitempty"`
@@ -292,6 +296,7 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any) []flowStep {
 		s := flowStep{
 			ID: id, From: from, To: to, Label: label, Note: note,
 			Multi: multi, Count: len(evs), Source: source,
+			Capped: len(evs) >= flowWindow,
 		}
 		for _, e := range evs {
 			switch e.Status {

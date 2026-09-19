@@ -536,8 +536,16 @@ input:focus, select:focus, textarea:focus {
   --flow-busy: #2a2340;      /* the brightest neutral here is the darkest ink */
 }
 
-.flow-wrap { overflow-x: auto; margin: 6px 0 12px; }
-.flow { width: 100%; min-width: 760px; height: auto; display: block; }
+/* Rendered at 1:1, never magnified. An SVG set to width:100% scales its own
+   text with the viewport, so on a wide screen the diagram's labels end up
+   half again the size of the prose beside them and the page reads as two
+   different documents. Capped at its natural width, it shrinks on a narrow
+   screen and holds still on a wide one. */
+.flow-wrap { overflow-x: auto; margin: 4px 0 14px; }
+.flow {
+  width: 100%; max-width: 1000px; min-width: 640px;
+  height: auto; display: block;
+}
 
 /* participants */
 .flow-box rect {
@@ -548,9 +556,9 @@ input:focus, select:focus, textarea:focus {
 .flow-box.is-done rect { stroke: var(--flow-done); }
 .flow-box.is-failed rect { stroke: var(--flow-failed); fill: color-mix(in srgb, var(--down) 9%, var(--panel)); }
 
-.flow-title { font: 600 13px var(--sans); fill: var(--text); }
-.flow-role { font: 10.5px var(--sans); fill: var(--text-faint); letter-spacing: .04em; text-transform: uppercase; }
-.flow-stat { font: 11px var(--sans); fill: var(--text-faint); }
+.flow-title { font: 600 12px var(--sans); fill: var(--text); }
+.flow-role { font: 9px var(--sans); fill: var(--text-faint); letter-spacing: .05em; text-transform: uppercase; }
+.flow-stat { font: 10px var(--sans); fill: var(--text-faint); }
 .flow-stat-v { font-family: var(--mono); fill: var(--text-dim); }
 .flow-delta { font-family: var(--mono); fill: var(--flow-active); }
 
@@ -563,25 +571,30 @@ input:focus, select:focus, textarea:focus {
 
 /* arrows */
 .flow-line, .flow-step path.flow-line {
-  stroke: var(--flow-idle); stroke-width: 1.6; fill: none;
+  stroke: var(--flow-idle); stroke-width: 1.3; fill: none;
   transition: stroke .3s, stroke-width .3s;
 }
 .flow-head { fill: var(--flow-idle); transition: fill .3s; }
-.flow-label { font: 12px var(--sans); fill: var(--flow-text); text-anchor: middle; }
+.flow-label { font: 11px var(--sans); fill: var(--flow-text); text-anchor: middle; }
 .flow-count {
-  font: 11px var(--mono); fill: var(--text-faint); text-anchor: middle;
+  font: 9.5px var(--mono); fill: var(--text-faint); text-anchor: middle;
   font-variant-numeric: tabular-nums;
 }
+/* A self-call's label runs to the right of its loop. This is a class rather
+   than a text-anchor attribute because CSS wins over presentation
+   attributes, and the attribute version silently drew the label on top of
+   the loop it was labelling. */
+.flow-label.at-start, .flow-count.at-start { text-anchor: start; }
 
-.flow-step.is-active .flow-line { stroke: var(--flow-active); stroke-width: 2.4; }
+.flow-step.is-active .flow-line { stroke: var(--flow-active); stroke-width: 2; }
 .flow-step.is-active .flow-head { fill: var(--flow-active); }
-.flow-step.is-busy .flow-line { stroke: var(--flow-busy); stroke-width: 2.4; }
+.flow-step.is-busy .flow-line { stroke: var(--flow-busy); stroke-width: 2; }
 .flow-step.is-busy .flow-head { fill: var(--flow-busy); }
 .flow-step.is-done-ok .flow-line { stroke: var(--flow-done-ok); }
 .flow-step.is-done-ok .flow-head { fill: var(--flow-done-ok); }
 .flow-step.is-partial .flow-line { stroke: var(--flow-partial); }
 .flow-step.is-partial .flow-head { fill: var(--flow-partial); }
-.flow-step.is-failed .flow-line { stroke: var(--flow-failed); stroke-width: 2.2; }
+.flow-step.is-failed .flow-line { stroke: var(--flow-failed); stroke-width: 1.9; }
 .flow-step.is-failed .flow-head { fill: var(--flow-failed); }
 .flow-step.is-active .flow-label,
 .flow-step.is-busy .flow-label { fill: var(--text); }
@@ -594,9 +607,9 @@ input:focus, select:focus, textarea:focus {
 .flow-step.is-lit .flow-head { animation: flow-pulse-head 1.2s ease-in-out; }
 
 @keyframes flow-pulse {
-  0%   { stroke-width: 1.6; filter: none; }
-  35%  { stroke-width: 3.6; filter: drop-shadow(0 0 5px currentColor); }
-  100% { stroke-width: 2.4; filter: none; }
+  0%   { stroke-width: 1.3; filter: none; }
+  35%  { stroke-width: 3;   filter: drop-shadow(0 0 4px currentColor); }
+  100% { stroke-width: 2;   filter: none; }
 }
 @keyframes flow-pulse-head {
   0%   { filter: none; }
