@@ -96,11 +96,26 @@ func newServerConfig(password, authorizedKey string, logf Logf) (*ssh.ServerConf
 // is cancelled or the listener fails to open; see Serve for the per-
 // connection behavior.
 func ListenAndServe(ctx context.Context, addr, root string, hostSigner ssh.Signer, password, authorizedKey string, logf Logf) error {
+	return ListenAndServeObserved(ctx, addr, root, hostSigner, password, authorizedKey, logf, nil)
+}
+
+// Observer is told what a connected client did: a session opening, and
+// then each request it made. It exists so the acquirer binary can show an
+// operator that the platform's file pull actually happened — the single
+// most common thing to be waiting on, and the one thing an SFTP server
+// otherwise reveals only in its own stdout.
+//
+// Op is "session" when a client authenticates; otherwise it is the jail's
+// own verb ("list", "download", "upload", "rename", …).
+type Observer func(user, remote, op, path string, err error)
+
+// ListenAndServeObserved is ListenAndServe with that hook.
+func ListenAndServeObserved(ctx context.Context, addr, root string, hostSigner ssh.Signer, password, authorizedKey string, logf Logf, obs Observer) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("wlsftp: listen %s: %w", addr, err)
 	}
-	return Serve(ctx, ln, root, hostSigner, password, authorizedKey, logf)
+	return ServeObserved(ctx, ln, root, hostSigner, password, authorizedKey, logf, obs)
 }
 
 // Serve accepts SSH connections on ln, serving an SFTP subsystem jailed at
@@ -111,6 +126,11 @@ func ListenAndServe(ctx context.Context, addr, root string, hostSigner ssh.Signe
 // misbehaving). Serve takes ownership of ln and closes it before
 // returning.
 func Serve(ctx context.Context, ln net.Listener, root string, hostSigner ssh.Signer, password, authorizedKey string, logf Logf) error {
+	return ServeObserved(ctx, ln, root, hostSigner, password, authorizedKey, logf, nil)
+}
+
+// ServeObserved is Serve with an Observer attached to every session.
+func ServeObserved(ctx context.Context, ln net.Listener, root string, hostSigner ssh.Signer, password, authorizedKey string, logf Logf, obs Observer) error {
 	sshConfig, err := newServerConfig(password, authorizedKey, logf)
 	if err != nil {
 		_ = ln.Close()
@@ -132,15 +152,25 @@ func Serve(ctx context.Context, ln net.Listener, root string, hostSigner ssh.Sig
 			}
 			return fmt.Errorf("wlsftp: accept: %w", err)
 		}
-		go handleConn(nConn, sshConfig, root, logf)
+		go handleConn(nConn, sshConfig, root, logf, obs)
 	}
 }
 
-func handleConn(nConn net.Conn, sshConfig *ssh.ServerConfig, root string, logf Logf) {
+func handleConn(nConn net.Conn, sshConfig *ssh.ServerConfig, root string, logf Logf, obs Observer) {
+	remote := hostOf(nConn.RemoteAddr())
 	sshConn, chans, reqs, err := ssh.NewServerConn(nConn, sshConfig)
 	if err != nil {
 		logf("wlsftp: ssh handshake from %s: %v", nConn.RemoteAddr(), err)
+		// A refused handshake is worth seeing: a client with the wrong key
+		// and a client that never connected look the same from the outside.
+		if obs != nil {
+			obs("", remote, "session", "", err)
+		}
 		return
+	}
+	user := sshConn.User()
+	if obs != nil {
+		obs(user, remote, "session", "", nil)
 	}
 	defer sshConn.Close()
 	go ssh.DiscardRequests(reqs)
@@ -156,9 +186,13 @@ func handleConn(nConn net.Conn, sshConfig *ssh.ServerConfig, root string, logf L
 			continue
 		}
 		go serveSessionRequests(requests)
-		go sshftp.ServeSFTP(channel, root, func(f string, a ...any) {
+		go sshftp.ServeSFTPObserved(channel, root, func(f string, a ...any) {
 			if logf != nil {
 				logf(f, a...)
+			}
+		}, func(op, path string, err error) {
+			if obs != nil {
+				obs(user, remote, op, path, err)
 			}
 		})
 	}
@@ -173,4 +207,14 @@ func serveSessionRequests(in <-chan *ssh.Request) {
 			_ = req.Reply(ok, nil)
 		}
 	}
+}
+
+// hostOf drops the ephemeral port from a client address: the port changes
+// on every connection and is never the thing an operator is looking at.
+func hostOf(addr net.Addr) string {
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
 }

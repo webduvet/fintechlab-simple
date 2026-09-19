@@ -64,6 +64,33 @@ Four states, and the difference between them is deliberate:
 A service that has not been probed yet is never reported as down. A status
 page that cries wolf on start-up is a status page people learn to ignore.
 
+### Activity: what the platform just did
+
+Three vendors keep a short history of the traffic that reached them, and an
+expanded card shows it as a panel per conversation:
+
+| Service | Panels |
+| --- | --- |
+| **B4B Payments** | *Payouts received* — every call to the payments API and what was answered · *Callbacks sent* — each lifecycle callback, and whether the client took it |
+| **Banking Circle** | *Payments received* — payouts arriving over the lab bridge, and money landing on the safeguarding accounts · *Notifications sent* — each encrypted batch, its event types, and the endpoint's answer |
+| **Worldline** | *File exchange* — every SFTP session the platform opened, and the files it listed, collected or delivered |
+
+This exists because the three most common questions during a run —
+*did the payout arrive, did the callback get taken, did anyone actually
+collect the file* — were each answerable only by tailing a container's
+stdout, and one of them (a callback refused at the client's door) is
+completely invisible from the settlement side. A payout that was accepted
+perfectly and then had every callback rejected looks, from the platform,
+exactly like nothing happening.
+
+The panels read from each service's own `GET /sim/activity`, which the
+console proxies at `/api/services/{id}/activity`. Nothing is persisted:
+it is a ring of the last few hundred events per log, so it is a window onto
+a run and never a record of one. Refusals are amber and failures red;
+an ordinary accepted call is left uncoloured, so the two that went wrong
+are the two you see. A service that keeps no log shows no panel, and its
+endpoint answers `501` rather than an empty list.
+
 Two services offer actions, because they are the two that drive the money:
 
 - **Worldline** — run the morning (`ER`) or afternoon (`AR`) cycle now,

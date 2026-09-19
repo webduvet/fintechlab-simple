@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -414,4 +415,57 @@ func statusFor(err error) int {
 	default:
 		return 502
 	}
+}
+
+// --- activity ---------------------------------------------------------
+
+// serviceActivity proxies a service's recent-history endpoint.
+//
+// It is a proxy rather than a link because the console is the only thing
+// on the page that can reach a vendor over mTLS, and because a browser
+// fetching twelve origins directly would be a CORS problem the lab does
+// not need to have.
+//
+// A service that is down produces a 502 carrying its own error, and the
+// panel says so. That matters more here than anywhere else in the console:
+// an empty activity list and an unreachable service look identical if the
+// failure is swallowed, and one of them means "nothing has happened yet"
+// while the other means "you are looking at a corpse".
+func (a *app) serviceActivity(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	svc, ok := a.cat.Get(id)
+	if !ok {
+		httputilx.Error(w, 404, "unknown service "+id)
+		return
+	}
+	if svc.Activity == "" {
+		// 501, not 500 or an empty list: this service keeps no log, and a
+		// UI that cannot tell that from "it failed" will offer a retry
+		// button forever.
+		httputilx.Error(w, 501, svc.Name+" keeps no activity log")
+		return
+	}
+
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	path := svc.Activity
+	if limit := r.URL.Query().Get("limit"); limit != "" {
+		path += "?limit=" + url.QueryEscape(limit)
+	}
+
+	var out any
+	var err error
+	if id == "banking-circle" {
+		// Banking Circle serves this on its credentialed API, so it goes
+		// through the same authorized client the Banks view uses rather
+		// than a bare GET that would be refused.
+		err = a.bc.AuthorizedGet(ctx, path, &out)
+	} else {
+		err = a.getJSON(ctx, a.client, svc.BaseURL+path, &out)
+	}
+	if err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, out)
 }

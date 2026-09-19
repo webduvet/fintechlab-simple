@@ -40,6 +40,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
@@ -65,6 +66,13 @@ type app struct {
 	// kept so it can be reported. A reader of the config file alone sees
 	// the file's scale, not the one this process is running.
 	delivery bankingcircle.DeliveryConfig
+	// The two halves of this vendor's conversation, kept apart because
+	// they answer different questions. "Did the payout reach the bank?"
+	// is the payments log; "did the bank tell us it had?" is the
+	// notifications log, and a run where the first is full and the second
+	// empty is a specific, common and otherwise invisible failure.
+	payLog   *activity.Log
+	notifLog *activity.Log
 }
 
 func main() {
@@ -139,6 +147,10 @@ func main() {
 		delivery: deliveryCfg,
 
 		bankCreditURL: bankCreditURL,
+		payLog: activity.New("payments", "Payments received",
+			"What arrived on the lab bridge: payouts from B4B, and money landing on the safeguarding accounts."),
+		notifLog: activity.New("notifications", "Notifications sent",
+			"Each encrypted batch this vendor posted to a subscription's endpoint, and what that endpoint answered."),
 	}
 	a.dispatch = bankingcircle.NewDispatcher(deliveryCfg, a.subs, a.mail, log.Printf)
 	a.dispatch.Send = a.sendEncrypted
@@ -269,6 +281,11 @@ func (a *app) mux() *http.ServeMux {
 	// file's plus whatever BC_TIME_SCALE overrode. Reading the file alone
 	// reports a schedule nobody is on.
 	mux.HandleFunc("GET /sim/delivery-config", a.requireBearer(a.deliveryConfig))
+	// The console reads this one. It sits on the credentialed API
+	// rather than the bridge because that is the surface the console
+	// already holds a token for, and an observability endpoint is not
+	// a reason to open a second unauthenticated door.
+	mux.HandleFunc("GET /sim/activity", a.requireBearer(activity.Handler(a.payLog, a.notifLog)))
 	// Debug/introspection endpoints kept from the old surface — not part of
 	// the real Banking Circle contract, but useful for the harness and kept
 	// behind the same credentials as everything else on this listener.
@@ -296,9 +313,9 @@ func (a *app) deliveryConfig(w http.ResponseWriter, r *http.Request) {
 // (INTERNAL_LISTEN). Nothing else is served here.
 func (a *app) internalMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /internal/payments", a.createInternalPayment)
+	mux.HandleFunc("POST /internal/payments", a.payLog.Watch("payment.create", summarizeBridgePayment, a.createInternalPayment))
 	mux.HandleFunc("POST /internal/payments/{id}/reverse", a.reverseInternalPayment)
-	mux.HandleFunc("POST /internal/incoming-payments", a.createIncomingPayment)
+	mux.HandleFunc("POST /internal/incoming-payments", a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment))
 	mux.HandleFunc("GET /internal/accounts/{accountId}/balances", a.internalAccountBalances)
 	return mux
 }

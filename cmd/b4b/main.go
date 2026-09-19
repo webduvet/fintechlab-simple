@@ -24,9 +24,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
@@ -57,6 +59,14 @@ type app struct {
 	// check. Off by default; see b4b.Beneficiary.CheckCompany for why it is
 	// a switch and not a rule.
 	enforceCompany bool
+	// The two conversations worth watching from the console: what the
+	// platform asked of us, and what we told it afterwards. They are
+	// separate logs because they fail separately -- a payout can be
+	// accepted perfectly and every callback about it still be refused at
+	// the client's door, which is exactly the failure that looks like
+	// nothing happening at all.
+	payLog *activity.Log
+	cbLog  *activity.Log
 }
 
 func main() {
@@ -104,6 +114,10 @@ func main() {
 		statePath:      statePath,
 		callbackURL:    callbackURL,
 		enforceCompany: envBool("B4B_ENFORCE_BENEFICIARY_COMPANY", false),
+		payLog: activity.New("payments", "Payouts received",
+			"Every call the platform made to the payments API, and what this vendor answered."),
+		cbLog: activity.New("callbacks", "Callbacks sent",
+			"Each lifecycle callback this vendor posted back, and whether the client took it."),
 	}
 	a.engine = b4b.NewEngine(delay, a.onTransition)
 
@@ -130,6 +144,12 @@ func main() {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "b4b"})
 	})
 
+	// Unauthenticated, like /health and for the same reason: the console
+	// holds no client credential, and this is a read-only window onto a lab
+	// run. It carries no key material -- only what the platform itself sent
+	// and what this service said back.
+	mux.HandleFunc("GET /sim/activity", activity.Handler(a.payLog, a.cbLog))
+
 	// Boarding: the chain a platform walks before it can pay anybody.
 	mux.HandleFunc("POST /oversight/v1/companies", a.requireAuth(a.createCompany))
 	mux.HandleFunc("GET /oversight/v1/companies", a.requireAuth(a.listCompanies))
@@ -154,7 +174,7 @@ func main() {
 	// Payout.
 	mux.HandleFunc("POST /oversight/v1/beneficiaries", a.requireAuth(a.registerBeneficiary))
 	mux.HandleFunc("GET /oversight/v1/beneficiaries/{id}", a.requireAuth(a.getBeneficiary))
-	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.createPayment))
+	mux.HandleFunc("POST /oversight/v1/payments", a.requireAuth(a.payLog.Watch("payment.create", summarizePayment, a.createPayment)))
 	// The documented recovery path for a missed callback: callbacks are
 	// unsigned, unordered and may repeat, so a client that lost one reads
 	// the current state instead of trying to replay it.
@@ -288,6 +308,11 @@ func (a *app) callbackTarget(override string) string {
 func (a *app) deliverCallback(what, dest string, body any) {
 	if dest == "" {
 		log.Printf("b4b: %s callback not delivered: no callback_url and no B4B_CALLBACK_URL configured", what)
+		a.cbLog.Record(activity.Event{
+			Op: "callback", Summary: what + " — nowhere to send it",
+			Status: activity.StatusWarn,
+			Detail: map[string]string{"reason": "no callback_url on the record and no B4B_CALLBACK_URL configured"},
+		})
 		return
 	}
 	payload, err := json.Marshal(body)
@@ -305,6 +330,11 @@ func (a *app) deliverCallback(what, dest string, body any) {
 		last, lastErr = st, err
 		if err == nil {
 			log.Printf("b4b: %s callback attempt=%d http=%d delivered to %s", what, attempt, st, dest)
+			a.cbLog.Record(activity.Event{
+				Op: "callback", Peer: dest, Summary: what + " delivered",
+				Status: activity.StatusOK,
+				Detail: map[string]string{"attempt": strconv.Itoa(attempt), "http": strconv.Itoa(st)},
+			})
 			return
 		}
 		log.Printf("b4b: %s callback attempt=%d http=%d err=%v", what, attempt, st, err)
@@ -313,6 +343,17 @@ func (a *app) deliverCallback(what, dest string, body any) {
 		}
 	}
 	log.Printf("b4b: %s callback failed after retries: http=%d err=%v", what, last, lastErr)
+	// Recorded once, at the end, rather than per attempt: the retries are
+	// one event from the operator's point of view, and a panel that shows
+	// four rows for one refused callback buries the other three payouts.
+	detail := map[string]string{"attempts": strconv.Itoa(a.maxTry), "http": strconv.Itoa(last)}
+	if lastErr != nil {
+		detail["error"] = lastErr.Error()
+	}
+	a.cbLog.Record(activity.Event{
+		Op: "callback", Peer: dest, Summary: what + " refused by the client after " + strconv.Itoa(a.maxTry) + " attempts",
+		Status: activity.StatusBad, Detail: detail,
+	})
 }
 
 // postWebhook does the plain JSON POST. The allowlist is enforced here as

@@ -448,3 +448,65 @@ input:focus, select:focus, textarea:focus {
 .lab-key.ext {
   height: 11px; border: 1px dashed var(--border); border-radius: 3px;
 }
+
+/* --- activity panels --------------------------------------------------- */
+/* A log is a card nested in a card: same chevron, same open affordance,
+   same state key, so it behaves exactly like everything else that expands.
+   It sits one surface step in from its parent so the nesting is visible
+   without another border weight. */
+
+.card.log {
+  background: var(--panel-2); border-color: var(--border-soft);
+  margin: 10px 0 0; border-radius: var(--radius-sm);
+}
+.card.log:hover, .card.log.is-open { border-color: var(--accent-line); }
+.card.log .card-head { padding: 10px 12px; gap: 10px; }
+.card.log .card-title .name { font-size: 12.5px; }
+.card.log .card-title .desc { font-size: 11.5px; }
+.card.log .card-body { padding: 0 12px 12px; }
+
+/* The rows themselves. Fixed height cap with its own scroll: a hundred
+   calls must not push the rest of the card off the screen, and the page
+   body never scrolls sideways. */
+.log-rows {
+  max-height: 340px; overflow-y: auto; overflow-x: hidden;
+  margin-top: 10px; border-top: 1px solid var(--border-soft);
+}
+.log-row {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 8px 6px 7px;
+  border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid transparent;
+}
+.log-row:last-child { border-bottom: 0; }
+
+/* Status colour is data: a refusal is amber, a failure red, and an ordinary
+   accepted call is left uncoloured. Painting every good row green would
+   make the two that are not green harder to find, not easier. */
+.log-row.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, transparent); }
+.log-row.bad { border-left-color: var(--down); background: color-mix(in srgb, var(--down) 9%, transparent); }
+
+.log-time {
+  font: 11.5px var(--mono); color: var(--text-faint);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+.log-op {
+  font: 11.5px var(--mono); color: var(--text-dim);
+  flex: none; min-width: 108px;
+}
+.log-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.log-summary { font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+.log-detail {
+  font: 11.5px var(--mono); color: var(--text-faint);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.log-peer { font: 11.5px var(--mono); color: var(--text-faint); flex: none; }
+.log-foot { font-size: 11.5px; color: var(--text-faint); padding: 8px 2px 0; }
+
+.card.log .empty { padding: 18px 8px; text-align: left; line-height: 1.5; }
+
+/* Below the one breakpoint the op column and the peer are the first things
+   to go: the summary is the sentence, and the rest is provenance. */
+@media (max-width: 760px) {
+  .log-op, .log-peer { display: none; }
+}

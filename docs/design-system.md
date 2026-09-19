@@ -373,6 +373,71 @@ keyboard — `tabindex="0"`, `role="button"`, `aria-expanded`, and Enter/Space
 handled alongside the click. The console does not do this yet; new apps
 should.
 
+### Activity panel
+
+A vendor that is being driven by another system needs somewhere to say what
+that system just did to it. The panel is a **card nested inside a card**:
+same chevron, same open affordance, same `view:id` state key — the nested
+one keys on `"<service>:<log>"`, which is unique without inventing a second
+mechanism.
+
+```html
+<div class="card log is-open">
+  <div class="card-head" data-card="b4b:payments" role="button" tabindex="0" aria-expanded="true">
+    <span class="chev">▸</span>
+    <div class="card-title">
+      <span class="name">Payouts received <span class="pill">6 total</span> <span class="pill bad">2 failed</span></span>
+      <span class="desc">payout 733.34 EUR to ben_… — 12s ago</span>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="note">What this log is for.</div>
+    <div class="log-rows">
+      <div class="log-row warn">
+        <span class="log-time">22:19:03</span>
+        <span class="log-op">payment.create</span>
+        <span class="log-main">
+          <span class="log-summary">payout 951.98 EUR to ben_7 — beneficiary is sanctions-blocked</span>
+          <span class="log-detail">amount=951.98 EUR  external_ref=sttl_v1:…</span>
+        </span>
+        <span class="log-peer">10.89.0.1</span>
+      </div>
+    </div>
+  </div>
+</div>
+```
+
+Rules, and they are the whole component:
+
+- **Collapsed, the header is the headline.** Counts as pills — total is
+  neutral, refusals amber, failures red — and the most recent event's own
+  summary as the `.desc`. An operator should be able to close every panel
+  and still see, from four collapsed headers, which hop is broken.
+- **A good row is not coloured.** Only `.warn` and `.bad` take a left
+  border and a wash (6% / 9%). Painting every accepted call green makes the
+  two that are not green *harder* to find. This is the same reason
+  `--unknown` exists.
+- **The row carries the peer's own words.** A refusal's summary ends with
+  the vendor's message verbatim, exactly as a toast does. "Payout rejected"
+  is not a log line.
+- **The body scrolls, the card does not grow.** `max-height: 340px` with
+  its own `overflow-y`, so a hundred rows never push the rest of the card
+  off the screen.
+- **Say when the list is a window.** "Showing the last 100 of 4000" under
+  the rows; a ring buffer that silently drops history is a ring buffer
+  people misread.
+- **The empty state names what would fill it** — "Nothing yet. A payout
+  from the platform lands here the moment it is asked for" — never "no
+  events".
+- **Fetch only while it is being read.** The parent card being open is the
+  signal; polling every vendor's log for nobody is traffic with no reader.
+- **An unreachable service is not an empty list.** The panel renders
+  `.note.bad` with the error. Those two states look identical once the
+  failure is swallowed, and they send you to opposite ends of the stack.
+- A service that keeps no log renders **no panel at all**, and its API
+  answers `501` — the same rule as everything else here: never offer what
+  the backend cannot do.
+
 ### Pill
 
 `10.5px` mono, uppercase, one-word. Two families that must not be confused:

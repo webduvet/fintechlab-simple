@@ -7,7 +7,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/money"
@@ -278,4 +280,39 @@ func (a *app) deliverPaymentCallback(p *b4b.Payment, bcResp map[string]any) {
 		body["banking_circle_api_response"] = bcResp
 	}
 	a.deliverCallback(fmt.Sprintf("payment %s status=%s", p.ID, p.State), p.CallbackURL, body)
+}
+
+// summarizePayment writes the one line an operator reads in the console's
+// payouts panel.
+//
+// It reads the request the platform sent rather than anything this service
+// derived from it, so a call that was refused before a Payment ever
+// existed still says what was asked for -- which is the case where an
+// operator most needs to know.
+func summarizePayment(c *activity.Call) (string, map[string]string) {
+	amount := c.JSONField("amount", "amount")
+	currency := c.JSONField("amount", "currency")
+	beneficiary := c.JSONField("beneficiary_id")
+	externalRef := c.JSONField("external_ref")
+
+	summary := fmt.Sprintf("payout %s %s to %s", amount, currency, beneficiary)
+	if creditor := c.JSONField("creditorName"); creditor != "" {
+		summary += " (" + creditor + ")"
+	}
+
+	detail := map[string]string{}
+	for k, v := range map[string]string{
+		"payment_id":   c.RespField("id"),
+		"external_ref": externalRef,
+		"beneficiary":  beneficiary,
+		"amount":       strings.TrimSpace(amount + " " + currency),
+		"debtor_viban": c.JSONField("debtorViban", "account"),
+		"creditor":     c.JSONField("creditorAccount", "account"),
+		"callback_url": c.JSONField("callback_url"),
+	} {
+		if v != "" {
+			detail[k] = v
+		}
+	}
+	return summary, detail
 }

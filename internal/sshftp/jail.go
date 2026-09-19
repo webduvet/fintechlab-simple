@@ -17,6 +17,22 @@ import (
 // Host-absolute paths such as /etc/passwd become <root>/etc/passwd.
 type jail struct {
 	root string // absolute, cleaned
+	// obs, when set, is told about each request the session serves. It is
+	// how the vendor binary turns "someone fetched a file" into something
+	// an operator can see; nil leaves the jail exactly as it was.
+	obs Observer
+}
+
+// Observer is notified once per SFTP request, after it has been answered.
+// A refused request is reported too, with its error — the denials are the
+// half worth watching, since a client pulling from the wrong directory
+// looks identical to no client at all.
+type Observer func(op, path string, err error)
+
+func (j *jail) report(op, path string, err error) {
+	if j.obs != nil {
+		j.obs(op, path, err)
+	}
 }
 
 func newJail(root string) (*jail, error) {
@@ -102,11 +118,28 @@ func (j *jail) confined(p string) (string, error) {
 }
 
 func (j *jail) Fileread(r *sftp.Request) (io.ReaderAt, error) {
-	return j.open(r)
+	f, err := j.open(r)
+	j.report("download", r.Filepath, err)
+	return readerOrNil(f, err)
 }
 
 func (j *jail) Filewrite(r *sftp.Request) (io.WriterAt, error) {
-	return j.open(r)
+	f, err := j.open(r)
+	j.report("upload", r.Filepath, err)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
+}
+
+// readerOrNil keeps a failed open returning a nil interface rather than a
+// non-nil interface holding a nil *os.File, which the sftp server would
+// happily call Read on.
+func readerOrNil(f *os.File, err error) (io.ReaderAt, error) {
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
 }
 
 func (j *jail) OpenFile(r *sftp.Request) (sftp.WriterAtReaderAt, error) {
@@ -122,6 +155,12 @@ func (j *jail) open(r *sftp.Request) (*os.File, error) {
 }
 
 func (j *jail) Filecmd(r *sftp.Request) error {
+	err := j.filecmd(r)
+	j.report(strings.ToLower(r.Method), r.Filepath, err)
+	return err
+}
+
+func (j *jail) filecmd(r *sftp.Request) error {
 	switch r.Method {
 	case "Setstat":
 		full, err := j.confined(r.Filepath)
@@ -179,6 +218,17 @@ func (j *jail) Filecmd(r *sftp.Request) error {
 }
 
 func (j *jail) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
+	l, err := j.filelist(r)
+	// Stat is the noisiest thing an SFTP client does — every client stats
+	// a path before touching it — so only a directory listing is reported.
+	// A panel that logged four stats per download would hide the download.
+	if r.Method == "List" {
+		j.report("list", r.Filepath, err)
+	}
+	return l, err
+}
+
+func (j *jail) filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	full, err := j.confined(r.Filepath)
 	if err != nil {
 		return nil, err
@@ -280,6 +330,13 @@ func osFlags(flags uint32) int {
 
 // ServeSFTP serves one SFTP subsystem session jailed to root.
 func ServeSFTP(channel ssh.Channel, root string, logf Logf) {
+	ServeSFTPObserved(channel, root, logf, nil)
+}
+
+// ServeSFTPObserved is ServeSFTP with a hook on every request. Separate
+// rather than a changed signature so the jail's own tests, and any caller
+// that does not want the events, stay exactly as they were.
+func ServeSFTPObserved(channel ssh.Channel, root string, logf Logf, obs Observer) {
 	defer channel.Close()
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -289,6 +346,7 @@ func ServeSFTP(channel ssh.Channel, root string, logf Logf) {
 		logf("sshftp: jail: %v", err)
 		return
 	}
+	j.obs = obs
 	server := sftp.NewRequestServer(channel, j.handlers())
 	if err := server.Serve(); err != nil && err != io.EOF {
 		logf("sshftp: sftp session error: %v", err)

@@ -118,6 +118,7 @@ func (a *app) routes() http.Handler {
 
 	mux.HandleFunc("GET /api/overview", a.overview)
 	mux.HandleFunc("POST /api/services/{id}/probe", a.probeService)
+	mux.HandleFunc("GET /api/services/{id}/activity", a.serviceActivity)
 
 	mux.HandleFunc("GET /api/banks", a.listBanks)
 	mux.HandleFunc("POST /api/banks/{id}/accounts", a.openAccount)

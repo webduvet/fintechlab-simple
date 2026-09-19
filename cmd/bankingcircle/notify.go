@@ -165,7 +165,8 @@ func (a *app) sendEncrypted(sub *bankingcircle.Subscription, env bankingcircle.E
 	if err != nil {
 		return fmt.Errorf("encrypt notification: %w", err)
 	}
-	_, err = a.postNotification(sub.Endpoint, ciphertext, nonce, tag, checksum, sub.Version)
+	status, err := a.postNotification(sub.Endpoint, ciphertext, nonce, tag, checksum, sub.Version)
+	a.recordNotification(sub, env, status, err)
 	return err
 }
 

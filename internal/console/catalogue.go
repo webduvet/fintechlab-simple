@@ -40,20 +40,25 @@ type Endpoint struct {
 // service names) and one run from a shell (published 127.0.0.1 ports) --
 // hence Browse, the URL that works from the operator's browser instead.
 type Service struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name"`
-	Kind       Kind       `json:"kind"`
-	Summary    string     `json:"summary"`
-	BaseURL    string     `json:"base_url"`
-	Browse     string     `json:"browse_url"`
-	HealthPath string     `json:"health_path"`
-	Ports      []string   `json:"ports"`
-	Transport  string     `json:"transport"`
-	Auth       string     `json:"auth"`
-	SwapFor    string     `json:"swap_for"`
-	Docs       string     `json:"docs,omitempty"`
-	PodRecipe  string     `json:"pod_recipe,omitempty"` // recipes/<dir> composable twin, if any
-	Endpoints  []Endpoint `json:"endpoints,omitempty"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
+	Kind       Kind     `json:"kind"`
+	Summary    string   `json:"summary"`
+	BaseURL    string   `json:"base_url"`
+	Browse     string   `json:"browse_url"`
+	HealthPath string   `json:"health_path"`
+	Ports      []string `json:"ports"`
+	Transport  string   `json:"transport"`
+	Auth       string   `json:"auth"`
+	SwapFor    string   `json:"swap_for"`
+	Docs       string   `json:"docs,omitempty"`
+	PodRecipe  string   `json:"pod_recipe,omitempty"` // recipes/<dir> composable twin, if any
+	// Activity names the service's recent-history endpoint, when it keeps
+	// one. Empty means the console draws no activity panel for it — which
+	// is the honest rendering: "this service is not telling us" rather than
+	// an empty list that reads as "nothing happened".
+	Activity  string     `json:"activity_path,omitempty"`
+	Endpoints []Endpoint `json:"endpoints,omitempty"`
 }
 
 // Catalogue is the ordered list of services, vendors first.
@@ -84,10 +89,11 @@ func DefaultCatalogue() *Catalogue {
 	svcs := []Service{
 		{
 			ID: "worldline", Name: "Worldline", Kind: KindVendor,
-			PodRecipe: "acquirer-edge",
+			PodRecipe:  "acquirer-edge",
 			Summary:    "The acquirer. Holds acquired card transactions per submerchant (MID), cuts the daily Bambora settlement file in two slots, publishes it PGP-encrypted over real SSH/SFTP, and wires the lump sum to the safeguarding account.",
 			BaseURL:    "http://127.0.0.1:8084",
 			HealthPath: "/health",
+			Activity:   "/sim/activity",
 			Ports:      []string{"8084/http", "2222/ssh"},
 			Transport:  "HTTP + real SSH/SFTP with PGP",
 			Auth:       "SFTP password or public key; optional host-key pinning",
@@ -103,10 +109,11 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "b4b", Name: "B4B Payments", Kind: KindVendor,
-			PodRecipe: "b4b-oversight",
+			PodRecipe:  "b4b-oversight",
 			Summary:    "Oversight API, both halves: boarding a company (people, documents, the create-once extended profile, vIBANs) and paying it (beneficiary registration with pass/review/fail sanctions, the gates, the payout lifecycle and its callbacks, and the bridge into Banking Circle once approved).",
 			BaseURL:    "http://127.0.0.1:8086",
 			HealthPath: "/health",
+			Activity:   "/sim/activity",
 			Ports:      []string{"8086/http"},
 			Transport:  "HTTP",
 			Auth:       "Bearer RS512 JWT (aud b4b-payments)",
@@ -133,10 +140,11 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "banking-circle", Name: "Banking Circle", Kind: KindVendor,
-			PodRecipe: "bank-rails",
+			PodRecipe:  "bank-rails",
 			Summary:    "Connect API: the safeguarding-account ledger, the full notification self-service surface (subscriptions, If-Match, per-subscription keys, batching, event targets) and the eleven-step retry schedule ending in auto-deactivation.",
 			BaseURL:    "https://127.0.0.1:8085",
 			HealthPath: "/health",
+			Activity:   "/sim/activity",
 			Ports:      []string{"8085/https+mtls", "8095/http (lab bridge)"},
 			Transport:  "HTTPS, mTLS per BC_MTLS",
 			Auth:       "Basic -> Bearer exchange",
@@ -153,7 +161,7 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "aci", Name: "ACI", Kind: KindVendor,
-			PodRecipe: "gateway-facade",
+			PodRecipe:  "gateway-facade",
 			Summary:    "Online card-payment gateway. A sender, not a callee: it emits an AES-256-GCM encrypted webhook that stands in for \"a card payment just happened\".",
 			BaseURL:    "http://127.0.0.1:8087",
 			HealthPath: "/health",

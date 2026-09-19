@@ -25,6 +25,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/sftpgateway"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
@@ -53,7 +54,7 @@ func main() {
 		log.Fatalf("worldline: seed default config: %v", err)
 	}
 
-	acq, desk := startWorldlineSFTP()
+	acq, desk, sftpLog := startWorldlineSFTP()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -63,13 +64,18 @@ func main() {
 	if desk != nil {
 		desk.routes(mux)
 	}
+	// Unauthenticated like /health: a read-only window onto a lab run,
+	// carrying no key material — only who connected and which files they
+	// touched.
+	mux.HandleFunc("GET /sim/activity", activity.Handler(sftpLog))
 	mux.HandleFunc("POST /inbound/onboarding/{merchant_id}", uploadInbound(ch, sftpgateway.CategoryOnboarding))
 	mux.HandleFunc("POST /inbound/corrections/{merchant_id}", uploadInbound(ch, sftpgateway.CategoryCorrections))
 	mux.HandleFunc("GET /inbound/onboarding/{merchant_id}", listInbound(ch, sftpgateway.CategoryOnboarding))
 	mux.HandleFunc("GET /inbound/corrections/{merchant_id}", listInbound(ch, sftpgateway.CategoryCorrections))
 	mux.HandleFunc("GET /outbound/{merchant_id}/daily", listOutboundCategory(ch, sftpgateway.CategoryDaily))
 	mux.HandleFunc("GET /outbound/{merchant_id}/financial", listOutboundCategory(ch, sftpgateway.CategoryFinancial))
-	mux.HandleFunc("GET /outbound/{merchant_id}/{category}/{filename}", readOutboundFile(ch))
+	mux.HandleFunc("GET /outbound/{merchant_id}/{category}/{filename}",
+		sftpLog.Watch("http.download", summarizeFileRead, readOutboundFile(ch)))
 	mux.HandleFunc("GET /config", getConfig(ch))
 	mux.HandleFunc("PUT /config", putConfig(ch))
 	mux.HandleFunc("GET /archive/{year}/{month}", listArchive(ch))
@@ -306,7 +312,7 @@ func envDuration(k string, def time.Duration) time.Duration {
 // background goroutines so the HTTP listener is unaffected; a setup
 // failure (bad host key, unparsable keys, bind failure) is fatal at
 // startup rather than silently leaving the service half-configured.
-func startWorldlineSFTP() (*settlementApp, *enrolmentDesk) {
+func startWorldlineSFTP() (*settlementApp, *enrolmentDesk, *activity.Log) {
 	root := env("WORLDLINE_SFTP_ROOT", "/wlsftp")
 	if err := wlsftp.EnsureLayout(root); err != nil {
 		log.Fatalf("worldline: sftp layout: %v", err)
@@ -384,8 +390,16 @@ func startWorldlineSFTP() (*settlementApp, *enrolmentDesk) {
 	sshAddr := ":" + env("WORLDLINE_SFTP_PORT", "2222")
 	password := env("WORLDLINE_SFTP_PASSWORD", "")
 	authorizedKey := env("WORLDLINE_SFTP_AUTHORIZED_KEY", "")
+	// The acquirer's side of the file exchange is otherwise completely
+	// silent to an operator: the platform connects, lists a directory and
+	// takes a file, and unless you are tailing this container's stdout the
+	// only evidence is a settlement that did or did not happen an hour
+	// later. This is that evidence, next to the service it is about.
+	sftpLog := activity.New("sftp", "File exchange",
+		"Every SFTP session the platform opened against this acquirer, and what it did with it.")
 	go func() {
-		if err := wlsftp.ListenAndServe(context.Background(), sshAddr, root, hostSigner, password, authorizedKey, log.Printf); err != nil {
+		if err := wlsftp.ListenAndServeObserved(context.Background(), sshAddr, root, hostSigner, password, authorizedKey, log.Printf,
+			recordSFTP(sftpLog)); err != nil {
 			log.Fatalf("worldline: sftp listener: %v", err)
 		}
 	}()
@@ -400,7 +414,7 @@ func startWorldlineSFTP() (*settlementApp, *enrolmentDesk) {
 	go acq.schedule()
 	log.Printf("worldline: sftp+pgp listening on %s root=%s source=%s morning=%s afternoon=%s",
 		sshAddr, root, source, acq.cfg.MorningAt, acq.cfg.AfternoonAt)
-	return acq, desk
+	return acq, desk, sftpLog
 }
 
 func logReq(next http.Handler) http.Handler {

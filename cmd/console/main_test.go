@@ -272,3 +272,72 @@ func TestMonitorRunStopsWithItsContext(t *testing.T) {
 		t.Fatal("Monitor.Run ignored its context")
 	}
 }
+
+// --- activity ---------------------------------------------------------
+
+// TestActivityIsProxiedFromTheServiceItBelongsTo. The console holds the
+// only credentials that reach some of these vendors, so the panel reads
+// through here rather than from the browser.
+func TestActivityIsProxiedFromTheServiceItBelongsTo(t *testing.T) {
+	var gotPath string
+	peers := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"logs":[{"name":"sftp","title":"File exchange","total":2,"events":[]}]}`))
+	}))
+	defer peers.Close()
+
+	a := testApp(t, peers)
+	a.cat.Services[0].Activity = "/sim/activity"
+
+	w := call(t, a, http.MethodGet, "/api/services/worldline/activity?limit=25", "")
+	if w.Code != 200 {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "/sim/activity?limit=25" {
+		t.Errorf("asked the service for %q — the limit must be carried through", gotPath)
+	}
+	var out struct {
+		Logs []struct {
+			Name  string `json:"name"`
+			Total int    `json:"total"`
+		} `json:"logs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Logs) != 1 || out.Logs[0].Name != "sftp" || out.Logs[0].Total != 2 {
+		t.Errorf("the service's own answer was not passed through: %s", w.Body.String())
+	}
+}
+
+// TestActivityOfAServiceThatKeepsNoLogIs501. A UI that cannot tell "this
+// vendor does not keep one" from "the call failed" will offer a retry
+// button forever.
+func TestActivityOfAServiceThatKeepsNoLogIs501(t *testing.T) {
+	a := testApp(t, nil)
+	if w := call(t, a, http.MethodGet, "/api/services/bank/activity", ""); w.Code != 501 {
+		t.Errorf("status %d, want 501: %s", w.Code, w.Body.String())
+	}
+	if w := call(t, a, http.MethodGet, "/api/services/nope/activity", ""); w.Code != 404 {
+		t.Errorf("unknown service: status %d, want 404", w.Code)
+	}
+}
+
+// TestActivityReportsAnUnreachableServiceRatherThanAnEmptyList, because
+// "nothing has happened yet" and "this service is not answering" look
+// identical once the error is swallowed, and they send an operator to
+// opposite ends of the stack.
+func TestActivityReportsAnUnreachableServiceRatherThanAnEmptyList(t *testing.T) {
+	a := testApp(t, nil)
+	a.cat.Services[0].Activity = "/sim/activity"
+	a.cat.Services[0].BaseURL = "http://127.0.0.1:1" // nothing listens here
+
+	w := call(t, a, http.MethodGet, "/api/services/worldline/activity", "")
+	if w.Code != 502 {
+		t.Fatalf("status %d, want 502: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "127.0.0.1:1") {
+		t.Errorf("the failure should name what could not be reached: %s", w.Body.String())
+	}
+}

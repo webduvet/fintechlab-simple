@@ -8,6 +8,7 @@ const state = {
   view: 'services',
   open: new Set(),      // "view:id" of expanded cards, so a poll does not collapse them
   data: {},
+  activity: {},         // service id -> {logs} | {error}, fetched only while a card is open
   timer: null,
 };
 
@@ -96,6 +97,10 @@ function bindCards(root) {
       const key = cardKey(head.dataset.card);
       if (state.open.has(key)) state.open.delete(key); else state.open.add(key);
       renderView();
+      // Opening a card can reveal a panel whose data is only fetched while
+      // it is being read. Without this the first thing an operator sees is
+      // "reading…" until the next poll comes round, which reads as broken.
+      load();
     });
   });
 }
@@ -136,7 +141,10 @@ function fieldsIn(scope) {
 
 async function load() {
   try {
-    if (state.view === 'services') state.data.overview = await api('GET', '/api/overview');
+    if (state.view === 'services') {
+      state.data.overview = await api('GET', '/api/overview');
+      await loadActivity();
+    }
     if (state.view === 'banks') state.data.banks = await api('GET', '/api/banks');
     if (state.view === 'merchants') state.data.merchants = await api('GET', '/api/merchants');
     if (state.view === 'config') state.data.config = await api('GET', '/api/config');
@@ -149,6 +157,112 @@ async function load() {
   }
   renderBadges();
   renderView();
+}
+
+/* A service's recent history is fetched only while its card is open. Every
+   vendor polling its own log every five seconds would be a lot of traffic
+   to show nobody, and the panel is the thing that says you are watching. */
+async function loadActivity() {
+  const ov = state.data.overview;
+  if (!ov) return;
+  const watched = ov.services.filter((s) => s.activity_path && isOpen(s.id));
+  for (const id of Object.keys(state.activity)) {
+    if (!watched.some((s) => s.id === id)) delete state.activity[id];
+  }
+  await Promise.all(watched.map(async (s) => {
+    try {
+      state.activity[s.id] = await api('GET', `/api/services/${encodeURIComponent(s.id)}/activity?limit=100`);
+    } catch (err) {
+      // Kept against the service rather than thrown: one vendor being down
+      // must not blank the whole view, and "this panel could not be read,
+      // here is why" is a better answer than an empty list that reads as
+      // "nothing has happened".
+      state.activity[s.id] = { error: err.message };
+    }
+  }));
+}
+
+/* One nested card per log the service keeps. Collapsed, the header is the
+   headline — how many calls, and what the last one was. Opened, it is the
+   last hundred. */
+function activityPanels(s) {
+  if (!s.activity_path) return '';
+  const got = state.activity[s.id];
+  if (!got) return `<div class="note">Reading recent activity…</div>`;
+  if (got.error) return `<div class="note bad">Activity unavailable — ${esc(got.error)}</div>`;
+  return (got.logs || []).map((log) => logPanel(s, log)).join('');
+}
+
+function logPanel(s, log) {
+  const id = `${s.id}:${log.name}`;
+  const open = isOpen(id);
+  const events = log.events || [];
+  const failed = events.filter((e) => e.status === 'bad').length;
+  const refused = events.filter((e) => e.status === 'warn').length;
+
+  // Counts are data, so they carry status colour; the total never does.
+  const pills = [`<span class="pill">${log.total} total</span>`]
+    .concat(refused ? [`<span class="pill warn">${refused} refused</span>`] : [])
+    .concat(failed ? [`<span class="pill bad">${failed} failed</span>`] : [])
+    .join(' ');
+
+  const last = log.last;
+  const desc = last
+    ? `${esc(last.summary)} — ${ago(last.at)} ago`
+    : 'Nothing yet.';
+
+  const body = open ? `<div class="card-body">
+      ${log.note ? `<div class="note">${esc(log.note)}</div>` : ''}
+      ${events.length ? `<div class="log-rows">${events.map(logRow).join('')}</div>
+        ${log.total > events.length ? `<div class="log-foot">Showing the last ${events.length} of ${log.total}. Older calls have scrolled out of the service's buffer.</div>` : ''}`
+      : `<div class="empty">${esc(emptyLogHint(s.id, log.name))}</div>`}
+    </div>` : '';
+
+  return `<div class="card log ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">${esc(log.title)} ${pills}</span>
+        <span class="desc">${desc}</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
+}
+
+function logRow(e) {
+  const detail = e.detail || {};
+  const keys = Object.keys(detail).filter((k) => k !== 'status').sort();
+  return `<div class="log-row ${esc(e.status || 'ok')}">
+    <span class="log-time">${esc(clock(e.at))}</span>
+    <span class="log-op">${esc(e.op || '')}</span>
+    <span class="log-main">
+      <span class="log-summary">${esc(e.summary || '')}</span>
+      ${keys.length ? `<span class="log-detail">${keys.map((k) => `${esc(k)}=${esc(detail[k])}`).join('  ')}</span>` : ''}
+    </span>
+    <span class="log-peer">${esc(e.peer || '')}</span>
+  </div>`;
+}
+
+/* An empty state says what would put something in it. "No events" tells an
+   operator nothing they did not already know from looking. */
+const EMPTY_HINTS = {
+  'b4b:payments': 'Nothing yet. A payout from the platform lands here the moment it is asked for — accepted or refused.',
+  'b4b:callbacks': 'Nothing yet. Callbacks appear once a payment moves; a refused one is shown in red, which is usually the thing you are looking for.',
+  'banking-circle:payments': 'Nothing yet. B4B posts here once a payout clears its gates, and funding the safeguarding account shows up here too.',
+  'banking-circle:notifications': 'Nothing yet. Notification batches appear here as they are posted to a subscription endpoint.',
+  'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
+};
+
+function emptyLogHint(serviceID, logName) {
+  return EMPTY_HINTS[`${serviceID}:${logName}`] || 'Nothing yet.';
+}
+
+function clock(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toTimeString().slice(0, 8);
 }
 
 function renderBadges() {
@@ -217,6 +331,7 @@ function serviceCard(s) {
         <dt>Swap for the real thing</dt><dd style="font-family:var(--sans)">${esc(s.swap_for)}</dd>
         ${s.docs ? `<dt>Design doc</dt><dd>${esc(s.docs)}</dd>` : ''}
       </dl>
+      ${activityPanels(s)}
       ${(s.endpoints || []).length ? `<div class="table-scroll"><table>
         <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
         <tbody>${s.endpoints.map((e) => `<tr>
