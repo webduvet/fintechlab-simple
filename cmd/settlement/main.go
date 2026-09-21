@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
+	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
@@ -81,8 +82,8 @@ func main() {
 	// Banking Circle credentials, matching real settle-processing).
 	bcInternalURL := strings.TrimRight(env("BC_INTERNAL_URL", "http://banking-circle:8095"), "/")
 	sgaAccounts := map[string]string{
-		"EUR": env("BC_SAFEGUARDING_ACCOUNT_ID_EUR", "bc_acc_sga_eur"),
-		"GBP": env("BC_SAFEGUARDING_ACCOUNT_ID_GBP", "bc_acc_sga_gbp"),
+		"EUR": env("BC_SAFEGUARDING_ACCOUNT_ID_EUR", bankingcircle.SGAAccountEUR),
+		"GBP": env("BC_SAFEGUARDING_ACCOUNT_ID_GBP", bankingcircle.SGAAccountGBP),
 	}
 
 	b4bPrivateKey, err := loadRSAPrivateKey(b4bJWTKeyPath)

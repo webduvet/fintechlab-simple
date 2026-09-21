@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/console"
 )
 
@@ -364,11 +365,14 @@ func flowPeers(t *testing.T) *httptest.Server {
 			{"name":"payments","total":3,"events":[
 				{"seq":3,"at":"2026-09-18T21:03:00Z","op":"payment.create","summary":"payout at the bank","status":"ok"},
 				{"seq":2,"at":"2026-09-18T21:02:00Z","op":"payment.incoming","summary":"funds in","status":"ok"}]},
-			{"name":"notifications","total":2,"events":[
-				{"seq":2,"at":"2026-09-18T21:04:00Z","op":"notification","summary":"batch of 5","status":"ok"}]}]}`,
+			{"name":"notifications","total":3,"events":[
+				{"seq":3,"at":"2026-09-18T21:04:01Z","op":"notification","summary":"batch of 2 to the platform","status":"ok",
+				 "detail":{"endpoint":"http://host.containers.internal:3114/api/v1/banking-circle/webhook"}},
+				{"seq":2,"at":"2026-09-18T21:04:00Z","op":"notification","summary":"batch of 5","status":"ok",
+				 "detail":{"endpoint":"https://receiver:8443/raw-events"}}]}]}`,
 		"/runner/sim/activity": `{"logs":[{"name":"runs","total":4,"events":[]}]}`,
 		"/runner/status": `{"status":"ok","running_now":null,"last_run":{"id":"run-1","root":"r1",
-			"payouts":{"count":6,"total":"27698.78"},
+			"payouts":{"count":6,"total":"27698.78","statuses":{"SUCCESS":2,"IN_PROGRESS":4}},
 			"stages":[{"stage":"SETTLEMENT_FILE_INGESTION","status":"COMPLETED"},
 			          {"stage":"DAILY_MOVEMENT_PROCESSING","status":"COMPLETED"},
 			          {"stage":"DAILY_SETTLEMENT_REPORT","status":"FAILED"}]}}`,
@@ -451,6 +455,75 @@ func TestFlowCountsWhatEachHopActuallyCarried(t *testing.T) {
 	}
 }
 
+// TestFlowSeparatesTheLabsOwnStubFromThePlatformsSubscriber is the reason
+// the confirmations arrow exists. Both hops are Banking Circle delivering
+// the same encrypted batches; only one of them is evidence that the system
+// under test heard anything. Counting them together is what let a payout
+// sit at IN_PROGRESS underneath a green "notifications" hop.
+func TestFlowSeparatesTheLabsOwnStubFromThePlatformsSubscriber(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	steps := flowOf(t, flowApp(t, peers))
+
+	notify, confirm := steps["notify"], steps["confirm"]
+	if notify.To != "receiver" || notify.Count != 1 {
+		t.Errorf("the lab's own stub took one batch: %+v", notify)
+	}
+	if confirm.From != "banking-circle" || confirm.To != "platform" {
+		t.Errorf("confirmations go %s->%s, want banking-circle->platform", confirm.From, confirm.To)
+	}
+	if confirm.Count != 1 {
+		t.Errorf("the platform's subscriber took one batch: %+v", confirm)
+	}
+	if !confirm.Multi {
+		t.Error("a batch hop carries many events, so it must be able to report partial success")
+	}
+}
+
+// TestAnUnattributableBatchIsNotClaimedAsThePlatforms. The confirmations
+// arrow asserts "your own listener was called". A batch whose endpoint
+// cannot be read is not evidence of that, so it stays where it has always
+// been counted rather than turning the arrow green on a guess.
+func TestAnUnattributableBatchIsNotClaimedAsThePlatforms(t *testing.T) {
+	isLab := labDelivery(map[string]bool{"receiver": true})
+	lab, platform := splitEvents([]activity.Event{
+		{Op: "notification", Detail: map[string]string{"endpoint": "https://receiver:8443/raw-events"}},
+		{Op: "notification", Detail: map[string]string{"endpoint": "http://host.containers.internal:3114/hook"}},
+		{Op: "notification"}, // no detail at all
+		{Op: "notification", Detail: map[string]string{"events": "5"}}, // detail, but no endpoint
+		{Op: "notification", Detail: map[string]string{"endpoint": "://not a url"}},
+	}, isLab)
+
+	if len(platform) != 1 {
+		t.Errorf("only the batch with a foreign host is the platform's: %+v", platform)
+	}
+	if len(lab) != 4 {
+		t.Errorf("everything unattributable stays on the lab's side, got %d", len(lab))
+	}
+}
+
+// TestTheReportSaysHowManyPayoutsTheBankConfirmed — "0 of 6" is the line
+// somebody is looking for, so it is reported even when it is zero.
+func TestTheReportSaysHowManyPayoutsTheBankConfirmed(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	w := call(t, flowApp(t, peers), http.MethodGet, "/api/flow", "")
+	var got flowResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	stats := map[string]string{}
+	for _, st := range got.Report {
+		stats[st.Label] = st.Value
+	}
+	if stats["payouts confirmed"] != "2 of 6" {
+		t.Errorf("payouts confirmed = %q, want \"2 of 6\"", stats["payouts confirmed"])
+	}
+	if stats["confirmations to the platform"] != "1" {
+		t.Errorf("confirmations to the platform = %q, want 1", stats["confirmations to the platform"])
+	}
+}
+
 // TestFlowSeparatesAFailureFromARefusal: red and amber mean different
 // things on this diagram — one is the vendor breaking, the other is the
 // vendor refusing, and an operator reacts to them differently.
@@ -508,7 +581,7 @@ func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
 	if got.Errors["b4b"] == "" {
 		t.Error("the unreachable vendor should be named in errors")
 	}
-	if len(got.Participants) != 5 || len(got.Steps) != 9 {
+	if len(got.Participants) != 5 || len(got.Steps) != 10 {
 		t.Errorf("the diagram should still be whole: %d participants, %d steps",
 			len(got.Participants), len(got.Steps))
 	}
@@ -522,6 +595,8 @@ func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
 type bcFake struct {
 	sent          int
 	deliveredWith string // the status the ring reports for the delivery
+	paused        bool   // what the vendor says about this subscription's delivery
+	calls         []string
 }
 
 func (f *bcFake) server(t *testing.T) *httptest.Server {
@@ -540,7 +615,19 @@ func (f *bcFake) server(t *testing.T) *httptest.Server {
 					{"eventType":"OutgoingPaymentBooked","isActive":true,"subscriptionEventTargetDetails":[]},
 					{"eventType":"MissingFunding","isActive":false,"subscriptionEventTargetDetails":[{"id":"t1"}]}]}]}`))
 		case strings.Contains(r.URL.Path, "/sim/subscription/") && strings.HasSuffix(r.URL.Path, "/pending"):
-			_, _ = w.Write([]byte(`{"pending":3}`))
+			if f.paused {
+				_, _ = w.Write([]byte(`{"pending":3,"paused":true,"queued":7}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"pending":3,"paused":false,"queued":0}`))
+		case strings.HasSuffix(r.URL.Path, "/pause"), strings.HasSuffix(r.URL.Path, "/resume"):
+			f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+			f.paused = strings.HasSuffix(r.URL.Path, "/pause")
+			if f.paused {
+				_, _ = w.Write([]byte(`{"subscriptionId":"sub_1","endpoint":"https://receiver:8443/raw-events","paused":true,"queued":0}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"subscriptionId":"sub_1","endpoint":"https://receiver:8443/raw-events","paused":false,"released":7,"queued":0}`))
 		case strings.Contains(r.URL.Path, "/clienttest/"):
 			f.sent++
 			_, _ = w.Write([]byte(`{"status":"sent"}`))
@@ -662,5 +749,94 @@ func TestSubscriptionListIsAnArrayWhenEmpty(t *testing.T) {
 	w := call(t, a, http.MethodGet, "/api/banking-circle/subscriptions", "")
 	if !strings.Contains(w.Body.String(), `"subscriptions":[]`) {
 		t.Errorf("empty list marshalled as %s", w.Body.String())
+	}
+}
+
+// TestPauseAndResumeAreTheVendorsOwnSwitch. The console holds no state of
+// its own here: it calls the vendor and re-reads the vendor. A pause the
+// console remembered locally would be invisible to anything not going
+// through the console — including Banking Circle's own notification log,
+// which is where the queued notifications have to show up.
+func TestPauseAndResumeAreTheVendorsOwnSwitch(t *testing.T) {
+	fake := &bcFake{}
+	srv := fake.server(t)
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.bc.BaseURL = srv.URL
+
+	subs := func() subscriptionView {
+		t.Helper()
+		w := call(t, a, http.MethodGet, "/api/banking-circle/subscriptions", "")
+		var got struct {
+			Subscriptions []subscriptionView `json:"subscriptions"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Subscriptions) != 1 {
+			t.Fatalf("got %d subscriptions", len(got.Subscriptions))
+		}
+		return got.Subscriptions[0]
+	}
+
+	if v := subs(); v.Paused || v.Queued != 0 {
+		t.Fatalf("a running subscription reported paused=%v queued=%d", v.Paused, v.Queued)
+	}
+
+	if w := call(t, a, http.MethodPost, "/api/banking-circle/subscriptions/sub_1/pause", ""); w.Code != 200 {
+		t.Fatalf("pause = %d: %s", w.Code, w.Body.String())
+	}
+	v := subs()
+	if !v.Paused || v.Queued != 7 {
+		t.Errorf("after pause: paused=%v queued=%d, want the vendor's own answer", v.Paused, v.Queued)
+	}
+	// Retained and queued are different stalls and stay different numbers:
+	// one clears by reactivating the subscription, the other by pressing
+	// release.
+	if v.Pending != 3 {
+		t.Errorf("pending = %d, want 3 — a pause must not swallow what the vendor retained", v.Pending)
+	}
+
+	w := call(t, a, http.MethodPost, "/api/banking-circle/subscriptions/sub_1/resume", "")
+	if w.Code != 200 {
+		t.Fatalf("resume = %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"released":7`) {
+		t.Errorf("the count released is what the toast reports, got %s", w.Body.String())
+	}
+	if v := subs(); v.Paused {
+		t.Error("still paused after resume")
+	}
+
+	want := []string{"POST /sim/subscription/sub_1/pause", "POST /sim/subscription/sub_1/resume"}
+	if strings.Join(fake.calls, ",") != strings.Join(want, ",") {
+		t.Errorf("vendor saw %v, want %v — each button is exactly one call", fake.calls, want)
+	}
+}
+
+// TestPauseSurfacesTheVendorsRefusal. The button is rendered from a list
+// the console polled; the subscription may be gone by the time anyone
+// clicks it. The vendor's own status has to come through rather than
+// become a console-shaped success.
+func TestPauseSurfacesTheVendorsRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/authorizations/authorize") {
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(404)
+		_, _ = w.Write([]byte(`{"error":"bankingcircle: subscription not found"}`))
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.bc.BaseURL = srv.URL
+
+	w := call(t, a, http.MethodPost, "/api/banking-circle/subscriptions/sub_gone/pause", "")
+	if w.Code != 502 {
+		t.Fatalf("status %d, want 502", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "subscription not found") {
+		t.Errorf("the vendor's own words are the answer, got %s", w.Body.String())
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -40,6 +41,12 @@ var (
 	ErrAccountNotFound   = errors.New("bankingcircle: account not found")
 	ErrInsufficientFunds = errors.New("bankingcircle: insufficient funds")
 	ErrSameAccount       = errors.New("bankingcircle: cannot move to the same account")
+	// ErrInvalidAccountID is returned for an account id that is not a
+	// UUID. Real Banking Circle identifies accounts by UUID and so does
+	// every service in front of it, so accepting anything else here
+	// would let a client hold a configuration that works only against
+	// this simulator.
+	ErrInvalidAccountID = errors.New("bankingcircle: account id must be a UUID")
 )
 
 // NewLedger seeds the two safeguarding accounts (SGA) this lab needs, one
@@ -52,8 +59,8 @@ var (
 // the Engine.CreditIncoming "Worldline lump sum landed" simulation.
 func NewLedger() *Ledger {
 	l := &Ledger{accts: map[string]*Account{}, byVIBAN: map[string]*Account{}}
-	l.mustSeed("bc_acc_sga_eur", "BE00SIMSGA00000001", "Infinite Safeguarding Account EUR", "EUR", 0)
-	l.mustSeed("bc_acc_sga_gbp", "GB00SIMSGA00000001", "Infinite Safeguarding Account GBP", "GBP", 0)
+	l.mustSeed(SGAAccountEUR, "BE00SIMSGA00000001", "Infinite Safeguarding Account EUR", "EUR", 0)
+	l.mustSeed(SGAAccountGBP, "GB00SIMSGA00000001", "Infinite Safeguarding Account GBP", "GBP", 0)
 	return l
 }
 
@@ -83,16 +90,26 @@ func (l *Ledger) Get(id string) (*Account, error) {
 // it doesn't exist yet — same "seed on first read" philosophy as
 // internal/b4b's beneficiary auto-vivification (LookupBeneficiary),
 // hash-derived (not random) so the same id always yields the same account.
-// This never fails: any string id is a valid creditor account id in this
-// model, since B4B (docs/ARCHITECTURE-phase3-corrections.md section 1)
-// derives a distinct account per beneficiary rather than sending a single
-// known one.
-func (l *Ledger) GetOrCreate(id, currency string) *Account {
+// B4B (docs/ARCHITECTURE-phase3-corrections.md section 1) derives a
+// distinct account per beneficiary rather than sending a single known one,
+// so the first payout to a merchant always names an account no call has
+// created.
+//
+// The id must be a UUID. Auto-vivification is the one place this ledger
+// accepts an identifier it has never seen, which makes it also the one
+// place a typo becomes a real, funded, entirely fictional account that
+// balances perfectly and belongs to nobody. Real Banking Circle rejects a
+// malformed account id outright, and ErrInvalidAccountID is how that shows
+// up here.
+func (l *Ledger) GetOrCreate(id, currency string) (*Account, error) {
+	if !ValidAccountID(id) {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidAccountID, id)
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if a, ok := l.accts[id]; ok {
 		cp := *a
-		return &cp
+		return &cp, nil
 	}
 	sum := sha256.Sum256([]byte(id))
 	seed := strings.ToUpper(hex.EncodeToString(sum[:]))
@@ -107,7 +124,7 @@ func (l *Ledger) GetOrCreate(id, currency string) *Account {
 	l.accts[id] = a
 	l.byVIBAN[a.VIBAN] = a
 	cp := *a
-	return &cp
+	return &cp, nil
 }
 
 // List returns every account.

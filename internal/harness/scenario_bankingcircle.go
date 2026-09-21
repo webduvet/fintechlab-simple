@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 )
 
 type bcAccountResp struct {
@@ -113,7 +115,7 @@ func BankingCirclePayout() Scenario {
 			// names the beneficiary by the MID -- this merchant's own
 			// Banking Circle account, distinct from every other
 			// merchant's (docs section 1/4).
-			bcAccountID := "bc_acc_" + merchantIBAN
+			bcAccountID := bankingcircle.AccountIDFor(merchantIBAN)
 
 			hdr, err := bankingCircleBearer(ctx, env)
 			if err != nil {

@@ -71,10 +71,13 @@ confirmed notification types — were never fired by anything.
 
 **Fix:**
 - Rename the seed accounts to a safeguarding-account model, one per
-  currency, **starting at zero**: `bc_acc_sga_eur` (VIBAN
-  `BE00SIMSGA00000001`, holder "Infinite Safeguarding Account EUR"),
-  `bc_acc_sga_gbp` (VIBAN `GB00SIMSGA00000001`, holder "...GBP"). Delete
+  currency, **starting at zero**: the EUR safeguarding account (VIBAN
+  `BE00SIMSGA00000001`, holder "Infinite Safeguarding Account EUR") and the
+  GBP one (VIBAN `GB00SIMSGA00000001`, holder "...GBP"). Delete
   `bc_acc_worldline`/`bc_acc_merchant` outright — clean cutover, no aliases.
+  *(Their ids were `bc_acc_sga_eur`/`bc_acc_sga_gbp` when this was written;
+  they are now UUIDs — see vendor-corrections addendum G, which supersedes
+  every account id on this page.)*
 - New `Ledger.Credit(toID string, cents int64) (*Account, error)` —
   incoming payments have no ledger "from" side in this model (the money
   arrives from outside any account this lab tracks).
@@ -102,7 +105,7 @@ confirmed notification types — were never fired by anything.
   `id`), thread-safe, called from `createInternalPayment` instead of `Get`.
 - **The outgoing debtor account is resolved by currency, not a constant.**
   `createInternalPayment` maps `req.Currency` to the matching
-  `bc_acc_sga_{ccy}` and debits that — 400 on an unconfigured currency.
+  safeguarding account and debits that — 400 on an unconfigured currency.
 - **New internal (no-auth) balance proxy**, mirroring buddy's own
   `InternalAccountBalanceController` ("other Infinite services/Lambdas that
   need Banking Circle data without holding BC credentials themselves" —
@@ -312,7 +315,7 @@ exceeds per Phase 2's own product decision).
   payout landed on the same ledger account regardless of which merchant
   was being paid, which cannot demonstrate "settle individual merchants."
   Fix: derive it from the beneficiary id instead —
-  `accountId = "bc_acc_" + p.BeneficiaryID` — paired with section 1's
+  `accountId = bankingcircle.AccountIDFor(p.BeneficiaryID)` — paired with section 1's
   ledger auto-vivification on the Banking Circle side, so each distinct
   merchant gets its own tracked balance.
 - **`debtorReference` is client-supplied; real B4B generates it.** Real
@@ -337,8 +340,8 @@ automatic `Settled` transition and the manual `/transition` endpoint):
 
 1. Resolve the SGA account for `rec.Currency` via
    `BC_SAFEGUARDING_ACCOUNT_ID_EUR`/`_GBP` (env vars, **same names** as
-   buddy's real ones; defaults `bc_acc_sga_eur`/`bc_acc_sga_gbp` matching
-   section 1's seeded ids). Unconfigured currency: log, `SetPayout(rec.ID,
+   buddy's real ones; defaults are `bankingcircle.SGAAccountEUR`/`…GBP`,
+   matching section 1's seeded ids). Unconfigured currency: log, `SetPayout(rec.ID,
    "", "submission_failed")`, return — a real deployment would have the
    same gap.
 2. `GET {BC_INTERNAL_URL}/internal/accounts/{sgaID}/balances` — the

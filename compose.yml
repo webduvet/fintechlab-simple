@@ -117,8 +117,8 @@ services:
       # (different) env var of that name (mTLS :8085) -- same literal
       # name, different meaning, different process would be confusing.
       BC_INTERNAL_URL: http://banking-circle:8095
-      BC_SAFEGUARDING_ACCOUNT_ID_EUR: bc_acc_sga_eur
-      BC_SAFEGUARDING_ACCOUNT_ID_GBP: bc_acc_sga_gbp
+      BC_SAFEGUARDING_ACCOUNT_ID_EUR: 00000000-0000-4000-8000-000000000978
+      BC_SAFEGUARDING_ACCOUNT_ID_GBP: 00000000-0000-4000-8000-000000000826
       # Take delivery of Worldline's settlement files over the real
       # SFTP+PGP channel. This is the whole configuration surface for that
       # integration: point WORLDLINE_SFTP_HOST at real Worldline, supply
@@ -229,8 +229,8 @@ services:
       # credits the account directly -- it is the arrival of the money
       # being simulated, not the mechanism that delivers it.
       BC_INTERNAL_URL: http://banking-circle:8095
-      BC_SAFEGUARDING_ACCOUNT_ID_EUR: bc_acc_sga_eur
-      BC_SAFEGUARDING_ACCOUNT_ID_GBP: bc_acc_sga_gbp
+      BC_SAFEGUARDING_ACCOUNT_ID_EUR: 00000000-0000-4000-8000-000000000978
+      BC_SAFEGUARDING_ACCOUNT_ID_GBP: 00000000-0000-4000-8000-000000000826
     volumes:
       - ./sftp/inbound:/sftp/inbound:rw
       - ./sftp/outbound:/sftp/outbound:rw

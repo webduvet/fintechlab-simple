@@ -27,8 +27,20 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
+)
+
+// Account ids in these tests are UUIDs because Banking Circle's are, and
+// because every service between the platform and this one validates them
+// as such before forwarding. testMerchantAccount and friends are derived
+// the same way B4B derives a creditor account from a beneficiary id.
+var (
+	sgaEUR          = bankingcircle.SGAAccountEUR
+	merchantAccount = bankingcircle.AccountIDFor("merchant")
+	brandNewAccount = bankingcircle.AccountIDFor("brand_new")
+	someoneAccount  = bankingcircle.AccountIDFor("someone")
 )
 
 func newTestApp(t *testing.T) *app {
@@ -58,8 +70,10 @@ func newTestApp(t *testing.T) *app {
 		DefaultMaxNotificationsPerMessage: bankingcircle.MinNotificationsPerMessage,
 		RequestTimeout:                    bankingcircle.Duration(2 * time.Second),
 	}
+	a.notifLog = activity.New("notifications", "Notifications sent", "")
 	a.dispatch = bankingcircle.NewDispatcher(cfg, a.subs, a.mail, t.Logf)
 	a.dispatch.Send = a.sendEncrypted
+	a.dispatch.OnQueued = a.recordQueued
 	a.engine = bankingcircle.NewEngine(ledger, 5*time.Millisecond, a.onTransition)
 	return a
 }
@@ -333,7 +347,7 @@ func TestAuthorizeAndBearerGate(t *testing.T) {
 	}
 
 	// Balances without a bearer token: rejected.
-	resp, err = http.Get(srv.URL + "/api/v1/accounts/bc_acc_sga_eur/balances")
+	resp, err = http.Get(srv.URL + "/api/v1/accounts/" + sgaEUR + "/balances")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +357,7 @@ func TestAuthorizeAndBearerGate(t *testing.T) {
 	}
 
 	// Balances with the issued bearer token: succeeds.
-	req, _ = http.NewRequest("GET", srv.URL+"/api/v1/accounts/bc_acc_sga_eur/balances?pageNumber=2&pageSize=5", nil)
+	req, _ = http.NewRequest("GET", srv.URL+"/api/v1/accounts/"+sgaEUR+"/balances?pageNumber=2&pageSize=5", nil)
 	req.Header.Set("Authorization", "Bearer "+body.AccessToken)
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -564,11 +578,11 @@ func TestInternalPaymentLifecycleAndWebhookDelivery(t *testing.T) {
 		t.Fatalf("create incoming payment = %d, want 202", fundResp.StatusCode)
 	}
 	stream.expect(bankingcircle.NotificationIncomingPaymentProcessed)
-	if sga, err := a.ledger.Get("bc_acc_sga_eur"); err != nil || sga.Balance != "1000.00" {
+	if sga, err := a.ledger.Get(sgaEUR); err != nil || sga.Balance != "1000.00" {
 		t.Fatalf("sga balance after funding = %+v, err=%v", sga, err)
 	}
 
-	createBody := `{"paymentId":"bcp_lifecycle1","accountId":"bc_acc_merchant","amount":"123.45","currency":"EUR","externalRef":"settle_42"}`
+	createBody := `{"paymentId":"bcp_lifecycle1","accountId":"` + merchantAccount + `","amount":"123.45","currency":"EUR","externalRef":"settle_42"}`
 	resp, err := http.Post(internalSrv.URL+"/internal/payments", "application/json", strings.NewReader(createBody))
 	if err != nil {
 		t.Fatal(err)
@@ -587,8 +601,8 @@ func TestInternalPaymentLifecycleAndWebhookDelivery(t *testing.T) {
 	if created.SettlementID != "settle_42" {
 		t.Fatalf("SettlementID = %q, want externalRef passed through verbatim", created.SettlementID)
 	}
-	if created.FromAccountID != "bc_acc_sga_eur" {
-		t.Fatalf("FromAccountID = %q, want bc_acc_sga_eur", created.FromAccountID)
+	if created.FromAccountID != sgaEUR {
+		t.Fatalf("FromAccountID = %q, want the EUR safeguarding account", created.FromAccountID)
 	}
 
 	// Booked notification, delivered and decryptable.
@@ -603,17 +617,17 @@ func TestInternalPaymentLifecycleAndWebhookDelivery(t *testing.T) {
 	if pay.PaymentID != "bcp_lifecycle1" {
 		t.Fatalf("payment = %+v", pay)
 	}
-	if pay.CreditorInformation == nil || pay.CreditorInformation.AccountID != "bc_acc_merchant" {
+	if pay.CreditorInformation == nil || pay.CreditorInformation.AccountID != merchantAccount {
 		t.Fatalf("creditorInformation = %+v", pay.CreditorInformation)
 	}
-	if pay.DebtorInformation == nil || pay.DebtorInformation.AccountID != "bc_acc_sga_eur" {
+	if pay.DebtorInformation == nil || pay.DebtorInformation.AccountID != sgaEUR {
 		t.Fatalf("debtorInformation = %+v", pay.DebtorInformation)
 	}
 
 	// Processed notification follows after PROCESSING_DELAY.
 	stream.expect(bankingcircle.NotificationOutgoingPaymentProcessed)
 
-	merchant, _ := a.ledger.Get("bc_acc_merchant")
+	merchant, _ := a.ledger.Get(merchantAccount)
 	if merchant.Balance != "123.45" {
 		t.Fatalf("merchant balance = %s, want 123.45", merchant.Balance)
 	}
@@ -637,7 +651,7 @@ func TestInternalPaymentLifecycleAndWebhookDelivery(t *testing.T) {
 
 	stream.expect(bankingcircle.NotificationReversed)
 
-	merchant, _ = a.ledger.Get("bc_acc_merchant")
+	merchant, _ = a.ledger.Get(merchantAccount)
 	if merchant.Balance != "0.00" {
 		t.Fatalf("merchant balance after reversal = %s, want 0.00", merchant.Balance)
 	}
@@ -658,12 +672,12 @@ func TestInternalPaymentAutoVivifiesUnknownCreditorAccount(t *testing.T) {
 	srv := httptest.NewServer(a.internalMux())
 	defer srv.Close()
 
-	if _, err := a.ledger.Get("bc_acc_brand_new"); err != bankingcircle.ErrAccountNotFound {
+	if _, err := a.ledger.Get(brandNewAccount); err != bankingcircle.ErrAccountNotFound {
 		t.Fatalf("account should not exist before the payment: err = %v", err)
 	}
 
 	resp, err := http.Post(srv.URL+"/internal/payments", "application/json",
-		strings.NewReader(`{"paymentId":"bcp_x","accountId":"bc_acc_brand_new","amount":"10.00","currency":"EUR"}`))
+		strings.NewReader(`{"paymentId":"bcp_x","accountId":"`+brandNewAccount+`","amount":"10.00","currency":"EUR"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -675,11 +689,11 @@ func TestInternalPaymentAutoVivifiesUnknownCreditorAccount(t *testing.T) {
 	if resp.StatusCode != 202 {
 		t.Fatalf("status = %d, want 202 (unknown creditor accounts auto-vivify, no more 404)", resp.StatusCode)
 	}
-	if created.ToAccountID != "bc_acc_brand_new" {
-		t.Fatalf("toAccountId = %q, want bc_acc_brand_new", created.ToAccountID)
+	if created.ToAccountID != brandNewAccount {
+		t.Fatalf("toAccountId = %q, want the derived account", created.ToAccountID)
 	}
 
-	acc, err := a.ledger.Get("bc_acc_brand_new")
+	acc, err := a.ledger.Get(brandNewAccount)
 	if err != nil {
 		t.Fatalf("account should have been auto-vivified: %v", err)
 	}
@@ -694,7 +708,7 @@ func TestInternalPaymentRejectsUnconfiguredCurrency(t *testing.T) {
 	defer srv.Close()
 
 	resp, err := http.Post(srv.URL+"/internal/payments", "application/json",
-		strings.NewReader(`{"paymentId":"bcp_y","accountId":"bc_acc_someone","amount":"10.00","currency":"USD"}`))
+		strings.NewReader(`{"paymentId":"bcp_y","accountId":"`+someoneAccount+`","amount":"10.00","currency":"USD"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -833,5 +847,128 @@ func TestMTLSListenerRequiresClientCert(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+// TestPauseQueuesNotificationsAndResumeReleasesThem drives the console's
+// pause switch over HTTP, end to end: a real payment, a real subscriber, a
+// real encrypted delivery — stopped, held where it can be seen, and let
+// go.
+//
+// The assertion that matters is the middle one. A pause that simply
+// dropped notifications, or one that stopped the engine producing them,
+// would pass a test that only checked "nothing arrived at the endpoint" —
+// and would be a different, much less useful thing than a subscriber that
+// is temporarily not being called.
+func TestPauseQueuesNotificationsAndResumeReleasesThem(t *testing.T) {
+	a := newTestApp(t)
+	receiver, deliveries := captureSubscriber(t)
+	sub := subscribeAll(t, a, receiver.URL)
+	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
+
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+
+	tok := a.tokens.issue(time.Hour)
+	sim := func(method, path string) map[string]any {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s %s = %d, want 200", method, path, resp.StatusCode)
+		}
+		var out map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	paused := sim("POST", "/sim/subscription/"+sub.ID+"/pause")
+	if paused["paused"] != true {
+		t.Fatalf("pause answered %+v", paused)
+	}
+
+	// A real event, through the real bridge: money into the safeguarding
+	// account produces an IncomingPaymentProcessed notification.
+	fund := `{"currency":"EUR","amount":"1000.00","reference":"paused-run"}`
+	resp, err := http.Post(internalSrv.URL+"/internal/incoming-payments", "application/json", strings.NewReader(fund))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 202 {
+		t.Fatalf("fund = %d, want 202", resp.StatusCode)
+	}
+
+	// Long enough that an unpaused delivery would have landed several
+	// times over: the flush interval is 5ms.
+	select {
+	case got := <-deliveries:
+		t.Fatalf("a paused subscription was delivered to anyway (%d bytes)", len(got.body))
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	// Funding the safeguarding account is a two-notification event --
+	// booked, then processed -- and both of them waited.
+	pending := sim("GET", "/sim/subscription/"+sub.ID+"/pending")
+	if pending["paused"] != true || pending["queued"] != float64(2) {
+		t.Fatalf("pending reports %+v, want paused with 2 queued -- a paused notification waits, it is not dropped", pending)
+	}
+	// And it is visible: an operator watching the log sees the event exists
+	// and is going nowhere, which is the entire point of pausing rather
+	// than pulling the endpoint down.
+	last := a.notifLog.Snapshot(1).Last
+	if last == nil || last.Op != "notification.queued" || last.Status != activity.StatusWarn {
+		t.Fatalf("notification log's last entry = %+v, want a queued line", last)
+	}
+	if !strings.Contains(last.Summary, "IncomingPayment") {
+		t.Fatalf("queued line does not name the event type: %q", last.Summary)
+	}
+
+	released := sim("POST", "/sim/subscription/"+sub.ID+"/resume")
+	if released["released"] != float64(2) {
+		t.Fatalf("resume answered %+v, want 2 released", released)
+	}
+	// The same notifications, encrypted and delivered exactly as they would
+	// have been had nobody paused anything, oldest first.
+	if n := stream.next(); n.NotificationType != string(bankingcircle.NotificationIncomingPaymentBooked) {
+		t.Fatalf("first released notification is %s, want the booked one -- a catch-up replays the queue in order", n.NotificationType)
+	}
+	stream.expect(bankingcircle.NotificationIncomingPaymentProcessed)
+
+	pending = sim("GET", "/sim/subscription/"+sub.ID+"/pending")
+	if pending["paused"] != false || pending["queued"] != float64(0) {
+		t.Fatalf("after resume: %+v", pending)
+	}
+}
+
+// TestPauseOnAnUnknownSubscriptionIs404. The console renders the button
+// from a list it polled; by the time somebody clicks, the subscription may
+// be gone. Answering 404 is what lets the UI say so rather than report a
+// pause that paused nothing.
+func TestPauseOnAnUnknownSubscriptionIs404(t *testing.T) {
+	a := newTestApp(t)
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+
+	for _, path := range []string{"/sim/subscription/sub_nope/pause", "/sim/subscription/sub_nope/resume"} {
+		req, _ := http.NewRequest("POST", srv.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+a.tokens.issue(time.Hour))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != 404 {
+			t.Errorf("POST %s = %d, want 404", path, resp.StatusCode)
+		}
 	}
 }

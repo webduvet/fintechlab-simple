@@ -60,22 +60,7 @@ func nonEmpty(m map[string]string) map[string]string {
 // asking "did the webhook fire" is asking about the POST. The event types
 // inside it are what makes the line worth reading, so they are named.
 func (a *app) recordNotification(sub *bankingcircle.Subscription, env bankingcircle.Envelope, status int, err error) {
-	types := map[string]int{}
-	order := []string{}
-	for _, n := range env.Notifications {
-		if _, seen := types[n.NotificationType]; !seen {
-			order = append(order, n.NotificationType)
-		}
-		types[n.NotificationType]++
-	}
-	kinds := make([]string, 0, len(order))
-	for _, k := range order {
-		if types[k] > 1 {
-			kinds = append(kinds, fmt.Sprintf("%s ×%d", k, types[k]))
-			continue
-		}
-		kinds = append(kinds, k)
-	}
+	kinds := notificationKinds(env)
 
 	detail := nonEmpty(map[string]string{
 		"subscription": sub.ID,
@@ -93,6 +78,77 @@ func (a *app) recordNotification(sub *bankingcircle.Subscription, env bankingcir
 		ev.Detail["error"] = err.Error()
 	}
 	a.notifLog.Record(ev)
+}
+
+// recordQueued logs notifications parked behind a paused subscription.
+//
+// It is in the same log as the deliveries, on purpose. "Nothing has gone
+// out" and "nothing has gone out because you paused it" are the same
+// silence from every other angle, and the one place an operator looks to
+// tell them apart is this list. The line is amber rather than red: queued
+// is a state somebody chose, not a failure, and it resolves the moment
+// they resume.
+func (a *app) recordQueued(sub *bankingcircle.Subscription, env bankingcircle.Envelope) {
+	kinds := notificationKinds(env)
+	a.notifLog.Record(activity.Event{
+		Op:   "notification.queued",
+		Peer: sub.Endpoint,
+		Summary: fmt.Sprintf("queued: %d notification(s) for %s — %s — delivery is paused",
+			len(env.Notifications), sub.Endpoint, strings.Join(kinds, ", ")),
+		Status: activity.StatusWarn,
+		Detail: nonEmpty(map[string]string{
+			"subscription": sub.ID,
+			"endpoint":     sub.Endpoint,
+			"events":       strconv.Itoa(len(env.Notifications)),
+			"waiting":      strconv.Itoa(a.dispatch.Queued(sub.ID)),
+		}),
+	})
+}
+
+// recordPause logs the switch itself, so the log says who stopped the pipe
+// and when -- without it, a queued line has no beginning and a batch that
+// arrives late has no explanation.
+func (a *app) recordPause(sub *bankingcircle.Subscription, paused bool, n int) {
+	ev := activity.Event{
+		Op:     "notification.pause",
+		Peer:   sub.Endpoint,
+		Status: activity.StatusWarn,
+		Summary: fmt.Sprintf("delivery to %s paused — notifications will queue here until it is resumed",
+			sub.Endpoint),
+		Detail: nonEmpty(map[string]string{
+			"subscription": sub.ID,
+			"endpoint":     sub.Endpoint,
+			"waiting":      strconv.Itoa(n),
+		}),
+	}
+	if !paused {
+		ev.Status = activity.StatusOK
+		ev.Summary = fmt.Sprintf("delivery to %s resumed — %d notification(s) released", sub.Endpoint, n)
+		ev.Detail["released"] = strconv.Itoa(n)
+	}
+	a.notifLog.Record(ev)
+}
+
+// notificationKinds names the event types in a batch, collapsing repeats
+// into "Type ×3". The count alone is not worth reading; the types are.
+func notificationKinds(env bankingcircle.Envelope) []string {
+	types := map[string]int{}
+	order := []string{}
+	for _, n := range env.Notifications {
+		if _, seen := types[n.NotificationType]; !seen {
+			order = append(order, n.NotificationType)
+		}
+		types[n.NotificationType]++
+	}
+	kinds := make([]string, 0, len(order))
+	for _, k := range order {
+		if types[k] > 1 {
+			kinds = append(kinds, fmt.Sprintf("%s ×%d", k, types[k]))
+			continue
+		}
+		kinds = append(kinds, k)
+	}
+	return kinds
 }
 
 func statusText(status int) string {

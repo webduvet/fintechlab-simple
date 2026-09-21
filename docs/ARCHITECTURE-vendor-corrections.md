@@ -319,7 +319,7 @@ The bridge payload in section 2 is amended to add a pass-through field:
 
 ```
 POST http://banking-circle:8085/internal/payments
-{"paymentId":"bcp_xxx","accountId":"bc_acc_merchant","amount":"123.45","currency":"EUR","externalRef":"<verbatim external_ref from B4B's own payment-creation request>"}
+{"paymentId":"bcp_xxx","accountId":"<the beneficiary's account UUID, see addendum G>","amount":"123.45","currency":"EUR","externalRef":"<verbatim external_ref from B4B's own payment-creation request>"}
 ```
 
 Banking Circle's internal handler stores `externalRef` on its existing
@@ -386,6 +386,56 @@ returns a deterministic synthetic beneficiary for **any** requested `id`
 as `bank`'s fake accounts. Settlement derives the id it requests as
 `"ben_" + merchantID` (A above); B4B does not need to know or validate
 that derivation, it accepts whatever id it is asked for.
+
+### G. Banking Circle account ids are UUIDs
+
+Every Banking Circle account id in this lab is a UUID, because every real
+one is — and, more to the point, because every service between the platform
+and this simulation validates it as one before forwarding. buddy's
+`apps/banking-circle` answers
+
+```
+GET /api/v1/internal/accounts/bc_acc_sga_eur/balances
+→ 400 {"message":"Validation failed (uuid is expected)"}
+```
+
+so the previous scheme (`bc_acc_sga_eur`, `bc_acc_` + beneficiary id) could
+not be reached *through* the platform's own Banking Circle service at all.
+It could only be reached by going around it, straight to this lab's
+no-auth bridge on 8095 — which meant the one integration the lab exists to
+exercise was the one it never exercised. The mismatch stayed invisible for
+as long as the only caller was the SGA balance check, because this lab
+happens to serve that same path shape itself; it surfaced the moment a
+second route (the BC payment reconciliation sweep) was added and 404'd.
+
+- **Safeguarding accounts** are fixed, obviously-synthetic constants ending
+  in the currency's ISO 4217 numeric code, so they are readable at a glance
+  and still structurally valid:
+  `00000000-0000-4000-8000-000000000978` (EUR, 978) and
+  `…000000000826` (GBP, 826). `internal/bankingcircle.SGAAccountEUR` /
+  `SGAAccountGBP`, and the `BC_SAFEGUARDING_ACCOUNT_ID_{EUR,GBP}` defaults
+  in `compose.yml` and `cmd/settlement`.
+- **Derived accounts** — the per-merchant creditor accounts B4B names when
+  it bridges a payout — come from `bankingcircle.AccountIDFor(key)`, RFC
+  4122 v5 over a fixed lab namespace (`internal/uuidx`). Deterministic, so
+  B4B naming a creditor and the harness later checking that merchant's
+  balance land on the same account without talking to each other; and real
+  v5 rather than an invented hash-to-hex, so any other implementation
+  reproduces it. A key that is already a UUID passes through unchanged:
+  when the platform holds a real account id, that *is* the account, and
+  re-deriving would pay someone else.
+- **A non-UUID account id is refused**, not coerced and not
+  auto-vivified: `ErrInvalidAccountID` from `Ledger.GetOrCreate`, and 400
+  (not 404) from both balance routes. Auto-vivification is the one door
+  that opens for an unseen id, which makes it the one place a typo mints a
+  funded, perfectly balanced account belonging to nobody. 400 rather than
+  404 is deliberate — "no such account" sends the reader looking for
+  missing data, "that is not an account id" sends them to their own
+  configuration, which is where the fault is.
+
+Clean cutover, no aliases. Accepting the old ids would preserve exactly the
+configuration that cannot work against the real vendor, which is the
+failure this lab is built to catch.
 
 ### Port/env registry (new pieces only)
 

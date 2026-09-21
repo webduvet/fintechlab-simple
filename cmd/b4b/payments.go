@@ -11,6 +11,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
+	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 )
@@ -232,7 +233,7 @@ func (a *app) approveAndBridge(p *b4b.Payment) {
 
 	reqBody, err := json.Marshal(map[string]any{
 		"paymentId":   bcPaymentID,
-		"accountId":   "bc_acc_" + p.BeneficiaryID,
+		"accountId":   bankingcircle.AccountIDFor(p.BeneficiaryID),
 		"amount":      p.Amount.Amount,
 		"currency":    p.CurrencyOfTransfer,
 		"externalRef": p.ExternalRef,

@@ -258,21 +258,56 @@ function subscriptionPanel(s) {
 
   const rows = subs.map((sub) => {
     const events = (sub.events || []).map((e) =>
-      `<span class="pill ${e.active ? '' : 'warn'}">${esc(e.type)}${e.targets ? ` ·&nbsp;${e.targets}` : ''}</span>`
-    ).join(' ') || '<span class="pill warn">no events</span>';
+      `<span class="pill${e.active ? '' : ' warn'}">${esc(e.type)}${e.targets ? ` ·&nbsp;${e.targets}` : ''}</span>`
+    ).join('') || '<span class="pill warn">no events</span>';
+    // Two stalls, two words, because they are undone differently: retained
+    // is what the bank kept when it gave up on a dead endpoint, queued is
+    // what you stopped on purpose.
+    const queue = []
+      .concat(sub.pending ? [`<span class="pill warn">${sub.pending} retained</span>`] : [])
+      .concat(sub.queued ? [`<span class="pill warn">${sub.queued} queued</span>`] : [])
+      .join('') || '—';
+    // The label is the next action, never the current state — see
+    // design-system.md, "Toggle — a button, not a switch".
+    const toggle = sub.paused
+      ? `<button class="ghost small" data-action="bc-resume" data-id="${esc(sub.id)}">Release${sub.queued ? ` ${sub.queued}` : ''}</button>`
+      : `<button class="ghost small" data-action="bc-pause" data-id="${esc(sub.id)}">Pause</button>`;
     return `<tr>
       <td class="mono">${esc(sub.endpoint)}</td>
-      <td>${events}</td>
-      <td><span class="pill ${sub.status === 'active' ? 'ok' : 'warn'}">${esc(sub.status)}</span></td>
-      <td class="num">${sub.pending ? `<span class="pill warn">${sub.pending} queued</span>` : '—'}</td>
-      <td><button class="ghost small" data-action="bc-test" data-id="${esc(sub.id)}">Send test</button></td>
+      <td><div class="pill-row">${events}</div></td>
+      <td><div class="pill-row">
+        <span class="pill ${sub.status === 'active' ? 'ok' : 'warn'}">${esc(sub.status)}</span>${
+        sub.paused ? '<span class="pill warn">paused</span>' : ''}</div></td>
+      <td><div class="pill-row num">${queue}</div></td>
+      <td class="actions">${toggle}</td>
+      <td class="actions"><button class="ghost small" data-action="bc-test" data-id="${esc(sub.id)}">Send test</button></td>
     </tr>`;
   }).join('');
 
-  return `<div class="note">Banking Circle POSTs to these, encrypted per subscription, in
-      batches of up to ${esc(String(subs[0].max_per_message || 5))}.</div>
+  const paused = subs.filter((sub) => sub.paused);
+  const held = paused.reduce((n, sub) => n + (sub.queued || 0), 0);
+  // Said here as well as in the log, because this is the surface that can
+  // explain it: the log below will go quiet, and a quiet log looks exactly
+  // like a broken endpoint.
+  const note = paused.length
+    ? `<div class="note warn"><b>Delivery is paused</b> on ${paused.length}
+        ${paused.length === 1 ? 'subscription' : 'subscriptions'}.
+        ${held ? `${held} notification${held === 1 ? '' : 's'} waiting.` : 'Nothing is waiting yet.'}
+        What queues shows up amber in <b>Notifications sent</b> below, and goes out in order when you release it.
+        Nothing else stops: payments still process and notifications are still produced.</div>`
+    : '';
+
+  // The second note explains the pause only while nothing is paused. Once
+  // something is, the amber note above says more and better, and two
+  // stacked paragraphs saying the same thing is how a card stops being read.
+  return `${note}<div class="note">Banking Circle POSTs to these, encrypted per subscription, in
+      batches of up to ${esc(String(subs[0].max_per_message || 5))}.${paused.length ? ''
+      : ` <b>Pause</b> holds one subscription's deliveries so you can watch a catch-up happen on purpose.`}</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>Endpoint</th><th>Events</th><th>Status</th><th class="num">Queue</th><th></th></tr></thead>
+      <thead><tr>
+        <th>Endpoint</th><th>Events</th><th>Status</th><th class="num">Queue</th>
+        <th class="actions">Delivery</th><th class="actions"></th>
+      </tr></thead>
       <tbody>${rows}</tbody>
     </table></div>`;
 }
@@ -1150,6 +1185,23 @@ const ACTIONS = {
   'bc-test': async (d) => {
     const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/test`);
     toast(r.delivered ? 'Endpoint took it' : 'Nothing took it', r.result, r.delivered ? 'good' : 'bad');
+  },
+
+  /* Pause and release are two routes, not one with a flag, so each button is
+     one call somebody could make with curl — and so a mistyped URL is a 404
+     rather than a pause nobody asked for. */
+  'bc-pause': async (d) => {
+    const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/pause`);
+    toast('Delivery paused', `${r.endpoint}\nNotifications will queue in the log below until you release them.` +
+      (r.queued ? `\n${r.queued} already waiting.` : ''));
+  },
+
+  'bc-resume': async (d) => {
+    const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/resume`);
+    toast('Delivery resumed',
+      r.released ? `${r.released} notification(s) released to ${r.endpoint}, oldest first.`
+                 : `${r.endpoint}\nNothing was waiting.`,
+      'good');
   },
 
   'runner-fund-sga': async () => {

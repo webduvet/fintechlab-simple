@@ -150,10 +150,12 @@ func main() {
 		payLog: activity.New("payments", "Payments received",
 			"What arrived on the lab bridge: payouts from B4B, and money landing on the safeguarding accounts."),
 		notifLog: activity.New("notifications", "Notifications sent",
-			"Each encrypted batch this vendor posted to a subscription's endpoint, and what that endpoint answered."),
+			"Each encrypted batch this vendor posted to a subscription's endpoint, and what that endpoint answered. "+
+				"A subscription whose delivery is paused shows its notifications queued here instead, until it is resumed."),
 	}
 	a.dispatch = bankingcircle.NewDispatcher(deliveryCfg, a.subs, a.mail, log.Printf)
 	a.dispatch.Send = a.sendEncrypted
+	a.dispatch.OnQueued = a.recordQueued
 	a.engine = bankingcircle.NewEngine(a.ledger, delay, a.onTransition)
 
 	// Seed one default subscription, subscribed to every event type this
@@ -277,6 +279,8 @@ func (a *app) mux() *http.ServeMux {
 	mux.HandleFunc("GET /sim/emails", a.requireBearer(a.listEmails))
 	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/notifications", a.requireBearer(a.enqueueSyntheticNotifications))
 	mux.HandleFunc("GET /sim/subscription/{subscriptionId}/pending", a.requireBearer(a.pendingNotifications))
+	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/pause", a.requireBearer(a.pauseNotifications))
+	mux.HandleFunc("POST /sim/subscription/{subscriptionId}/resume", a.requireBearer(a.resumeNotifications))
 	// The delivery table this process is actually running, which is the
 	// file's plus whatever BC_TIME_SCALE overrode. Reading the file alone
 	// reports a schedule nobody is on.
@@ -429,7 +433,16 @@ func (a *app) balanceEntries(acct *bankingcircle.Account) []balanceEntry {
 // ledger has no intraday/beginOfDay distinction, so both amounts reflect the
 // current balance — a documented simplification, not a hidden bug.
 func (a *app) balances(w http.ResponseWriter, r *http.Request) {
-	acc, err := a.ledger.Get(r.PathValue("accountId"))
+	id := r.PathValue("accountId")
+	// A malformed id is a 400, not a 404. The distinction matters to the
+	// caller: "no such account" sends someone looking for missing data,
+	// "that is not an account id" sends them to their own configuration,
+	// which is where the problem actually is.
+	if !bankingcircle.ValidAccountID(id) {
+		httputilx.Error(w, 400, "accountId must be a UUID")
+		return
+	}
+	acc, err := a.ledger.Get(id)
 	if err != nil {
 		httputilx.Error(w, 404, "account not found")
 		return
@@ -564,9 +577,9 @@ func boolOr(s string, def bool) bool {
 func sgaAccountID(currency string) (string, error) {
 	switch currency {
 	case "EUR":
-		return "bc_acc_sga_eur", nil
+		return bankingcircle.SGAAccountEUR, nil
 	case "GBP":
-		return "bc_acc_sga_gbp", nil
+		return bankingcircle.SGAAccountGBP, nil
 	default:
 		return "", fmt.Errorf("no safeguarding account configured for currency %q", currency)
 	}
@@ -624,7 +637,16 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	to := a.ledger.GetOrCreate(req.AccountID, ccy)
+	// A malformed creditor account id is the caller's mistake and is
+	// answered as one. Auto-vivifying it would open an account that looks
+	// exactly like a real one, take the money, and balance -- and the
+	// payout would be "successful" to an account no reconciliation could
+	// ever match.
+	to, err := a.ledger.GetOrCreate(req.AccountID, ccy)
+	if err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	p := &bankingcircle.Payment{
 		ID:            req.PaymentID,
@@ -687,7 +709,17 @@ func (a *app) createIncomingPayment(w http.ResponseWriter, r *http.Request) {
 // 1). Read-only: unlike createInternalPayment, an unknown account id is a
 // real 404, not an auto-vivify trigger.
 func (a *app) internalAccountBalances(w http.ResponseWriter, r *http.Request) {
-	acc, err := a.ledger.Get(r.PathValue("accountId"))
+	id := r.PathValue("accountId")
+	// Same rule as the credentialed route. This one mirrors buddy's
+	// InternalAccountBalanceController, which validates the path segment as
+	// a UUID before it calls anything -- so a lab that accepted a
+	// non-UUID here would answer requests the real chain rejects two hops
+	// earlier, and a client would only discover that in production.
+	if !bankingcircle.ValidAccountID(id) {
+		httputilx.Error(w, 400, "accountId must be a UUID")
+		return
+	}
+	acc, err := a.ledger.Get(id)
 	if err != nil {
 		httputilx.Error(w, 404, "account not found")
 		return

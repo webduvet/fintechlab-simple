@@ -134,7 +134,25 @@ Everything under `/sim` is this lab's, not Banking Circle's:
 | --- | --- |
 | `GET /sim/emails` | The warning/deactivation emails the schedule emitted |
 | `POST /sim/subscription/{id}/notifications?count=N` | Queue N notifications *without* flushing, so batching is observable |
-| `GET /sim/subscription/{id}/pending` | How many notifications are held for redelivery |
+| `GET /sim/subscription/{id}/pending` | What is not moving: `pending` retained for redelivery after a deactivation, `paused`/`queued` behind an operator's pause |
+| `POST /sim/subscription/{id}/pause` | Stop delivering to this subscription; what it would have sent waits, in order |
+| `POST /sim/subscription/{id}/resume` | Release everything waiting, oldest first, in that subscription's own batch size |
+
+The pause is an outage you can hold still. A subscriber that is briefly not
+being called is a real thing a client has to survive, and the only other
+way to produce one is to actually break the subscriber — which also loses
+the notifications, and so tests the wrong recovery. Paused, the queue is
+visible the whole time (`/sim/subscription/{id}/pending`, and the
+notification log carries a `notification.queued` line per parked batch),
+and a release replays it in order.
+
+It stops delivery and nothing else. Payments still process, notifications
+are still produced and still matched against subscriptions and their
+targets; a pause is not a deactivation, and unlike a deactivation it does
+not touch the subscription's status or its rowVersion. Releases are cut by
+`maxNotificationsPerMessage` like any other delivery, and go out one batch
+after another rather than concurrently — a catch-up that arrived shuffled
+would not be a catch-up.
 
 `clienttest` is deliberately left alone: it is a real endpoint whose job is
 to answer "is my endpoint reachable" *now*, so it flushes immediately, and

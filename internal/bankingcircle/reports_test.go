@@ -8,39 +8,39 @@ import (
 // booked, one rejected, one short of funds, and one returned after booking.
 func samplePayments() []*Payment {
 	return []*Payment{
-		{ID: "bc_in_1", FromAccountID: "external", ToAccountID: "bc_acc_sga_eur",
+		{ID: "bc_in_1", FromAccountID: "external", ToAccountID: SGAAccountEUR,
 			Amount: "4120.00", Currency: "EUR", Reference: "wl-lump-1",
 			State:     NotificationIncomingPaymentProcessed,
 			CreatedAt: "2026-09-18T06:00:00Z", UpdatedAt: "2026-09-18T06:00:05Z"},
 
-		{ID: "bc_p_1", FromAccountID: "bc_acc_sga_eur", ToAccountID: "acc_m1",
+		{ID: "bc_p_1", FromAccountID: SGAAccountEUR, ToAccountID: "acc_m1",
 			Amount: "125.00", Currency: "EUR", Reference: "stl-1", SettlementID: "SETL-1",
 			State:     NotificationOutgoingPaymentProcessed,
 			CreatedAt: "2026-09-18T09:00:00Z", UpdatedAt: "2026-09-18T09:00:10Z"},
-		{ID: "bc_p_2", FromAccountID: "bc_acc_sga_eur", ToAccountID: "acc_m2",
+		{ID: "bc_p_2", FromAccountID: SGAAccountEUR, ToAccountID: "acc_m2",
 			Amount: "80.50", Currency: "EUR", Reference: "stl-2", SettlementID: "SETL-1",
 			State:     NotificationOutgoingPaymentBooked,
 			CreatedAt: "2026-09-18T09:00:01Z", UpdatedAt: "2026-09-18T09:00:11Z"},
-		{ID: "bc_p_3", FromAccountID: "bc_acc_sga_gbp", ToAccountID: "acc_m3",
+		{ID: "bc_p_3", FromAccountID: SGAAccountGBP, ToAccountID: "acc_m3",
 			Amount: "40.00", Currency: "GBP", Reference: "stl-3", SettlementID: "SETL-2",
 			State:     NotificationOutgoingPaymentProcessed,
 			CreatedAt: "2026-09-18T09:00:02Z", UpdatedAt: "2026-09-18T09:00:12Z"},
 
-		{ID: "bc_r_1", FromAccountID: "bc_acc_sga_eur", ToAccountID: "acc_m4",
+		{ID: "bc_r_1", FromAccountID: SGAAccountEUR, ToAccountID: "acc_m4",
 			Amount: "10.00", Currency: "EUR", Reference: "stl-4", SettlementID: "SETL-1",
 			State:     NotificationOutgoingPaymentRejected,
 			CreatedAt: "2026-09-18T09:00:03Z", UpdatedAt: "2026-09-18T09:00:13Z"},
-		{ID: "bc_r_2", FromAccountID: "bc_acc_sga_eur", ToAccountID: "acc_m5",
+		{ID: "bc_r_2", FromAccountID: SGAAccountEUR, ToAccountID: "acc_m5",
 			Amount: "999.00", Currency: "EUR", Reference: "stl-5", SettlementID: "SETL-1",
 			State:     NotificationMissingFunding,
 			CreatedAt: "2026-09-18T09:00:04Z", UpdatedAt: "2026-09-18T09:00:14Z"},
-		{ID: "bc_rev_1", FromAccountID: "bc_acc_sga_eur", ToAccountID: "acc_m6",
+		{ID: "bc_rev_1", FromAccountID: SGAAccountEUR, ToAccountID: "acc_m6",
 			Amount: "55.00", Currency: "EUR", Reference: "stl-6", SettlementID: "SETL-1",
 			State:     NotificationReversed,
 			CreatedAt: "2026-09-18T09:00:05Z", UpdatedAt: "2026-09-18T09:00:15Z"},
 
 		// Yesterday. Must not appear in today's reports.
-		{ID: "bc_old", FromAccountID: "bc_acc_sga_eur", ToAccountID: "acc_m1",
+		{ID: "bc_old", FromAccountID: SGAAccountEUR, ToAccountID: "acc_m1",
 			Amount: "1.00", Currency: "EUR", Reference: "stl-old",
 			State:     NotificationOutgoingPaymentProcessed,
 			CreatedAt: "2026-09-17T09:00:00Z", UpdatedAt: "2026-09-17T09:00:10Z"},
@@ -188,7 +188,7 @@ func TestAccountFilterAndPaging(t *testing.T) {
 	payments := samplePayments()
 
 	q := today()
-	q.AccountIDs = []string{"bc_acc_sga_gbp"}
+	q.AccountIDs = []string{SGAAccountGBP}
 	gbp := IntradayReconciliation(payments, q)
 	if len(gbp) != 1 || gbp[0].PaymentID == nil || *gbp[0].PaymentID != "bc_p_3" {
 		t.Fatalf("account filter returned %d rows, want just the GBP payout", len(gbp))

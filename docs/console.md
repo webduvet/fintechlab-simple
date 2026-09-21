@@ -38,7 +38,18 @@ settlement run**. The platform sits in the middle, the vendors it talks to
 either side, and each hop between them is an arrow that lights as its own
 traffic arrives — the SFTP pull, the payouts into B4B, B4B's bridge into
 Banking Circle, the lifecycle callbacks coming back, the notification
-batches going out.
+batches going out, and the confirmations coming back in.
+
+**The last arrow closes the loop, and it is the one worth watching.**
+Banking Circle delivers the same encrypted batches to two places: the lab's
+own receiver stub, and whatever the system under test subscribed. Only the
+second is evidence that the platform heard anything, so they are two
+arrows, split by the endpoint Banking Circle recorded on each delivery. A
+green **notification batches** with a grey **payout confirmations** under
+it is a complete picture of a real failure: the bank sent it, the lab took
+it, and nothing of yours did. A batch whose endpoint cannot be read is
+counted on the lab's side — the confirmations arrow claims your listener was
+called, and that claim is never a guess.
 
 It is drawn by hand in SVG rather than with a diagram library, for the
 reasons in [design-system.md](design-system.md#sequence-diagram): no CDN is
@@ -60,7 +71,10 @@ carry those verdicts.
 
 At the bottom, **Run report** expands into what the run did: files
 collected, stages completed, merchant payouts and the amount settled,
-payouts at the bank, callbacks delivered, notification batches. Fees are
+payouts at the bank, callbacks delivered, notification batches,
+confirmations to the platform, and **payouts confirmed** as "2 of 6" — the
+bank's verdict as the platform's own books record it, reported even when it
+is zero, because zero is the number somebody is looking for. Fees are
 deliberately absent — they are computed inside the platform's own workers
 and never leave them, and the panel says so rather than inventing a figure.
 
@@ -117,7 +131,7 @@ expanded card shows it as a panel per conversation:
 | Service | Panels |
 | --- | --- |
 | **B4B Payments** | *Payouts received* — every call to the payments API and what was answered · *Callbacks sent* — each lifecycle callback, and whether the client took it |
-| **Banking Circle** | *Payments received* — payouts arriving over the lab bridge, and money landing on the safeguarding accounts · *Notifications sent* — each encrypted batch, its event types, and the endpoint's answer |
+| **Banking Circle** | *Payments received* — payouts arriving over the lab bridge, and money landing on the safeguarding accounts · *Notifications sent* — each encrypted batch, its event types, and the endpoint's answer, plus whatever a paused subscription is holding |
 | **Worldline** | *File exchange* — every SFTP session the platform opened, and the files it listed, collected or delivered |
 
 This exists because the three most common questions during a run —
@@ -190,7 +204,13 @@ Expanding the Banking Circle card shows its notification subscriptions
 before its activity panels: the **endpoint** it will POST to, the **event
 types** behind it (an inactive one is amber, and a count appears when the
 event is narrowed to specific targets), the subscription's **status**, and
-the **queue depth** if a batch is not draining.
+the **queue depth** if anything is not moving.
+
+The queue column names two different stalls, because they are undone
+differently. **Retained** is what the vendor kept when it gave up on an
+endpoint that never answered and deactivated the subscription; it clears by
+reactivating. **Queued** is what an operator paused; it clears by pressing
+release.
 
 This is the half of the vendor that is invisible until it is wrong. A
 subscription is a URL the bank calls, and *nobody subscribed* and
@@ -211,6 +231,38 @@ endpoint actually did:
 Endpoint took it     batch of 1 to https://receiver:8443/raw-events — PaymentStatus
 Nothing took it      … — Post "https://receiver:8443/raw-events": dial tcp: lookup …
 ```
+
+### Pausing notifications
+
+**Pause** stops Banking Circle delivering to one subscription. Everything it
+would have sent waits, in order, and **Release** sends it — cut into the
+same batches it would have gone out in, oldest first.
+
+This exists because a webhook that arrives four milliseconds after the
+event it describes is a webhook nobody can watch arrive. Paused, the gap
+between "the bank did something" and "the platform was told" is as wide as
+you want it, which is where the interesting questions live: what does the
+platform show while a payout is settled at the bank but unconfirmed, does
+it recover when eleven notifications land at once, and does it cope with
+them arriving in order but late. Breaking a subscriber to find out means
+breaking it, and a broken subscriber also loses the notifications.
+
+The pause is the vendor's own switch —
+`POST /sim/subscription/{id}/pause` and `/resume`, under `/sim` because the
+real API has nothing like it — not something the console remembers. That
+matters: while it is paused, the queued notifications appear in **Notifications
+sent** below, amber, named by event type, with the number still waiting:
+
+```
+notification.queued   queued: 2 notification(s) for … — OutgoingPaymentBooked ×2 — delivery is paused
+notification.pause    delivery to … resumed — 2 notification(s) released
+notification          batch of 2 to … — OutgoingPaymentBooked ×2
+```
+
+A pause that hid the notifications would be a worse lie than a broken
+endpoint, since a quiet log reads as *nothing happened*. It stops delivery
+and nothing else: payments still process, notifications are still produced,
+matched against subscriptions and ordered. They just wait.
 
 ## Banks
 

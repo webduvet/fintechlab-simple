@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +137,55 @@ func (f *flowLogs) total(logName string) int64 {
 // whole of a run and a little history either side.
 const flowWindow = 256
 
+// Notification deliveries are split by who was being called.
+//
+// Banking Circle records the subscriber's endpoint on every batch, and the
+// lab's own receiver stub answers only to a name this catalogue knows. So a
+// delivery to a known name is the lab talking to itself; anything else is
+// the system under test, subscribed with its own endpoint. Those are two
+// different arrows, and collapsing them is what let a settlement sit at
+// IN_PROGRESS with a green "notifications" hop above it.
+//
+// A batch whose endpoint cannot be read stays on the lab's side. The
+// platform arrow asserts "your own listener was called", and an assertion
+// like that must never be a guess.
+
+// endpointHost is the host a subscription's endpoint points at, or "" when
+// it is not a URL this can read.
+func endpointHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// labDelivery reports whether a notification went to one of the lab's own
+// services. Built from the catalogue rather than a hardcoded name, so a
+// renamed stub does not quietly start counting as the platform.
+func labDelivery(known map[string]bool) func(activity.Event) bool {
+	return func(e activity.Event) bool {
+		host := endpointHost(e.Detail["endpoint"])
+		if host == "" {
+			return true
+		}
+		return known[host]
+	}
+}
+
+// splitEvents divides one log by that verdict, keeping each side in the
+// order it arrived.
+func splitEvents(evs []activity.Event, isLab func(activity.Event) bool) (lab, platform []activity.Event) {
+	for _, e := range evs {
+		if isLab(e) {
+			lab = append(lab, e)
+			continue
+		}
+		platform = append(platform, e)
+	}
+	return lab, platform
+}
+
 func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := reqContext(r)
 	defer cancel()
@@ -195,9 +245,11 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 		return empty
 	}
 
+	isLab := labDelivery(a.knownHosts())
+
 	out := flowResponse{
-		Participants: a.flowParticipants(at, errs),
-		Steps:        flowSteps(at, runner),
+		Participants: a.flowParticipants(at, errs, isLab),
+		Steps:        flowSteps(at, runner, isLab),
 		Run:          runner["last_run"],
 		Errors:       errs,
 	}
@@ -206,7 +258,7 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 			out.Run = live
 		}
 	}
-	out.Report = flowReport(at, runner)
+	out.Report = flowReport(at, runner, isLab)
 	httputilx.WriteJSON(w, 200, out)
 }
 
@@ -225,7 +277,18 @@ func (a *app) fetchActivity(ctx context.Context, id string, out any) error {
 	return a.getJSON(ctx, a.client, svc.BaseURL+path, out)
 }
 
-func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string) []flowParticipant {
+// knownHosts is every name the lab's own services answer to on its network.
+// The catalogue ids double as the compose service names, which is how a
+// vendor reaches the receiver stub in the first place.
+func (a *app) knownHosts() map[string]bool {
+	out := map[string]bool{}
+	for _, svc := range a.cat.Services {
+		out[svc.ID] = true
+	}
+	return out
+}
+
+func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string, isLab func(activity.Event) bool) []flowParticipant {
 	state := func(id string) string {
 		st, _ := a.mon.Get(id)
 		if st.State == "" {
@@ -243,6 +306,7 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 	wl := at("worldline")
 	b4b := at("b4b")
 	bc := at("banking-circle")
+	labBatches, _ := splitEvents(bc.find("notifications", "notification"), isLab)
 
 	return []flowParticipant{
 		{
@@ -274,23 +338,28 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 			Kind: "vendor", Status: state("banking-circle"), Error: errs["banking-circle"],
 			Stats: []flowStat{
 				{Label: "payments in", Value: itoa(len(bc.find("payments", "payment.create")))},
-				{Label: "notifications", Value: itoa64(bc.total("notifications"))},
+				// Deliveries, not everything in the notifications log. That
+				// log also carries what a paused subscription has queued,
+				// and a notification waiting to be released is precisely
+				// not one this vendor has sent.
+				{Label: "notifications", Value: itoa(len(bc.find("notifications", "notification")))},
 			},
 		},
 		{
 			ID: "receiver", Label: label("receiver", "Webhook receiver"), Role: "notification sink",
 			Kind: "platform", Status: state("receiver"),
 			Stats: []flowStat{
-				{Label: "batches taken", Value: itoa(countOK(bc.find("notifications", "notification")))},
+				{Label: "batches taken", Value: itoa(countOK(labBatches))},
 			},
 		},
 	}
 }
 
-func flowSteps(at func(string) *flowLogs, runner map[string]any) []flowStep {
+func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(activity.Event) bool) []flowStep {
 	wl := at("worldline")
 	b4b := at("b4b")
 	bc := at("banking-circle")
+	labBatches, platformBatches := splitEvents(bc.find("notifications", "notification"), isLab)
 
 	step := func(id, from, to, label, note, source string, multi bool, evs []activity.Event) flowStep {
 		s := flowStep{
@@ -337,8 +406,13 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any) []flowStep {
 			"lifecycle callbacks", "SUBMITTED → IN_PROGRESS happens here", "b4b", true,
 			b4b.find("callbacks", "callback")),
 		step("notify", "banking-circle", "receiver",
-			"notification batches", "up to five events per batch", "banking-circle", true,
-			bc.find("notifications", "notification")),
+			"notification batches", "up to five events per batch, to the lab's own stub", "banking-circle", true,
+			labBatches),
+		step("confirm", "banking-circle", "platform",
+			"payout confirmations",
+			"the same batches to the platform's own subscriber — what moves a payout off IN_PROGRESS; "+
+				"grey under a green hop above means nothing of yours heard it",
+			"banking-circle", true, platformBatches),
 		step("reports", "platform", "platform",
 			"daily reports", "five report jobs; the mail hop fails alone when no mailer runs", "", true, nil),
 	}
@@ -412,11 +486,13 @@ func runStages(runner map[string]any) map[string]string {
 // are the honest omission: they are computed inside the platform's workers
 // and never leave them, so rather than invent a figure the view says where
 // they live.
-func flowReport(at func(string) *flowLogs, runner map[string]any) []flowStat {
+func flowReport(at func(string) *flowLogs, runner map[string]any, isLab func(activity.Event) bool) []flowStat {
 	b4b := at("b4b")
 	bc := at("banking-circle")
 	wl := at("worldline")
 	stages := runStages(runner)
+	batches := bc.find("notifications", "notification")
+	_, platformBatches := splitEvents(batches, isLab)
 
 	done, failed := 0, 0
 	for _, st := range stages {
@@ -428,7 +504,7 @@ func flowReport(at func(string) *flowLogs, runner map[string]any) []flowStat {
 		}
 	}
 
-	payouts, amount := "0", ""
+	payouts, amount, confirmed := "0", "", ""
 	if runner != nil {
 		for _, key := range []string{"running_now", "last_run"} {
 			run, _ := runner[key].(map[string]any)
@@ -438,6 +514,11 @@ func flowReport(at func(string) *flowLogs, runner map[string]any) []flowStat {
 			if p, ok := run["payouts"].(map[string]any); ok && p != nil {
 				payouts = fmtAny(p["count"])
 				amount = fmtAny(p["total"])
+				// A payout the bank has confirmed, as the platform's own
+				// books record it. Reported as "0 of 6" rather than left
+				// out when none have landed, because none landing is the
+				// answer somebody is looking for.
+				confirmed = itoa(statusCount(p["statuses"], "SUCCESS")) + " of " + payouts
 			}
 			break
 		}
@@ -454,12 +535,30 @@ func flowReport(at func(string) *flowLogs, runner map[string]any) []flowStat {
 	stats = append(stats,
 		flowStat{Label: "payouts at the bank", Value: itoa(len(bc.find("payments", "payment.create")))},
 		flowStat{Label: "callbacks delivered", Value: itoa(countOK(b4b.find("callbacks", "callback")))},
-		flowStat{Label: "notification batches", Value: itoa(len(bc.find("notifications", "notification")))},
+		flowStat{Label: "notification batches", Value: itoa(len(batches))},
+		flowStat{Label: "confirmations to the platform", Value: itoa(len(platformBatches))},
 	)
+	if confirmed != "" {
+		stats = append(stats, flowStat{Label: "payouts confirmed", Value: confirmed})
+	}
 	if failed > 0 {
 		stats = append(stats, flowStat{Label: "stages failed", Value: itoa(failed)})
 	}
 	return stats
+}
+
+// statusCount reads one bucket out of the runner's payout breakdown,
+// tolerating every shape another service's JSON might not be.
+func statusCount(v any, status string) int {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return 0
+	}
+	n, ok := m[status].(float64)
+	if !ok {
+		return 0
+	}
+	return int(n)
 }
 
 func countOK(evs []activity.Event) int {

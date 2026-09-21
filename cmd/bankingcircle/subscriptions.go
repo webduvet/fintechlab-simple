@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -327,12 +328,67 @@ func (a *app) enqueueSyntheticNotifications(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// pendingNotifications reports how many notifications are being held for
-// redelivery because the subscription was deactivated before they landed.
+// pendingNotifications reports what is not moving, and why.
+//
+// Two different stalls, reported separately because the operator's next
+// move differs: pending is what the vendor retained because the
+// subscription was deactivated before delivery landed, and it clears by
+// reactivating; queued is what an operator paused, and it clears by
+// resuming. Collapsing them into one number would put "the bank gave up on
+// you" and "you pressed a button" behind the same word.
 func (a *app) pendingNotifications(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("subscriptionId")
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"subscriptionId": id,
 		"pending":        a.dispatch.Pending(id),
+		"paused":         a.dispatch.Paused(id),
+		"queued":         a.dispatch.Queued(id),
+	})
+}
+
+// pauseNotifications and resumeNotifications are the lab's tap on the
+// notification pipe: delivery to one subscription stops, and everything it
+// would have sent waits in order until it is turned back on.
+//
+// Lab-only, hence /sim -- the real API has no such switch, and a client
+// that found one here and wrote to it would be writing against this
+// simulator rather than against Banking Circle. What it simulates is real
+// enough: a subscriber that is unreachable for a while, without having to
+// actually break one, and with the queue visible the whole time.
+//
+// Two endpoints rather than one taking a boolean, matching the vendor's own
+// activate/deactivate pair on the same resource -- and it means each button
+// in the console is exactly one call somebody could make with curl.
+func (a *app) pauseNotifications(w http.ResponseWriter, r *http.Request) {
+	sub, err := a.subs.Get(r.PathValue("subscriptionId"))
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	waiting := a.dispatch.Pause(sub.ID)
+	a.recordPause(sub, true, waiting)
+	log.Printf("banking-circle: delivery to %s (%s) paused with %d notification(s) waiting", sub.ID, sub.Endpoint, waiting)
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"subscriptionId": sub.ID,
+		"endpoint":       sub.Endpoint,
+		"paused":         true,
+		"queued":         waiting,
+	})
+}
+
+func (a *app) resumeNotifications(w http.ResponseWriter, r *http.Request) {
+	sub, err := a.subs.Get(r.PathValue("subscriptionId"))
+	if err != nil {
+		writeSubscriptionError(w, err)
+		return
+	}
+	released := a.dispatch.Resume(sub)
+	a.recordPause(sub, false, released)
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"subscriptionId": sub.ID,
+		"endpoint":       sub.Endpoint,
+		"paused":         false,
+		"released":       released,
+		"queued":         a.dispatch.Queued(sub.ID),
 	})
 }

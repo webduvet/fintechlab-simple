@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
 
@@ -82,7 +83,7 @@ func WorldlineSettlementToSFTP() Scenario {
 			if err != nil {
 				return err
 			}
-			bcAccountID := "bc_acc_" + merchantIBAN
+			bcAccountID := bankingcircle.AccountIDFor(merchantIBAN)
 			before, beforeStatus, err := bcReadBalance(ctx, env, hdr, bcAccountID)
 			if err != nil {
 				return fmt.Errorf("baseline banking-circle balance: %w", err)

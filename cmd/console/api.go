@@ -557,7 +557,12 @@ type subscriptionView struct {
 	MTLS          bool                    `json:"mtls"`
 	Email         string                  `json:"email,omitempty"`
 	Events        []subscriptionEventView `json:"events"`
-	Pending       int                     `json:"pending"`
+	// Two kinds of stall, kept apart because they are undone differently:
+	// Pending is what the vendor retained when it gave up on a dead
+	// endpoint, and Paused/Queued is what an operator stopped on purpose.
+	Pending int  `json:"pending"`
+	Paused  bool `json:"paused"`
+	Queued  int  `json:"queued"`
 }
 
 // bcSubscriptionStatus names the numeric status the API returns. The number
@@ -617,12 +622,17 @@ func (a *app) bcSubscriptions(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		// A queue that is not draining is the thing you want to know before
-		// you start doubting your own endpoint.
+		// you start doubting your own endpoint — and whether it is not
+		// draining because somebody paused it is the next thing.
 		var pending struct {
-			Pending int `json:"pending"`
+			Pending int  `json:"pending"`
+			Paused  bool `json:"paused"`
+			Queued  int  `json:"queued"`
 		}
 		if err := a.bc.AuthorizedGet(ctx, "/sim/subscription/"+url.PathEscape(s.ID)+"/pending", &pending); err == nil {
 			v.Pending = pending.Pending
+			v.Paused = pending.Paused
+			v.Queued = pending.Queued
 		}
 		out = append(out, v)
 	}
@@ -674,6 +684,41 @@ func (a *app) bcSubscriptionTest(w http.ResponseWriter, r *http.Request) {
 		"result": "queued, but nothing had been delivered three seconds later — " +
 			"the batch may be waiting for its delivery window, or the endpoint is not answering",
 	})
+}
+
+// bcSubscriptionPause stops or restarts Banking Circle's delivery to one
+// subscription.
+//
+// The value of it is the pause, not the resume: a webhook that arrives
+// milliseconds after the event it describes is a webhook nobody can watch
+// arrive. Paused, the notifications pile up where they can be read, the
+// platform is provably not being told anything, and releasing them is one
+// click — so "what does my service do when the bank goes quiet, and then
+// catches up all at once" becomes a thing you can do on purpose rather
+// than a thing you wait for.
+//
+// It proxies the vendor's own /sim endpoints rather than holding the
+// switch here. A pause the console kept to itself would be invisible to
+// anything that did not go through the console — including the vendor's
+// own log, which is where the queued notifications have to appear.
+func (a *app) bcSubscriptionPause(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+
+	// The action is read off the route rather than out of a body, so the
+	// two routes cannot collapse into one handler that guesses. A URL
+	// nobody registered is a 404 from the mux, not a pause.
+	action := "resume"
+	if strings.HasSuffix(r.URL.Path, "/pause") {
+		action = "pause"
+	}
+	var out map[string]any
+	if err := a.bc.AuthorizedPost(ctx,
+		"/sim/subscription/"+url.PathEscape(r.PathValue("id"))+"/"+action, &out); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, out)
 }
 
 func (a *app) bcNotificationTotal(ctx context.Context) int64 {

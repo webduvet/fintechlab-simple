@@ -431,6 +431,17 @@ and the peer's own words for the last thing through it. An arrow that lights
 from background polling rather than from the run says so there, rather than
 implying a story that did not happen.
 
+**One arrow per recipient, not per message type.** Two hops carrying
+identical bytes to different listeners are two arrows, because the question
+the diagram answers is *did it arrive*, and that has a different answer for
+each of them. A vendor fanning a webhook out to the app's own stub and to
+the system under test looks healthy on one merged arrow while the system
+under test hears nothing — which is exactly the failure a diagram is for.
+Split on whatever the vendor recorded about the destination, and when a
+message cannot be attributed, count it against the app's own side: an arrow
+into the system under test asserts *your listener was called*, and that
+assertion must never rest on a guess.
+
 **Render at 1:1 and never magnify.** An SVG at `width: 100%` scales its own
 text with the viewport: on a wide screen the labels come out half again the
 size of the prose beside them and the page reads as two documents. Cap it at
@@ -526,6 +537,13 @@ Rules, and they are the whole component:
 Never invent a third colour. If a new classification is needed it is a
 grey.
 
+**More than two together go in a `.pill-row`**: `display: flex`,
+`flex-wrap: wrap`, `gap: 5px 6px`. A pill is 10.5px mono on a unit
+line-height, so a group left to wrap on its own stacks its rows tighter
+than the pills are tall and eight event types read as one grey mass. The
+row gap is what keeps them countable. Add `.num` to push the group right
+in a numeric cell.
+
 ### Health dot
 
 8px circle, four states, and the fourth is the point:
@@ -567,6 +585,15 @@ Uppercase 10.5px faint headers with a `--border` underline; rows separated
 by `--border-soft`; last row's border removed. Numerics right-aligned and
 tabular. No zebra striping, no row hover — the borders are enough and
 striping in a dark palette reads as noise.
+
+**One action per column, and each action column is `width: 1%` with
+`white-space: nowrap`.** The width makes the table hand its slack to the
+columns carrying text; the nowrap stops a two-word label being broken
+across lines. Two buttons sharing one cell get squeezed by whatever is
+widest in the row and then wrap into what looks like one broken control —
+if a row has a toggle and a probe, that is two columns. Leave the header
+blank where the button says what it is, and label it where a reader would
+otherwise have to click to find out.
 
 ### Form
 
@@ -658,6 +685,23 @@ two actions both look primary, one of them is not.
 `.danger` is transparent by default and only fills on hover — a delete
 button that is a solid red slab pulls the eye to the worst thing on the
 screen.
+
+### Toggle — a button, not a switch
+
+Something that is on or off is still a `.ghost` button. No switch widget,
+no checkbox dressed up as one. Two rules make it readable:
+
+- **The label is the action, not the state.** "Pause" when it is running,
+  "Release 3 queued" when it is paused. A control labelled with its own
+  current state — "Paused" — is a control nobody can predict the effect of
+  without clicking it.
+- **The state lives next to the thing it affects, as a status pill**, not
+  in the button. `paused` is an amber pill on the row it applies to. The
+  button says what happens next; the pill says what is true now.
+
+A toggle whose off-state has a consequence — held mail, a stopped queue —
+carries the count in the label, because "release" and "release eleven
+things" are different decisions.
 
 ---
 
@@ -754,6 +798,21 @@ they can never be mailed), streets nobody can post to.
 
 `location.hash` is the view. Reload lands where you were; a link to a view
 is shareable. Nothing else goes in the URL.
+
+### 10. A control that suppresses something says so where the silence lands
+
+Any switch that stops a system doing something must surface that state on
+the surface where its absence shows up — not only on the control. Pausing a
+vendor's webhook delivery makes its notification log go quiet, and a quiet
+log is indistinguishable from a broken endpoint, a wrong subscription and
+an idle lab. So the log itself carries the line: the suppressed items
+appear in it, amber, labelled as queued, with the count still waiting.
+
+The rule generalises. A filter that hides rows says how many it hid. A
+muted alert says it is muted in the place the alert would have been. The
+failure this prevents is the one where the operator debugs the wrong thing
+for twenty minutes because the UI showed them an empty list and let them
+assume it meant nothing happened.
 
 ---
 

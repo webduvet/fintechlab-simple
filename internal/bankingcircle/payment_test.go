@@ -51,14 +51,14 @@ func TestEngineCreateMissingFunding(t *testing.T) {
 	events := make(chan Payment, 8)
 	engine := NewEngine(ledger, time.Millisecond, func(p *Payment) { events <- *p })
 
-	// bc_acc_sga_eur opens at zero -- the whole point of the
+	// The EUR safeguarding account opens at zero -- the whole point of the
 	// safeguarding-account model -- so paying out of it before any
 	// Worldline lump sum has landed is an insufficient-funds ledger error
 	// -> MissingFunding, not a generic rejection.
 	p := &Payment{
 		ID:            "bcp_test2",
-		FromAccountID: "bc_acc_sga_eur",
-		ToAccountID:   "bc_acc_sga_gbp",
+		FromAccountID: SGAAccountEUR,
+		ToAccountID:   SGAAccountGBP,
 		Amount:        "50.00",
 		Currency:      "EUR",
 	}
@@ -82,7 +82,7 @@ func TestEngineCreateMissingFunding(t *testing.T) {
 	if got.State != NotificationMissingFunding {
 		t.Fatalf("final state = %s", got.State)
 	}
-	sga, _ := ledger.Get("bc_acc_sga_eur")
+	sga, _ := ledger.Get(SGAAccountEUR)
 	if sga.Balance != "0.00" {
 		t.Fatalf("balance mutated on missing-funding payment: %s", sga.Balance)
 	}
@@ -95,7 +95,7 @@ func TestEngineCreateRejectedOnUnknownAccount(t *testing.T) {
 
 	p := &Payment{
 		ID:            "bcp_test3",
-		FromAccountID: "bc_acc_sga_eur",
+		FromAccountID: SGAAccountEUR,
 		ToAccountID:   "bc_acc_does_not_exist",
 		Amount:        "10.00",
 		Currency:      "EUR",
@@ -129,8 +129,8 @@ func TestEngineCreateRejectedOnSameAccount(t *testing.T) {
 
 	p := &Payment{
 		ID:            "bcp_test4",
-		FromAccountID: "bc_acc_sga_eur",
-		ToAccountID:   "bc_acc_sga_eur",
+		FromAccountID: SGAAccountEUR,
+		ToAccountID:   SGAAccountEUR,
 		Amount:        "10.00",
 		Currency:      "EUR",
 	}
@@ -229,14 +229,14 @@ func TestEngineCreditIncomingBookedThenProcessed(t *testing.T) {
 	events := make(chan Payment, 8)
 	engine := NewEngine(ledger, 10*time.Millisecond, func(p *Payment) { events <- *p })
 
-	p, err := engine.CreditIncoming("bc_acc_sga_eur", "EUR", "12500.00", "worldline-lump-sum-1")
+	p, err := engine.CreditIncoming(SGAAccountEUR, "EUR", "12500.00", "worldline-lump-sum-1")
 	if err != nil {
 		t.Fatalf("CreditIncoming: %v", err)
 	}
 	if p.State != NotificationIncomingPaymentBooked {
 		t.Fatalf("initial state = %s, want Booked", p.State)
 	}
-	if p.FromAccountID != "external_worldline" || p.ToAccountID != "bc_acc_sga_eur" {
+	if p.FromAccountID != "external_worldline" || p.ToAccountID != SGAAccountEUR {
 		t.Fatalf("payment parties = %+v", p)
 	}
 	if p.Reference != "worldline-lump-sum-1" {
@@ -248,7 +248,7 @@ func TestEngineCreditIncomingBookedThenProcessed(t *testing.T) {
 
 	// the ledger credit is synchronous -- it has already happened by the
 	// time the Booked payment is returned.
-	acc, err := ledger.Get("bc_acc_sga_eur")
+	acc, err := ledger.Get(SGAAccountEUR)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestEngineCreditIncomingBookedThenProcessed(t *testing.T) {
 	}
 	// the Processed transition is notification-only -- the balance does not
 	// move again.
-	acc, _ = ledger.Get("bc_acc_sga_eur")
+	acc, _ = ledger.Get(SGAAccountEUR)
 	if acc.Balance != "12500.00" {
 		t.Fatalf("sga balance after Processed = %s, want unchanged 12500.00", acc.Balance)
 	}
@@ -291,7 +291,7 @@ func TestEngineCreditIncomingUnknownAccount(t *testing.T) {
 
 func TestEngineCreditIncomingInvalidAmount(t *testing.T) {
 	engine := NewEngine(NewLedger(), time.Millisecond, nil)
-	if _, err := engine.CreditIncoming("bc_acc_sga_eur", "EUR", "not-a-number", "ref"); err == nil {
+	if _, err := engine.CreditIncoming(SGAAccountEUR, "EUR", "not-a-number", "ref"); err == nil {
 		t.Fatal("expected error for invalid amount")
 	}
 }
