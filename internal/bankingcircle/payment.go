@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/money"
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 // NotificationType is Banking Circle's real, closed webhook event-type enum
@@ -163,7 +164,7 @@ func NewEngine(ledger *Ledger, delay time.Duration, onTransition func(*Payment))
 // OutgoingPaymentRejected (the move failed for any other reason, e.g.
 // unknown account or same-account).
 func (e *Engine) Create(p *Payment) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := runnerclock.Now().Format(time.RFC3339)
 	e.mu.Lock()
 	p.State = NotificationOutgoingPaymentBooked
 	p.CreatedAt = now
@@ -221,7 +222,7 @@ func (e *Engine) process(p *Payment, outcome Outcome) {
 	}
 
 	e.mu.Lock()
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := runnerclock.Now().Format(time.RFC3339)
 	switch {
 	case err == nil:
 		p.State = NotificationOutgoingPaymentProcessed
@@ -299,7 +300,7 @@ func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 	}
 	p.State = NotificationReversed
 	p.ReversalReason = reason
-	p.ReversedAt = time.Now().UTC().Format(time.RFC3339)
+	p.ReversedAt = runnerclock.Now().Format(time.RFC3339)
 	p.UpdatedAt = p.ReversedAt
 	cp := *p
 	e.mu.Unlock()
@@ -338,7 +339,7 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 
 	// The sender's reference reaches the beneficiary as remittance
 	// information, the way Banking Circle shows it.
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := runnerclock.Now().Format(time.RFC3339)
 	p := &Payment{
 		ID:            "bcp_" + randomHex(6),
 		FromAccountID: "external_worldline",
@@ -371,7 +372,7 @@ func (e *Engine) processIncoming(p *Payment) {
 	}
 	e.mu.Lock()
 	p.State = NotificationIncomingPaymentProcessed
-	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	p.UpdatedAt = runnerclock.Now().Format(time.RFC3339)
 	p.ProcessedAt = p.UpdatedAt
 	cp := *p
 	e.mu.Unlock()
@@ -438,7 +439,7 @@ func (e *Engine) Return(id, reasonCode, reasonDescription string) (*Payment, err
 		e.mu.Unlock()
 		return nil, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := runnerclock.Now().Format(time.RFC3339)
 	p := &Payment{
 		ID:                      "bcp_" + randomHex(6),
 		FromAccountID:           orig.ToAccountID,

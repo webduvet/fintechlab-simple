@@ -8,6 +8,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"log"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/verify"
 )
 
@@ -27,6 +29,7 @@ type app struct {
 
 func main() {
 	addr := env("LISTEN", ":8088")
+	runnerclock.FollowEnv(context.Background(), "verify")
 	apiKey := env("VERIFICATION_INTERNAL_API_KEY", "sim-verify-key-dev-only")
 	delay := envDuration("VERIFY_PROCESSING_DELAY", 100*time.Millisecond)
 	forceDeclineSpec := env("VERIFY_FORCE_DECLINE_IDS", "")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
@@ -198,16 +199,26 @@ func (s *settlementApp) history() []CycleRun {
 }
 
 // schedule sleeps until each slot's next fire time and runs it, forever.
+// Times are on the platform's clock (runnerclock): when the runner is moved
+// past a slot, that slot's file is delivered, as it would have been once the
+// platform's day reached it.
 // The morning slot's fire time is jittered across its delivery window so a
 // consumer cannot come to depend on an exact second -- real files do not
 // land at 08:00:00.
 func (s *settlementApp) schedule() {
 	for {
-		at, slot := s.cfg.NextFire(time.Now())
-		wait := time.Until(at)
-		log.Printf("worldline: next settlement slot=%s at=%s (in %s)", slot, at.Format(time.RFC3339), wait.Truncate(time.Second))
-		time.Sleep(wait)
-		now := time.Now()
+		at, slot := s.cfg.NextFire(runnerclock.Now().In(time.Local))
+		log.Printf("worldline: next settlement slot=%s at=%s (in %s)", slot, at.Format(time.RFC3339), at.Sub(runnerclock.Now()).Truncate(time.Second))
+		// Wait may re-plan to an earlier slot if the clock is moved back, so
+		// remember which slot each planned time belongs to.
+		slots := map[int64]string{at.UnixNano(): slot}
+		fired := runnerclock.Wait(func(now time.Time) time.Time {
+			next, name := s.cfg.NextFire(now.In(time.Local))
+			slots[next.UnixNano()] = name
+			return next
+		})
+		slot = slots[fired.UnixNano()]
+		now := runnerclock.Now().In(time.Local)
 		fromDate, toDate := s.cfg.CoverageFor(now)
 		s.run(slot, now, fromDate, toDate)
 	}
@@ -285,7 +296,7 @@ func (s *settlementApp) runCycle(w http.ResponseWriter, r *http.Request) {
 	// The file is delivered now regardless; ?date only chooses which day's
 	// transactions it settles, so a test does not have to backdate its
 	// seed data to whatever "yesterday" happens to be when it runs.
-	at := time.Now()
+	at := runnerclock.Now().In(time.Local)
 	fromDate, toDate := s.cfg.CoverageFor(at)
 	if d := r.URL.Query().Get("date"); d != "" {
 		if _, err := time.Parse("2006-01-02", d); err != nil {

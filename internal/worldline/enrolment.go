@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 // EnrolmentFilename is INFINITEENROLL_<NN>.<YYYYMMDD>.pgp, and the receipt
@@ -198,7 +200,7 @@ type ReceiptOptions struct {
 // outlet.
 func BuildReceipt(e *Enrolment, opt ReceiptOptions) *Receipt {
 	if opt.At.IsZero() {
-		opt.At = time.Now().UTC()
+		opt.At = runnerclock.Now()
 	}
 	if opt.MIDPrefix == "" {
 		opt.MIDPrefix = "6001"

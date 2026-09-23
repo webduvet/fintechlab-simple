@@ -26,6 +26,9 @@ services:
     ports:
       - "8081:8081"
     environment:
+      # The platform's clock (infinite-local-runner), as banking-circle's:
+      # business dates follow it, elapsed time does not.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       LISTEN: ":8081"
 
   notifier:
@@ -87,6 +90,9 @@ services:
     ports:
       - "8083:8083"
     environment:
+      # The platform's clock (infinite-local-runner), as banking-circle's:
+      # business dates follow it, elapsed time does not.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       LISTEN: ":8083"
       BANK_URL: http://bank:8081
       SFTP_OUT_DIR: /sftp/out
@@ -178,6 +184,9 @@ services:
       # corrections.md section 2) -- a genuine SSH/SFTP listener, not HTTP.
       - "2222:2222"
     environment:
+      # The platform's clock (infinite-local-runner), as banking-circle's:
+      # business dates follow it, elapsed time does not.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       LISTEN: ":8084"
       SFTP_BASE_DIR: /sftp
       MERCHANT_ID: "GB00SIM0000000000003"
@@ -261,6 +270,12 @@ services:
       LISTEN: ":8085"
       INTERNAL_LISTEN: ":8095"
       PROCESSING_DELAY: 2s
+      # The platform's clock, when infinite-local-runner is up: bookings are
+      # dated on the day the platform thinks it is, not the wall clock's.
+      # Named the way a container reaches the host, as the console's is.
+      # Unreachable, the bank keeps its last reading (the wall clock if it
+      # never had one); empty, it never follows anything.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       # receiver only understands the HMAC scheme (notifier's, above) --
       # it cannot verify or store this different, AES-256-GCM wire format,
       # so this points at receiver's raw, unvalidated capture endpoint
@@ -317,6 +332,9 @@ services:
     ports:
       - "8086:8086"
     environment:
+      # The platform's clock (infinite-local-runner), as banking-circle's:
+      # business dates follow it, elapsed time does not.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       LISTEN: ":8086"
       B4B_JWT_KEYS_DIR: /b4b-keys
       # Set this instead to verify inbound tokens against a *client's* own
@@ -377,6 +395,9 @@ services:
     ports:
       - "8087:8087"
     environment:
+      # The platform's clock (infinite-local-runner), as banking-circle's:
+      # business dates follow it, elapsed time does not.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       LISTEN: ":8087"
       # 64 hex chars -> 32 raw bytes. Obviously fake, not ACI's own
       # published sample key (see internal/aci's known-answer test).
@@ -403,6 +424,9 @@ services:
     ports:
       - "8088:8088"
     environment:
+      # The platform's clock (infinite-local-runner), as banking-circle's:
+      # business dates follow it, elapsed time does not.
+      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
       LISTEN: ":8088"
       VERIFICATION_INTERNAL_API_KEY: sim-verify-key-dev-only
       VERIFY_PROCESSING_DELAY: 100ms

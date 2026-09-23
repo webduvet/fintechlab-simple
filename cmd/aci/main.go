@@ -14,6 +14,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -31,6 +32,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 type app struct {
@@ -46,6 +48,7 @@ type app struct {
 
 func main() {
 	addr := env("LISTEN", ":8087")
+	runnerclock.FollowEnv(context.Background(), "aci")
 	// Default is a fake-obvious *valid* 64-hex-char value -- hex-decodes to
 	// exactly 32 bytes (AES-256 key), clearly not ACI's real sample vector
 	// (internal/aci/crypto_test.go's known-answer key), so it can never be
@@ -141,7 +144,7 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now().UTC()
+	now := runnerclock.Now()
 	notif := &aci.Notification{
 		Type: "PAYMENT",
 		Payload: &aci.Payload{

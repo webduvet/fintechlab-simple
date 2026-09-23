@@ -20,6 +20,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 // A notification's "payment" object comes in two shapes, both copied from
@@ -225,7 +226,7 @@ func newNotification(rec bankingcircle.Recipient, eventType string, detail any) 
 		SubscriptionID:      rec.Subscription.ID,
 		SubscriptionEventID: rec.Event.ID,
 		NotificationType:    eventType,
-		Timestamp:           time.Now().UTC().Format(time.RFC3339),
+		Timestamp:           runnerclock.Now().Format(time.RFC3339),
 	}
 	if bankingcircle.UsesPayloadProperty(eventType) {
 		n.Payload = detail

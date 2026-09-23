@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 func TestEngineCreateHappyPath(t *testing.T) {
@@ -460,5 +462,32 @@ func TestEngineReturnIsANewIncomingPayment(t *testing.T) {
 	}
 	if _, err := engine.Reverse(payout.ID, ""); err != ErrAlreadyReturned {
 		t.Errorf("reverse after return: err = %v, want ErrAlreadyReturned", err)
+	}
+}
+
+// TestBookingsFollowTheRunnersClock: with the platform's clock moved, a
+// payment is stamped — and so dated on the reports — on the platform's
+// day, not the wall clock's.
+func TestBookingsFollowTheRunnersClock(t *testing.T) {
+	runnerclock.Set(72 * time.Hour)
+	defer runnerclock.Set(0)
+
+	ledger := NewLedger()
+	ledger.mustSeed("bc_acc_test_funded", "VBTESTFUNDED0000011", "Test Funded", "EUR", 50_000_000)
+	ledger.mustSeed("bc_acc_test_merchant", "VBTESTMERCHANT00011", "Test Merchant", "EUR", 0)
+	engine := NewEngine(ledger, 0, nil)
+	p := &Payment{ID: "bcp_clock1", FromAccountID: "bc_acc_test_funded",
+		ToAccountID: "bc_acc_test_merchant", Amount: "1.00", Currency: "EUR"}
+	engine.Create(p)
+
+	created, err := time.Parse(time.RFC3339, p.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := created.Sub(time.Now()); d < 72*time.Hour-2*time.Second || d > 72*time.Hour+2*time.Second {
+		t.Fatalf("createdAt %s is %s from the wall clock, want the runner's +72h", p.CreatedAt, d)
+	}
+	if got, want := BusinessDate(p.CreatedAt), BusinessDate(runnerclock.Now().Format(time.RFC3339)); got != want {
+		t.Errorf("business date %s, want the runner's %s", got, want)
 	}
 }

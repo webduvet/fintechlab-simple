@@ -14,6 +14,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
@@ -187,7 +188,7 @@ func (p *worldlinePuller) claim(name string) bool {
 // take downloads, decrypts, archives, and (for a morning file) processes
 // one settlement file.
 func (p *worldlinePuller) take(c *wlsftp.Client, name string) pulledFile {
-	rec := pulledFile{Name: name, Slot: worldline.FilenameSlot(name), PulledAt: time.Now().UTC()}
+	rec := pulledFile{Name: name, Slot: worldline.FilenameSlot(name), PulledAt: runnerclock.Now()}
 
 	plaintext, err := c.Download(name, p.keyring)
 	if err != nil {

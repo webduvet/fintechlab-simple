@@ -469,6 +469,33 @@ Circle's business day, not the UTC calendar day: Central European time
 CET will appear in the next business day's report") and weekends rolling to
 Monday. Bank holidays are not modelled; the docs do not list them.
 
+"Now", for all of it, is the platform's clock, not the container's — and
+not only at the bank. Every vendor the platform reads dates from follows
+infinite-local-runner's clock (`internal/runnerclock`): compose sets
+`RUNNER_CLOCK_URL` on banking-circle, worldline, b4b, bank, aci, verify
+and the settlement stand-in, and each polls the runner's `GET /sim/clock`
+offset every second. So pin the runner to a Monday, or advance it an hour,
+and:
+
+- banking-circle books, notifies, dates balances and reports on it;
+- worldline delivers its morning/afternoon files on it (moving the runner
+  past a slot delivers that slot's file; moving it back re-plans to the
+  nearer slot rather than waiting out the gap), dates and names them by it,
+  settles "yesterday" relative to it, and times enrolment receipts and the
+  SFTP archive folder by it;
+- b4b stamps payments, companies, people and beneficiaries on it;
+- the settlement stand-in's defaults, requested execution date, cutoff
+  batch and records follow it;
+- bank, aci and verify stamp their records and notifications on it.
+
+Elapsed time — token lifetimes, retry backoff, delivery windows, delivery
+bookkeeping — stays on the real clock, as the runner's own shim leaves it.
+So do the console, the harness and the activity logs (the UI measures
+"12s ago" against the browser's real clock), and the notifier/receiver
+pair, which checks HMAC timestamps against each other and talks to nothing
+on the platform. With the runner unreachable the last offset stands; with
+the variable unset a service keeps the wall clock.
+
 A payment sweep (buddy's `BC_PAYMENT_RECONCILIATION` stage) confirms
 payouts without webhooks, from three vendor-shaped reads on the mTLS
 listener, all derived from the same payment records the notifications are:

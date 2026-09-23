@@ -4,6 +4,9 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 func gbCompany() CompanyParams {
@@ -322,5 +325,19 @@ func TestUnknownCompanyIsNotFoundEverywhere(t *testing.T) {
 	}
 	if _, err := d.Document("doc_nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Document err = %v, want ErrNotFound", err)
+	}
+}
+
+// TestRecordsAreStampedOnTheRunnersClock: with the platform's clock moved,
+// a company is created on the platform's day, not the wall clock's.
+func TestRecordsAreStampedOnTheRunnersClock(t *testing.T) {
+	runnerclock.Set(72 * time.Hour)
+	defer runnerclock.Set(0)
+	c, err := NewDirectory(nil).CreateCompany(gbCompany())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := c.CreatedAt[:10], runnerclock.Now().Format("2006-01-02"); got != want {
+		t.Errorf("createdAt %s, want the runner's day %s", c.CreatedAt, want)
 	}
 }

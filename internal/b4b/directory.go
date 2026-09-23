@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 // Directory is the boarding store: companies and everything hanging off
@@ -62,7 +64,7 @@ func NewDirectory(newID func(prefix string) string) *Directory {
 
 func defaultID(prefix string) string { return prefix + "_" + shortHex() }
 
-func now() string { return time.Now().UTC().Format(time.RFC3339) }
+func now() string { return runnerclock.Now().Format(time.RFC3339) }
 
 // changed releases the lock and fires OnChange. Every mutating method ends
 // with `defer d.changed()` after taking the lock, so a persist can never

@@ -9,6 +9,8 @@ package verify
 import (
 	"sync"
 	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 // Decision is a single merchant's verification outcome, matching
@@ -102,7 +104,7 @@ func (e *Engine) Trigger(id int) *Decision {
 		if e.delay > 0 {
 			time.Sleep(e.delay)
 		}
-		d.CompletedAt = time.Now().UTC().Format(time.RFC3339)
+		d.CompletedAt = runnerclock.Now().Format(time.RFC3339)
 		e.mu.Lock()
 		e.decisions[id] = &d
 		e.mu.Unlock()
