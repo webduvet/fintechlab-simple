@@ -437,6 +437,68 @@ Clean cutover, no aliases. Accepting the old ids would preserve exactly the
 configuration that cannot work against the real vendor, which is the
 failure this lab is built to catch.
 
+### H. Banking Circle reconciliation reads
+
+A payment sweep (buddy's `BC_PAYMENT_RECONCILIATION` stage) confirms
+payouts without webhooks, from three vendor-shaped reads on the mTLS
+listener, all derived from the same payment records the notifications are:
+
+- `GET /api/v1/reports/intraday-reconciliation-paged-report` — booked and
+  processed payments, no status field. `processedTimestamp` is null while a
+  payment is only booked (the real report's pendingProcessing) and set once
+  it is processed. A scheme reversal (`/internal/payments/{id}/reverse`)
+  leaves the payment's DBIT row in place and adds a second DBIT row on the
+  same paymentId with `debitAmount` negated, on the day of the reversal,
+  its reason in `statusReasonDescription` — the docs' "negative equivalent
+  of the original amount debited". `return` stays null: the docs reserve it
+  for an incoming return payment, a separate payment (see the return hook
+  below). As on the real
+  bank, `FromTransactionDate`, `ToTransactionDate`, `FromCreatedAt`,
+  `ToCreatedAt`, `PageNumber` and `PageSize` are required: a missing or
+  malformed one is a 400 ProblemDetails (`errors` keyed by parameter), not a
+  defaulted page. `paymentId`, `processedTimestamp` and `return` are not in
+  the default property list, so they come back null unless requested with
+  `PropertiesIncluded` (or everything, with an empty `PropertiesExcluded`);
+  a property not selected is sent as null, as in the reference's example.
+  Values follow the docs too: `creditDebitIndicator` is `DBIT`/`CRDT`,
+  `return` is `true` or null (never `false`), `paymentReferenceNumber` is
+  the bank's own reference (`010F10…`, assigned when the payment is
+  accepted, opaque to clients), and `clientOrderId` is null — the bank only
+  fills it for FX trades.
+- `GET /api/v1/reports/rejection-report` — payments that did not book,
+  with status and reason, but no `paymentId`.
+- `GET /api/v1/payments/singles/{payment-id}/status` — `{"status": ...}` in
+  Banking Circle's `PaymentStatus` vocabulary (`PendingProcessing`,
+  `Processed`, `Rejected`, `MissingFunding`, `Reversed`); 404 for an
+  unknown id. The sweep's fallback for anything the intraday report does
+  not show as processed, rejections in particular.
+
+The engine only rejects a payout when its ledger move fails, so the
+internal listener has one more lab-only hook, beside `/reverse`:
+`POST /internal/payments/outcomes` with `{"outcomes": ["Rejected",
+"Pending"]}` makes the next outgoing payments, one each and in order, end
+`OutgoingPaymentRejected` (no money moves) or stay `OutgoingPaymentBooked`
+for good. `GET` on the same path shows what is still queued. Pair it with
+`/sim/subscription/{id}/pause` to leave the sweep as the only path that
+resolves a payout.
+
+`POST /internal/payments/{id}/return` (body optional: `{"reasonCode":
+"AC04", "reasonDescription": "Closed account number"}`) is the beneficiary's
+bank sending a processed payout back. A return is not a status in Banking
+Circle, so the payout stays `OutgoingPaymentProcessed` (its status read
+still says `Processed`). The money comes back as a new incoming payment,
+with its own paymentId and reference and `return: true`. It is booked and
+processed like any incoming payment (`IncomingPaymentBooked`, then
+`IncomingPaymentProcessed`), and its webhook carries `"return": true` and
+remittance lines "RETURN OF PAYMENT", the payout's reference, and the reason
+when given. On the report it is a CRDT row with `return: true`, those lines
+in `paymentDetails1-4`, and `/RETN/`, `/<code>/<description>` and
+`/MREF/<payout reference>` in `additionalRemittanceInformation1-3`. Only a
+processed payout that has not already come back can be returned (409
+otherwise), and a returned payout can no longer be reversed. The money moves
+back in this service's ledger only; the beneficiary bank service the payout
+was forwarded to is not debited.
+
 ### Port/env registry (new pieces only)
 
 | Service | Port(s) | New env vars |

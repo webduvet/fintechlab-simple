@@ -16,11 +16,11 @@
 //     real contract, but still behind the same credentials as everything
 //     else on this listener.
 //   - INTERNAL_LISTEN (default :8095, plain HTTP, no auth): the B4B bridge
-//     (POST /internal/payments), the manual reversal test hook (POST
-//     /internal/payments/{id}/reverse), the "Worldline lump sum landed"
-//     trigger (POST /internal/incoming-payments), and a no-auth balance
-//     proxy (GET /internal/accounts/{accountId}/balances) — lab-only,
-//     same-network trust.
+//     (POST /internal/payments), the manual reversal and return test hooks
+//     (POST /internal/payments/{id}/reverse, .../return), the "Worldline
+//     lump sum landed" trigger (POST /internal/incoming-payments), and a
+//     no-auth balance proxy (GET /internal/accounts/{accountId}/balances) —
+//     lab-only, same-network trust.
 package main
 
 import (
@@ -28,12 +28,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -306,6 +308,8 @@ func (a *app) mux() *http.ServeMux {
 		a.requireBearer(a.intradayReconciliationReport))
 	mux.HandleFunc("GET /api/v1/reports/rejection-report",
 		a.requireBearer(a.rejectionReport))
+	mux.HandleFunc("GET /api/v1/payments/singles/{paymentId}/status",
+		a.requireBearer(a.paymentStatus))
 	return mux
 }
 
@@ -319,6 +323,9 @@ func (a *app) internalMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /internal/payments", a.payLog.Watch("payment.create", summarizeBridgePayment, a.createInternalPayment))
 	mux.HandleFunc("POST /internal/payments/{id}/reverse", a.reverseInternalPayment)
+	mux.HandleFunc("POST /internal/payments/{id}/return", a.returnInternalPayment)
+	mux.HandleFunc("GET /internal/payments/outcomes", a.forcedOutcomes)
+	mux.HandleFunc("POST /internal/payments/outcomes", a.forceOutcomes)
 	mux.HandleFunc("POST /internal/incoming-payments", a.payLog.Watch("payment.incoming", summarizeIncoming, a.createIncomingPayment))
 	mux.HandleFunc("GET /internal/accounts/{accountId}/balances", a.internalAccountBalances)
 	return mux
@@ -513,19 +520,112 @@ func (a *app) reconcile(w http.ResponseWriter, r *http.Request) {
 // story rather than against the money.
 func (a *app) intradayReconciliationReport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	query, problems := reconciliationQuery(q)
+	if len(problems) > 0 {
+		writeValidationProblem(w, problems)
+		return
+	}
+	rows := bankingcircle.IntradayReconciliation(a.engine.List(), query)
+	httputilx.WriteJSON(w, 200, map[string]any{
+		"reconciliations": propertySelection(q).Project(rows),
+	})
+}
+
+// reconciliationQuery reads the report's filter the way the reference
+// defines it: FromTransactionDate, ToTransactionDate, FromCreatedAt,
+// ToCreatedAt, PageNumber and PageSize are all required, the four dates are
+// date-times (a bare YYYY-MM-DD included), PageNumber is 1 to n and PageSize
+// any positive value. Anything else is a 400 from the real bank, so it is
+// one here: a lab that fills in a default for a missing parameter passes a
+// client the bank would refuse.
+func reconciliationQuery(q url.Values) (bankingcircle.ReconciliationQuery, map[string][]string) {
+	problems := map[string][]string{}
+	for _, name := range []string{"FromTransactionDate", "ToTransactionDate", "FromCreatedAt", "ToCreatedAt"} {
+		if v := q.Get(name); v != "" && !isReportDateTime(v) {
+			problems[name] = append(problems[name], fmt.Sprintf("The value '%s' is not valid for %s.", v, name))
+		}
+	}
+	positive := func(name string) int {
+		v := q.Get(name)
+		if v == "" {
+			return 0
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n <= 0 {
+			problems[name] = append(problems[name], fmt.Sprintf("The value '%s' is not valid for %s.", v, name))
+		}
+		return n
+	}
 	query := bankingcircle.ReconciliationQuery{
 		FromTransactionDate: q.Get("FromTransactionDate"),
 		ToTransactionDate:   q.Get("ToTransactionDate"),
 		FromCreatedAt:       q.Get("FromCreatedAt"),
 		ToCreatedAt:         q.Get("ToCreatedAt"),
-		PageNumber:          atoiOr(q.Get("PageNumber"), 1),
-		PageSize:            atoiOr(q.Get("PageSize"), 100),
+		PageNumber:          positive("PageNumber"),
+		PageSize:            positive("PageSize"),
+	}
+	for _, name := range []string{"FromTransactionDate", "ToTransactionDate", "FromCreatedAt", "ToCreatedAt", "PageNumber", "PageSize"} {
+		if q.Get(name) == "" {
+			problems[name] = append(problems[name], fmt.Sprintf("The %s field is required.", name))
+		}
 	}
 	if ids := q.Get("AccountId"); ids != "" {
 		query.AccountIDs = strings.Split(ids, ",")
 	}
-	rows := bankingcircle.IntradayReconciliation(a.engine.List(), query)
-	httputilx.WriteJSON(w, 200, map[string]any{"reconciliations": rows})
+	return query, problems
+}
+
+// reportDateTimeLayouts are the forms the reference shows for the report's
+// date parameters: YYYY-MM-DD, and date-times with or without a zone and
+// with any number of fractional digits (its example is
+// 2025-11-01T12:34:00.0000000). Go accepts a fraction on parse even when a
+// layout has none.
+var reportDateTimeLayouts = []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02"}
+
+func isReportDateTime(v string) bool {
+	for _, layout := range reportDateTimeLayouts {
+		if _, err := time.Parse(layout, v); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// propertySelection reads PropertiesIncluded / PropertiesExcluded, falling
+// back to their deprecated array forms (IncludeProperties /
+// ExcludeProperties, repeated query keys) only when the new one is absent,
+// as the reference says: "When both are used all IncludeProperties are
+// ignored."
+func propertySelection(q url.Values) bankingcircle.PropertySelection {
+	var sel bankingcircle.PropertySelection
+	if v, ok := q["PropertiesIncluded"]; ok {
+		sel.Included = bankingcircle.SplitProperties(strings.Join(v, ","))
+	} else {
+		sel.Included = bankingcircle.SplitProperties(strings.Join(q["IncludeProperties"], ","))
+	}
+	if v, ok := q["PropertiesExcluded"]; ok {
+		sel.Excluded, sel.ExcludedSent = bankingcircle.SplitProperties(strings.Join(v, ",")), true
+	} else if v, ok := q["ExcludeProperties"]; ok {
+		sel.Excluded, sel.ExcludedSent = bankingcircle.SplitProperties(strings.Join(v, ",")), true
+	}
+	return sel
+}
+
+// writeValidationProblem answers 400 with the body the reference declares
+// for these reports: a ProblemDetails, in the ASP.NET Core validation shape
+// (type, title, status, errors keyed by parameter) that the rejection
+// report's 400 schema spells out. The status code and shape are Banking
+// Circle's; the message wording is ASP.NET Core's default, not observed
+// from the real bank, so a client must not match on it.
+func writeValidationProblem(w http.ResponseWriter, problems map[string][]string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"type":   "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+		"title":  "One or more validation errors occurred.",
+		"status": 400,
+		"errors": problems,
+	})
 }
 
 // rejectionReport implements GET /api/v1/reports/rejection-report: the
@@ -543,17 +643,16 @@ func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, map[string]any{"rejections": rows})
 }
 
-// atoiOr is lenient on purpose: a malformed page number should produce the
-// first page, not a 400 that hides the report from a sweep.
-func atoiOr(s string, def int) int {
-	if s == "" {
-		return def
+// paymentStatus implements GET /api/v1/payments/singles/{payment-id}/status:
+// the vendor's one-payment status read, `{"status": "..."}`, 404 for an id
+// it has never seen.
+func (a *app) paymentStatus(w http.ResponseWriter, r *http.Request) {
+	p, err := a.engine.Get(r.PathValue("paymentId"))
+	if err != nil {
+		httputilx.Error(w, 404, "payment not found")
+		return
 	}
-	n, err := strconv.Atoi(s)
-	if err != nil || n <= 0 {
-		return def
-	}
-	return n
+	httputilx.WriteJSON(w, 200, map[string]string{"status": bankingcircle.PaymentStatus(p.State)})
 }
 
 func boolOr(s string, def bool) bool {
@@ -754,6 +853,65 @@ func (a *app) reverseInternalPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputilx.WriteJSON(w, 200, p)
+}
+
+type returnReq struct {
+	// ReasonCode is the return reason (e.g. AC04, see Banking Circle's
+	// "Returned payments codes"); ReasonDescription its text.
+	ReasonCode        string `json:"reasonCode"`
+	ReasonDescription string `json:"reasonDescription"`
+}
+
+// returnInternalPayment implements POST /internal/payments/{id}/return —
+// the beneficiary's bank sending a processed payout back. Lab-only test
+// hook, like reverse above: only valid from an OutgoingPaymentProcessed
+// payment that has not already come back. The payout keeps its state; the
+// answer is the new incoming return payment (`return: true`), which is
+// booked and processed like any other incoming payment.
+func (a *app) returnInternalPayment(w http.ResponseWriter, r *http.Request) {
+	var req returnReq
+	if err := httputilx.ReadJSON(r, &req); err != nil && err != io.EOF {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	p, err := a.engine.Return(r.PathValue("id"), req.ReasonCode, req.ReasonDescription)
+	if err != nil {
+		switch {
+		case errors.Is(err, bankingcircle.ErrPaymentNotFound):
+			httputilx.Error(w, 404, "payment not found")
+		default:
+			httputilx.Error(w, 409, err.Error())
+		}
+		return
+	}
+	httputilx.WriteJSON(w, 200, p)
+}
+
+type forceOutcomesReq struct {
+	Outcomes []bankingcircle.Outcome `json:"outcomes"`
+}
+
+// forceOutcomes decides how the next outgoing payments end: each queued
+// outcome ("Rejected" or "Pending") is taken by one payment, in order.
+// Lab-only test hook, like reverse above — it lets a reconciliation sweep be
+// shown a rejection or a payment that never resolves, on demand.
+func (a *app) forceOutcomes(w http.ResponseWriter, r *http.Request) {
+	var req forceOutcomesReq
+	if err := httputilx.ReadJSON(r, &req); err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	queued, err := a.engine.ForceNext(req.Outcomes)
+	if err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	log.Printf("banking-circle: next %d outgoing payment(s) will end %v", len(queued), queued)
+	httputilx.WriteJSON(w, 200, map[string]any{"queued": queued})
+}
+
+func (a *app) forcedOutcomes(w http.ResponseWriter, r *http.Request) {
+	httputilx.WriteJSON(w, 200, map[string]any{"queued": a.engine.ForcedOutcomes()})
 }
 
 // --- notification delivery ---------------------------------------------

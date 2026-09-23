@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,21 +55,77 @@ type Payment struct {
 	// ToHolder is the beneficiary's name as the sender knows it. Carried so
 	// the receiving bank can put a name on the account it opens — an
 	// account identified only by its IBAN is reconcilable but not readable.
-	ToHolder  string           `json:"toHolder,omitempty"`
-	Amount    string           `json:"amount"`
-	Currency  string           `json:"currency"`
-	Reference string           `json:"reference,omitempty"`
+	ToHolder  string `json:"toHolder,omitempty"`
+	Amount    string `json:"amount"`
+	Currency  string `json:"currency"`
+	Reference string `json:"reference,omitempty"`
+	// ReferenceNumber is Banking Circle's own reference for the payment,
+	// the reconciliation report's paymentReferenceNumber. The bank assigns
+	// it; it is never anything the client sent.
+	ReferenceNumber string `json:"paymentReferenceNumber,omitempty"`
+	// ProcessedAt, ReversedAt and ReversalReason keep what a later state
+	// would otherwise overwrite: a reversed payment still reports the
+	// booking it was processed with, beside the reversal.
+	ProcessedAt    string `json:"processedAt,omitempty"`
+	ReversedAt     string `json:"reversedAt,omitempty"`
+	ReversalReason string `json:"reversalReason,omitempty"`
+
+	// A returned payout. The original keeps its state (a return is not a
+	// status in Banking Circle) and only records ReturnedBy; the money comes
+	// back as a new incoming payment carrying the rest.
+	ReturnedBy string `json:"returnedBy,omitempty"`
+	// Return is the wire `return` flag: true on the incoming return payment.
+	Return bool `json:"return,omitempty"`
+	// ReturnOf is the payout this payment returns. Lab bookkeeping: Banking
+	// Circle links the two only through ReturnedReference.
+	ReturnOf string `json:"returnOf,omitempty"`
+	// ReturnedReference is the returned payout's ReferenceNumber, which the
+	// return's remittance information quotes back.
+	ReturnedReference       string `json:"returnedReference,omitempty"`
+	ReturnReasonCode        string `json:"returnReasonCode,omitempty"`
+	ReturnReasonDescription string `json:"returnReasonDescription,omitempty"`
+	// Remittance is remittance information lines 1-4, as sent.
+	Remittance []string `json:"remittanceInformation,omitempty"`
+
 	State     NotificationType `json:"state"`
 	CreatedAt string           `json:"createdAt"`
 	UpdatedAt string           `json:"updatedAt"`
 }
 
+// errForcedRejection routes a ForceNext rejection through the same branch
+// as any other failed move.
+var errForcedRejection = errors.New("bankingcircle: rejected by lab outcome override")
+
 // ErrPaymentNotFound is returned by Get and Reverse for an unknown payment ID.
 var ErrPaymentNotFound = errors.New("bankingcircle: payment not found")
 
-// ErrInvalidState is returned by Reverse when the payment is not in the
-// OutgoingPaymentProcessed state.
+// ErrInvalidState is returned by Reverse and Return when the payment is not
+// in the OutgoingPaymentProcessed state.
 var ErrInvalidState = errors.New("bankingcircle: payment is not in OutgoingPaymentProcessed state")
+
+// ErrAlreadyReturned is returned by Reverse and Return for a payout that
+// has already come back.
+var ErrAlreadyReturned = errors.New("bankingcircle: payment has already been returned")
+
+// Outcome is a lab-only override for how an outgoing payment ends, queued
+// with Engine.ForceNext. Real Banking Circle decides this itself; the lab
+// needs to decide it so a reconciliation sweep can be shown a rejection, or
+// a payment that never resolves, on demand rather than by breaking an
+// account.
+type Outcome string
+
+const (
+	// OutcomeRejected ends the payment OutgoingPaymentRejected without
+	// moving any money.
+	OutcomeRejected Outcome = "Rejected"
+	// OutcomePending leaves the payment OutgoingPaymentBooked for good: the
+	// bank accepted it and never finished it.
+	OutcomePending Outcome = "Pending"
+)
+
+// ErrUnknownOutcome is returned by ForceNext for anything but the Outcome
+// constants.
+var ErrUnknownOutcome = errors.New("bankingcircle: unknown outcome (want Rejected or Pending)")
 
 // Engine owns the payment notification lifecycle, outgoing and incoming
 // alike. It is HTTP-free and fully unit-testable: onTransition (nil in
@@ -79,6 +137,8 @@ type Engine struct {
 	payments     map[string]*Payment
 	delay        time.Duration // PROCESSING_DELAY, simulates real bank latency
 	onTransition func(*Payment)
+	forced       []Outcome // taken in order by the next outgoing payments
+	refSeq       int64     // last ReferenceNumber handed out
 }
 
 // NewEngine builds an Engine backed by ledger. onTransition fires (with a
@@ -108,32 +168,70 @@ func (e *Engine) Create(p *Payment) {
 	p.State = NotificationOutgoingPaymentBooked
 	p.CreatedAt = now
 	p.UpdatedAt = now
+	p.ReferenceNumber = e.nextReferenceNumber()
 	e.payments[p.ID] = p
+	var outcome Outcome
+	if len(e.forced) > 0 {
+		outcome, e.forced = e.forced[0], e.forced[1:]
+	}
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
-	go e.process(p)
+	go e.process(p, outcome)
 }
 
-func (e *Engine) process(p *Payment) {
+// ForceNext queues outcomes for the next outgoing payments, one each, in
+// order, after anything already queued. Payments beyond the queue take the
+// normal path. Returns the whole queue as it now stands.
+func (e *Engine) ForceNext(outcomes []Outcome) ([]Outcome, error) {
+	for _, o := range outcomes {
+		if o != OutcomeRejected && o != OutcomePending {
+			return nil, ErrUnknownOutcome
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.forced = append(e.forced, outcomes...)
+	return append([]Outcome{}, e.forced...), nil
+}
+
+// ForcedOutcomes returns the outcomes still waiting for a payment.
+func (e *Engine) ForcedOutcomes() []Outcome {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]Outcome{}, e.forced...)
+}
+
+func (e *Engine) process(p *Payment, outcome Outcome) {
+	if outcome == OutcomePending {
+		return
+	}
 	if e.delay > 0 {
 		time.Sleep(e.delay)
 	}
-	cents, err := money.Parse(p.Amount)
-	if err == nil {
-		_, _, err = e.ledger.Move(p.FromAccountID, p.ToAccountID, cents)
+	var err error
+	if outcome == OutcomeRejected {
+		err = errForcedRejection
+	} else {
+		var cents int64
+		cents, err = money.Parse(p.Amount)
+		if err == nil {
+			_, _, err = e.ledger.Move(p.FromAccountID, p.ToAccountID, cents)
+		}
 	}
 
 	e.mu.Lock()
+	now := time.Now().UTC().Format(time.RFC3339)
 	switch {
 	case err == nil:
 		p.State = NotificationOutgoingPaymentProcessed
+		p.ProcessedAt = now
 	case errors.Is(err, ErrInsufficientFunds):
 		p.State = NotificationMissingFunding
 	default:
 		p.State = NotificationOutgoingPaymentRejected
 	}
-	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	p.UpdatedAt = now
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
@@ -168,8 +266,8 @@ func (e *Engine) List() []*Payment {
 // firing the Reversed notification. Lab-only test hook, reachable via
 // POST /internal/payments/{id}/reverse — real reversals are bank-driven and
 // asynchronous; this lets the harness exercise that path deterministically,
-// the same purpose the old Return() served. reason is recorded on the
-// payment's Reference for audit, when non-empty.
+// the same purpose the old Return() served. reason becomes the reversal
+// booking's statusReasonDescription on the reconciliation report.
 func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 	e.mu.Lock()
 	p, ok := e.payments[id]
@@ -181,6 +279,10 @@ func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 		e.mu.Unlock()
 		return nil, ErrInvalidState
 	}
+	if p.ReturnedBy != "" {
+		e.mu.Unlock()
+		return nil, ErrAlreadyReturned
+	}
 	cents, err := money.Parse(p.Amount)
 	if err != nil {
 		e.mu.Unlock()
@@ -191,14 +293,9 @@ func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 		return nil, err
 	}
 	p.State = NotificationReversed
-	if reason != "" {
-		if p.Reference != "" {
-			p.Reference += " | reversed: " + reason
-		} else {
-			p.Reference = "reversed: " + reason
-		}
-	}
-	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	p.ReversalReason = reason
+	p.ReversedAt = time.Now().UTC().Format(time.RFC3339)
+	p.UpdatedAt = p.ReversedAt
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
@@ -244,24 +341,118 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 		UpdatedAt:     now,
 	}
 	e.mu.Lock()
+	p.ReferenceNumber = e.nextReferenceNumber()
 	e.payments[p.ID] = p
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
 
-	go func() {
-		if e.delay > 0 {
-			time.Sleep(e.delay)
-		}
-		e.mu.Lock()
-		p.State = NotificationIncomingPaymentProcessed
-		p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		cp := *p
-		e.mu.Unlock()
-		e.notify(cp)
-	}()
+	go e.processIncoming(p)
 
 	return &cp, nil
+}
+
+// processIncoming moves a booked incoming payment to
+// IncomingPaymentProcessed after the engine's delay.
+func (e *Engine) processIncoming(p *Payment) {
+	if e.delay > 0 {
+		time.Sleep(e.delay)
+	}
+	e.mu.Lock()
+	p.State = NotificationIncomingPaymentProcessed
+	p.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	p.ProcessedAt = p.UpdatedAt
+	cp := *p
+	e.mu.Unlock()
+	e.notify(cp)
+}
+
+// returnRemittance is the remittance information of a return payment, as
+// in Banking Circle's IncomingPaymentProcessed return example: "RETURN OF
+// PAYMENT", then the returned payment's reference. The docs add that the
+// remittance often carries the reason too (e.g. account closed), so a
+// reason, when given, is the third line.
+func returnRemittance(returnedReference, reasonCode, reasonDescription string) []string {
+	lines := []string{"RETURN OF PAYMENT", returnedReference}
+	if reason := strings.TrimSpace(reasonCode + " " + reasonDescription); reason != "" {
+		lines = append(lines, reason)
+	}
+	return lines
+}
+
+// Return simulates the beneficiary's bank sending a processed payout back.
+// Lab-only test hook, reachable via POST /internal/payments/{id}/return:
+// real returns come from the beneficiary's bank, days later.
+//
+// It follows Banking Circle's model of a return, which is not a status:
+// the payout stays OutgoingPaymentProcessed, and the money arrives as a
+// new incoming payment of its own — own paymentId, own reference,
+// `return: true` — that is booked and then processed like any other
+// incoming payment (IncomingPaymentBooked, IncomingPaymentProcessed). The
+// money moves back from the beneficiary's account to the account the payout
+// left; the beneficiary bank service the payout was forwarded to is not
+// debited, since the lab has no path back from it.
+func (e *Engine) Return(id, reasonCode, reasonDescription string) (*Payment, error) {
+	e.mu.Lock()
+	orig, ok := e.payments[id]
+	if !ok {
+		e.mu.Unlock()
+		return nil, ErrPaymentNotFound
+	}
+	if orig.State != NotificationOutgoingPaymentProcessed {
+		e.mu.Unlock()
+		return nil, ErrInvalidState
+	}
+	if orig.ReturnedBy != "" {
+		e.mu.Unlock()
+		return nil, ErrAlreadyReturned
+	}
+	cents, err := money.Parse(orig.Amount)
+	if err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
+	if _, _, err := e.ledger.Move(orig.ToAccountID, orig.FromAccountID, cents); err != nil {
+		e.mu.Unlock()
+		return nil, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	p := &Payment{
+		ID:                      "bcp_" + randomHex(6),
+		FromAccountID:           orig.ToAccountID,
+		ToAccountID:             orig.FromAccountID,
+		Amount:                  orig.Amount,
+		Currency:                orig.Currency,
+		State:                   NotificationIncomingPaymentBooked,
+		CreatedAt:               now,
+		UpdatedAt:               now,
+		ReferenceNumber:         e.nextReferenceNumber(),
+		Return:                  true,
+		ReturnOf:                orig.ID,
+		ReturnedReference:       orig.ReferenceNumber,
+		ReturnReasonCode:        reasonCode,
+		ReturnReasonDescription: reasonDescription,
+		Remittance:              returnRemittance(orig.ReferenceNumber, reasonCode, reasonDescription),
+	}
+	orig.ReturnedBy = p.ID
+	e.payments[p.ID] = p
+	cp := *p
+	e.mu.Unlock()
+	e.notify(cp)
+
+	go e.processIncoming(p)
+
+	return &cp, nil
+}
+
+// nextReferenceNumber hands out Banking Circle's reference for a new
+// payment. The shape follows the reference docs' examples (010F10xxxx001007,
+// 010F101010110001): sixteen characters under a fixed 010F10 prefix. The
+// bank's actual numbering scheme is not documented, so a client must treat
+// it as opaque. Callers hold e.mu.
+func (e *Engine) nextReferenceNumber() string {
+	e.refSeq++
+	return fmt.Sprintf("010F10%010d", e.refSeq)
 }
 
 // randomHex generates a random hex id, local to this package — same tiny

@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -970,5 +971,248 @@ func TestPauseOnAnUnknownSubscriptionIs404(t *testing.T) {
 		if resp.StatusCode != 404 {
 			t.Errorf("POST %s = %d, want 404", path, resp.StatusCode)
 		}
+	}
+}
+
+// TestPaymentStatusAndForcedOutcomesOverHTTP: the outcome lever on the
+// internal bridge decides how the next payment ends, and the vendor status
+// endpoint reports it — behind the bearer gate, 404 for an unknown id.
+func TestPaymentStatusAndForcedOutcomesOverHTTP(t *testing.T) {
+	a := newTestApp(t)
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+
+	resp, err := http.Post(internalSrv.URL+"/internal/payments/outcomes", "application/json",
+		strings.NewReader(`{"outcomes":["Rejected"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("force outcomes = %d, want 200", resp.StatusCode)
+	}
+	resp, err = http.Post(internalSrv.URL+"/internal/payments/outcomes", "application/json",
+		strings.NewReader(`{"outcomes":["Lost"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("unknown outcome = %d, want 400", resp.StatusCode)
+	}
+
+	createBody := `{"paymentId":"bcp_status1","accountId":"` + merchantAccount + `","amount":"1.00","currency":"EUR"}`
+	resp, err = http.Post(internalSrv.URL+"/internal/payments", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	status := func(id string, token string) (int, string) {
+		req, _ := http.NewRequest("GET", srv.URL+"/api/v1/payments/singles/"+id+"/status", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body struct {
+			Status string `json:"status"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, body.Status
+	}
+
+	tok := a.tokens.issue(time.Hour)
+	if code, _ := status("bcp_status1", ""); code != 401 {
+		t.Fatalf("status without a bearer = %d, want 401", code)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		code, got := status("bcp_status1", tok)
+		if code == 200 && got == "Rejected" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("status = %d %q, want 200 Rejected", code, got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if code, _ := status("bcp_never_seen", tok); code != 404 {
+		t.Fatalf("unknown payment = %d, want 404", code)
+	}
+}
+
+// TestIntradayReportValidatesAndProjectsOverHTTP: the report refuses what
+// the real bank refuses (a missing or malformed required parameter is a 400
+// ProblemDetails, not a defaulted page) and carries paymentId only when the
+// caller asked for it.
+func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
+	a := newTestApp(t)
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+
+	createBody := `{"paymentId":"bcp_report1","accountId":"` + merchantAccount + `","amount":"1.00","currency":"EUR"}`
+	resp, err := http.Post(internalSrv.URL+"/internal/payments", "application/json", strings.NewReader(createBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	tok := a.tokens.issue(time.Hour)
+	day := time.Now().UTC().Format("2006-01-02")
+	valid := func() url.Values {
+		return url.Values{
+			"FromTransactionDate": {day},
+			"ToTransactionDate":   {day},
+			"FromCreatedAt":       {day + "T00:00:00.0000000Z"},
+			"ToCreatedAt":         {time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)},
+			"PageNumber":          {"1"},
+			"PageSize":            {"500"},
+		}
+	}
+	report := func(q url.Values) (int, string, map[string]any) {
+		req, _ := http.NewRequest("GET", srv.URL+"/api/v1/reports/intraday-reconciliation-paged-report?"+q.Encode(), nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body := map[string]any{}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, resp.Header.Get("Content-Type"), body
+	}
+	problem := func(q url.Values, param string) {
+		t.Helper()
+		code, ctype, body := report(q)
+		if code != 400 || ctype != "application/problem+json" {
+			t.Fatalf("%s: got %d %s, want 400 application/problem+json", param, code, ctype)
+		}
+		errs, _ := body["errors"].(map[string]any)
+		if _, ok := errs[param]; !ok {
+			t.Fatalf("%s: errors = %v, want an entry for it", param, body["errors"])
+		}
+	}
+
+	for _, param := range []string{"FromTransactionDate", "ToTransactionDate", "FromCreatedAt", "ToCreatedAt", "PageNumber", "PageSize"} {
+		q := valid()
+		q.Del(param)
+		problem(q, param)
+	}
+	for param, bad := range map[string]string{
+		"FromTransactionDate": "yesterday",
+		"ToCreatedAt":         "2026-13-01T00:00:00Z",
+		"PageNumber":          "0",
+		"PageSize":            "-5",
+	} {
+		q := valid()
+		q.Set(param, bad)
+		problem(q, param)
+	}
+
+	row := func(q url.Values) map[string]any {
+		t.Helper()
+		code, _, body := report(q)
+		if code != 200 {
+			t.Fatalf("report = %d %v, want 200", code, body)
+		}
+		rows, _ := body["reconciliations"].([]any)
+		if len(rows) != 1 {
+			t.Fatalf("reconciliations = %v, want the one payment", body["reconciliations"])
+		}
+		return rows[0].(map[string]any)
+	}
+
+	if got := row(valid()); got["paymentId"] != nil || got["account"] == nil {
+		t.Fatalf("default properties: paymentId = %v, account = %v; want null and set", got["paymentId"], got["account"])
+	}
+	q := valid()
+	q.Set("PropertiesIncluded", "PaymentId,ProcessedTimestamp,Return")
+	if got := row(q); got["paymentId"] != "bcp_report1" || got["account"] != nil {
+		t.Fatalf("PropertiesIncluded: paymentId = %v, account = %v; want bcp_report1 and null", got["paymentId"], got["account"])
+	}
+	q = valid()
+	q["IncludeProperties"] = []string{"PaymentId"}
+	if got := row(q); got["paymentId"] != "bcp_report1" {
+		t.Fatalf("deprecated IncludeProperties: paymentId = %v, want bcp_report1", got["paymentId"])
+	}
+}
+
+// TestReturnHookOverHTTP: POST /internal/payments/{id}/return brings a
+// processed payout back as a new incoming payment. Subscribers get it as
+// IncomingPaymentProcessed with `return: true` and the "RETURN OF PAYMENT"
+// remittance, the payout's own status stays Processed, and a payout comes
+// back only once.
+func TestReturnHookOverHTTP(t *testing.T) {
+	a := newTestApp(t)
+	receiver, deliveries := captureSubscriber(t)
+	subscribeAll(t, a, receiver.URL)
+	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+
+	post := func(path, body string) (int, bankingcircle.Payment) {
+		t.Helper()
+		resp, err := http.Post(internalSrv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var p bankingcircle.Payment
+		_ = json.NewDecoder(resp.Body).Decode(&p)
+		return resp.StatusCode, p
+	}
+
+	post("/internal/incoming-payments", `{"currency":"EUR","amount":"100.00","reference":"fund"}`)
+	stream.expect(bankingcircle.NotificationIncomingPaymentProcessed)
+	post("/internal/payments", `{"paymentId":"bcp_return1","accountId":"`+merchantAccount+`","amount":"40.00","currency":"EUR"}`)
+	stream.expect(bankingcircle.NotificationOutgoingPaymentProcessed)
+
+	if code, _ := post("/internal/payments/bcp_unknown/return", ``); code != 404 {
+		t.Fatalf("return of an unknown payment = %d, want 404", code)
+	}
+	code, ret := post("/internal/payments/bcp_return1/return", `{"reasonCode":"AC04","reasonDescription":"Closed account number"}`)
+	if code != 200 || ret.ID == "" || ret.ID == "bcp_return1" || !ret.Return || ret.ReturnOf != "bcp_return1" {
+		t.Fatalf("return = %d %+v, want 200 and a new payment returning bcp_return1", code, ret)
+	}
+
+	n := stream.expect(bankingcircle.NotificationIncomingPaymentProcessed)
+	detail := paymentOf(t, n)
+	if detail.PaymentID != ret.ID || detail.Return == nil || !*detail.Return {
+		t.Fatalf("webhook for %s return=%v, want the return payment %s flagged `return: true`", detail.PaymentID, detail.Return, ret.ID)
+	}
+	lines := detail.Transfer.RemittanceInformation
+	if lines.Line1 == nil || *lines.Line1 != "RETURN OF PAYMENT" || lines.Line2 == nil || *lines.Line2 == "" {
+		t.Fatalf("remittance = %+v, want RETURN OF PAYMENT and the payout's reference", lines)
+	}
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/v1/payments/singles/bcp_return1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+a.tokens.issue(time.Hour))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status struct {
+		Status string `json:"status"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	resp.Body.Close()
+	if status.Status != "Processed" {
+		t.Fatalf("returned payout status = %q, want Processed: a return is not a status", status.Status)
+	}
+
+	if code, _ := post("/internal/payments/bcp_return1/return", ``); code != 409 {
+		t.Fatalf("second return = %d, want 409", code)
 	}
 }

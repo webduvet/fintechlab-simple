@@ -18,8 +18,11 @@ import (
 //
 // The intraday reconciliation report carries no status field. A row's
 // existence *is* the statement that a booking happened — so only booked and
-// processed payments appear, and a reversal appears as a row with `return`
-// set rather than as an absence.
+// processed payments appear, and a reversal appears as a second, negative
+// booking on the same payment rather than as an absence. What tells booked
+// and processed apart is
+// `processedTimestamp`: null while the payment is only booked (the real
+// report's pendingProcessing), set once it is processed.
 //
 // The rejection report is the complement: payments that did not book on the
 // requested date, with an explicit status and reason. Between them every
@@ -49,6 +52,13 @@ type ReconciliationRow struct {
 	PaymentReferenceNumber     *string  `json:"paymentReferenceNumber"`
 	UserReferenceNumber        *string  `json:"userReferenceNumber"`
 	ClientOrderID              *string  `json:"clientOrderId"`
+	PaymentDetails1            *string  `json:"paymentDetails1"`
+	PaymentDetails2            *string  `json:"paymentDetails2"`
+	PaymentDetails3            *string  `json:"paymentDetails3"`
+	PaymentDetails4            *string  `json:"paymentDetails4"`
+	AdditionalRemittanceInfo1  *string  `json:"additionalRemittanceInformation1"`
+	AdditionalRemittanceInfo2  *string  `json:"additionalRemittanceInformation2"`
+	AdditionalRemittanceInfo3  *string  `json:"additionalRemittanceInformation3"`
 }
 
 // RejectionRow is one payment that did not book. It carries no paymentId —
@@ -100,6 +110,18 @@ func booked(s NotificationType) bool {
 	return false
 }
 
+// processed reports whether a booked state is also processed. A reversal
+// only happens to a processed payment, so its original row keeps the
+// timestamp.
+func processed(s NotificationType) bool {
+	switch s {
+	case NotificationOutgoingPaymentProcessed, NotificationIncomingPaymentProcessed,
+		NotificationReversed:
+		return true
+	}
+	return false
+}
+
 // incoming reports whether the booking credits one of our accounts.
 func incoming(s NotificationType) bool {
 	return s == NotificationIncomingPaymentBooked || s == NotificationIncomingPaymentProcessed
@@ -117,9 +139,6 @@ func IntradayReconciliation(payments []*Payment, q ReconciliationQuery) []Reconc
 		if !booked(p.State) {
 			continue
 		}
-		if !withinDates(p.UpdatedAt, q.FromTransactionDate, q.ToTransactionDate) {
-			continue
-		}
 		if !withinDates(p.CreatedAt, q.FromCreatedAt, q.ToCreatedAt) {
 			continue
 		}
@@ -130,20 +149,28 @@ func IntradayReconciliation(payments []*Payment, q ReconciliationQuery) []Reconc
 		if len(q.AccountIDs) > 0 && !containsFold(q.AccountIDs, account) {
 			continue
 		}
-		rows = append(rows, reconciliationRow(p, account))
+		for _, row := range bookingRows(p, account) {
+			if withinDates(derefStr(row.ReportDate), q.FromTransactionDate, q.ToTransactionDate) {
+				rows = append(rows, row)
+			}
+		}
 	}
 	// Paging over an unordered set is not paging. The caller's payment
 	// store hands these back in map order, which differs between calls, so
 	// without a total order page 2 can repeat a row from page 1 and drop
 	// one entirely — a sweep walking pages would silently lose a payment.
-	// Booking time first, id as the tie-break, so the order is total.
+	// Booking time first, then id, then a payment's booking before its
+	// reversal, so the order is total.
 	sort.SliceStable(rows, func(i, j int) bool {
 		a, b := rows[i], rows[j]
 		at, bt := derefStr(a.ProcessedTimestamp), derefStr(b.ProcessedTimestamp)
 		if at != bt {
 			return at < bt
 		}
-		return derefStr(a.PaymentID) < derefStr(b.PaymentID)
+		if ai, bi := derefStr(a.PaymentID), derefStr(b.PaymentID); ai != bi {
+			return ai < bi
+		}
+		return !isReversalRow(a) && isReversalRow(b)
 	})
 	return page(rows, q.PageNumber, q.PageSize)
 }
@@ -155,10 +182,20 @@ func derefStr(s *string) string {
 	return *s
 }
 
-func reconciliationRow(p *Payment, account string) ReconciliationRow {
+// bookingRows is every line a payment puts on the report. A report lists
+// bookings, and a booking is never rewritten, so a reversed payment keeps
+// the row it booked with and gains a second one for the reversal.
+func bookingRows(p *Payment, account string) []ReconciliationRow {
+	if p.State != NotificationReversed {
+		return []ReconciliationRow{reconciliationRow(p, account, p.UpdatedAt)}
+	}
+	original := reconciliationRow(p, account, firstNonEmpty(p.ProcessedAt, p.CreatedAt))
+	return []ReconciliationRow{original, reversalRow(p, original)}
+}
+
+func reconciliationRow(p *Payment, account, bookedAt string) ReconciliationRow {
 	amount := amountFloat(p.Amount)
-	date := datePart(p.UpdatedAt)
-	isReturn := p.State == NotificationReversed
+	date := datePart(bookedAt)
 
 	row := ReconciliationRow{
 		PaymentID:                  str(p.ID),
@@ -168,23 +205,89 @@ func reconciliationRow(p *Payment, account string) ReconciliationRow {
 		TransactionAmountCurrency:  str(p.Currency),
 		ValueDate:                  str(date),
 		ReportDate:                 str(date),
-		Return:                     &isReturn,
 		LatestStatusChangedTimestp: str(p.UpdatedAt),
-		ProcessedTimestamp:         str(p.UpdatedAt),
+		PaymentReferenceNumber:     str(p.ReferenceNumber),
 	}
-	// A return books the opposite way round from the payment it reverses,
-	// which is the whole reason a sweep has to read the indicator rather
-	// than assume the sign from the amount.
-	creditSide := incoming(p.State) != isReturn
-	if creditSide {
+	// paymentDetails1-4 are remittance information lines 1-4.
+	details := []**string{&row.PaymentDetails1, &row.PaymentDetails2, &row.PaymentDetails3, &row.PaymentDetails4}
+	for i, line := range p.Remittance {
+		if i < len(details) {
+			*details[i] = str(line)
+		}
+	}
+	// `return` is true on an incoming return payment and null on everything
+	// else ("true if the payment is an incoming return payment, otherwise
+	// null"). A return also carries the docs' examples of what
+	// additionalRemittanceInformation1-3 may hold for one: the return
+	// indicator /RETN/, the reason /AC04/Closed Account Number, and the
+	// returned payment's reference /MREF/010F10xxxx012345.
+	if p.Return {
+		isReturn := true
+		row.Return = &isReturn
+		row.AdditionalRemittanceInfo1 = str("/RETN/")
+		if p.ReturnReasonCode != "" {
+			row.AdditionalRemittanceInfo2 = str("/" + p.ReturnReasonCode + "/" + p.ReturnReasonDescription)
+		}
+		if p.ReturnedReference != "" {
+			row.AdditionalRemittanceInfo3 = str("/MREF/" + p.ReturnedReference)
+		}
+	}
+	if processed(p.State) {
+		row.ProcessedTimestamp = str(firstNonEmpty(p.ProcessedAt, bookedAt))
+	}
+	if incoming(p.State) {
 		row.CreditAmount = &amount
-		row.CreditDebitIndicator = str("C")
+		row.CreditDebitIndicator = str("CRDT")
 	} else {
 		row.DebitAmount = &amount
-		row.CreditDebitIndicator = str("D")
+		row.CreditDebitIndicator = str("DBIT")
 	}
-	row.PaymentReferenceNumber, row.UserReferenceNumber, row.ClientOrderID = ReferenceFields(p)
+	// paymentReferenceNumber is the bank's own reference (set above), and
+	// clientOrderId stays null: the docs fill it only for FX trades executed
+	// via the FX API, which this lab does not simulate.
+	_, row.UserReferenceNumber, _ = ReferenceFields(p)
 	return row
+}
+
+// reversalRow is the booking a scheme reversal adds. The docs describe it
+// only through the amount: "In case of reversal of a debit, the amount will
+// be given as a negative equivalent of the original amount debited" (and
+// likewise for a credit). So it keeps the payment's side and references —
+// a reversal's webhook matches the original's account and transaction
+// reference too — and negates that amount. statusReasonDescription carries
+// the reversal reason; the lab has no reason code to put in
+// statusReasonCode, so that stays null.
+func reversalRow(p *Payment, original ReconciliationRow) ReconciliationRow {
+	row := original
+	date := datePart(firstNonEmpty(p.ReversedAt, p.UpdatedAt))
+	row.ValueDate = str(date)
+	row.ReportDate = str(date)
+	row.ProcessedTimestamp = str(firstNonEmpty(p.ReversedAt, p.UpdatedAt))
+	if original.DebitAmount != nil {
+		negated := -*original.DebitAmount
+		row.DebitAmount = &negated
+	}
+	if original.CreditAmount != nil {
+		negated := -*original.CreditAmount
+		row.CreditAmount = &negated
+	}
+	row.StatusReasonDescription = str(p.ReversalReason)
+	return row
+}
+
+// isReversalRow tells a reversal booking from the one it reverses by its
+// negative amount, the only thing the docs say distinguishes it.
+func isReversalRow(r ReconciliationRow) bool {
+	return (r.DebitAmount != nil && *r.DebitAmount < 0) || (r.CreditAmount != nil && *r.CreditAmount < 0)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Rejections returns the payments that did not book on a date.

@@ -30,6 +30,35 @@ type notificationPayment struct {
 	Amount               *notificationAmount `json:"amount,omitempty"`
 	CreditorInformation  *notificationParty  `json:"creditorInformation,omitempty"`
 	DebtorInformation    *notificationParty  `json:"debtorInformation,omitempty"`
+	// Return and Transfer are only sent on a return payment, where Banking
+	// Circle's IncomingPaymentProcessed example carries `"return": true` and
+	// the remittance lines ("RETURN OF PAYMENT", the returned payment's
+	// reference) that identify it.
+	Return   *bool                 `json:"return,omitempty"`
+	Transfer *notificationTransfer `json:"transfer,omitempty"`
+}
+
+type notificationTransfer struct {
+	RemittanceInformation notificationRemittance `json:"remittanceInformation"`
+}
+
+// notificationRemittance sends all four lines, null when unused, as the
+// vendor example does.
+type notificationRemittance struct {
+	Line1 *string `json:"line1"`
+	Line2 *string `json:"line2"`
+	Line3 *string `json:"line3"`
+	Line4 *string `json:"line4"`
+}
+
+func remittanceOf(lines []string) notificationRemittance {
+	at := func(i int) *string {
+		if i < len(lines) && lines[i] != "" {
+			return &lines[i]
+		}
+		return nil
+	}
+	return notificationRemittance{Line1: at(0), Line2: at(1), Line3: at(2), Line4: at(3)}
 }
 
 type notificationAmount struct {
@@ -77,6 +106,10 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 		Amount:               &notificationAmount{Amount: p.Amount, Currency: p.Currency},
 		CreditorInformation:  &notificationParty{AccountID: p.ToAccountID},
 		DebtorInformation:    &notificationParty{AccountID: p.FromAccountID},
+	}
+	if p.Return {
+		detail.Return = &p.Return
+		detail.Transfer = &notificationTransfer{RemittanceInformation: remittanceOf(p.Remittance)}
 	}
 	for _, rec := range recipients {
 		a.dispatch.Enqueue(rec.Subscription, newNotification(rec, eventType, detail))

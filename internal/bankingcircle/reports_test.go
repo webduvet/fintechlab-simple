@@ -87,13 +87,12 @@ func TestReconciliationCarriesOnlyBookings(t *testing.T) {
 }
 
 // TestCreditDebitIndicatorMatchesTheSide: a sweep reads the indicator to
-// know which way value moved, and a return books the opposite way from the
-// payment it reverses.
+// know which way value moved.
 func TestCreditDebitIndicatorMatchesTheSide(t *testing.T) {
 	got := ids(IntradayReconciliation(samplePayments(), today()))
 
 	in := got["bc_in_1"]
-	if in.CreditDebitIndicator == nil || *in.CreditDebitIndicator != "C" {
+	if in.CreditDebitIndicator == nil || *in.CreditDebitIndicator != "CRDT" {
 		t.Errorf("money arriving should be a credit, got %v", deref(in.CreditDebitIndicator))
 	}
 	if in.CreditAmount == nil || in.DebitAmount != nil {
@@ -102,7 +101,7 @@ func TestCreditDebitIndicatorMatchesTheSide(t *testing.T) {
 	}
 
 	out := got["bc_p_1"]
-	if out.CreditDebitIndicator == nil || *out.CreditDebitIndicator != "D" {
+	if out.CreditDebitIndicator == nil || *out.CreditDebitIndicator != "DBIT" {
 		t.Errorf("a payout should be a debit, got %v", deref(out.CreditDebitIndicator))
 	}
 	if out.DebitAmount == nil || out.CreditAmount != nil {
@@ -110,13 +109,92 @@ func TestCreditDebitIndicatorMatchesTheSide(t *testing.T) {
 			derefF(out.CreditAmount), derefF(out.DebitAmount))
 	}
 
-	rev := got["bc_rev_1"]
-	if rev.Return == nil || !*rev.Return {
-		t.Error("a reversal must set `return`, or a sweep counts it as a second payout")
+	if in.Return != nil || out.Return != nil {
+		t.Errorf("`return` is true or null, never false: in=%v out=%v", in.Return, out.Return)
 	}
-	if rev.CreditDebitIndicator == nil || *rev.CreditDebitIndicator != "C" {
-		t.Errorf("a returned payout credits the account back, got %v", deref(rev.CreditDebitIndicator))
+}
+
+// TestReversalIsASecondNegativeBooking: a scheme reversal does not rewrite
+// the payment's booking. The payout keeps its DBIT row, and the reversal is
+// a second DBIT row on the same payment with the amount negated — the
+// docs' "negative equivalent of the original amount debited". It is not a
+// return: `return` marks an incoming return payment, and stays null here.
+func TestReversalIsASecondNegativeBooking(t *testing.T) {
+	payments := samplePayments()
+	rev := payments[6]
+	rev.ProcessedAt = "2026-09-18T09:00:10Z"
+	rev.ReversedAt = rev.UpdatedAt
+	rev.ReversalReason = "Rejected by the scheme"
+
+	var rows []ReconciliationRow
+	for _, r := range IntradayReconciliation(payments, today()) {
+		if deref(r.PaymentID) == "bc_rev_1" {
+			rows = append(rows, r)
+		}
 	}
+	if len(rows) != 2 {
+		t.Fatalf("reversed payment has %d rows, want its booking and the reversal", len(rows))
+	}
+	booking, reversal := rows[0], rows[1]
+	for name, r := range map[string]ReconciliationRow{"booking": booking, "reversal": reversal} {
+		if deref(r.CreditDebitIndicator) != "DBIT" || r.CreditAmount != nil {
+			t.Errorf("%s: indicator %s, credit %v; want a DBIT line", name, deref(r.CreditDebitIndicator), derefF(r.CreditAmount))
+		}
+		if r.Return != nil {
+			t.Errorf("%s: return = %v, want null: a reversal is not an incoming return", name, *r.Return)
+		}
+	}
+	if derefF(booking.DebitAmount) != 55.0 || derefF(reversal.DebitAmount) != -55.0 {
+		t.Errorf("debitAmount booking=%v reversal=%v, want 55 and -55", derefF(booking.DebitAmount), derefF(reversal.DebitAmount))
+	}
+	if deref(booking.ProcessedTimestamp) != rev.ProcessedAt || deref(reversal.ProcessedTimestamp) != rev.ReversedAt {
+		t.Errorf("processedTimestamp booking=%s reversal=%s, want the processing and the reversal time",
+			deref(booking.ProcessedTimestamp), deref(reversal.ProcessedTimestamp))
+	}
+	if booking.StatusReasonDescription != nil || deref(reversal.StatusReasonDescription) != "Rejected by the scheme" {
+		t.Errorf("statusReasonDescription booking=%v reversal=%q, want null and the reason",
+			booking.StatusReasonDescription, deref(reversal.StatusReasonDescription))
+	}
+}
+
+// TestReversalBooksOnItsOwnDate: the booking stays on the day it was
+// processed, and the reversal lands on the day it happened.
+func TestReversalBooksOnItsOwnDate(t *testing.T) {
+	payments := samplePayments()
+	rev := payments[6]
+	rev.ProcessedAt = "2026-09-17T09:00:10Z"
+	rev.CreatedAt = "2026-09-17T09:00:05Z"
+	rev.ReversedAt = "2026-09-18T09:00:15Z"
+
+	q := today()
+	q.FromTransactionDate, q.FromCreatedAt = "2026-09-17", "2026-09-17"
+	q.ToTransactionDate = "2026-09-17"
+	var day1, day2 []ReconciliationRow
+	for _, r := range IntradayReconciliation(payments, q) {
+		if deref(r.PaymentID) == "bc_rev_1" {
+			day1 = append(day1, r)
+		}
+	}
+	q.FromTransactionDate, q.ToTransactionDate = "2026-09-18", "2026-09-18"
+	for _, r := range IntradayReconciliation(payments, q) {
+		if deref(r.PaymentID) == "bc_rev_1" {
+			day2 = append(day2, r)
+		}
+	}
+	if len(day1) != 1 || isReversalRow(day1[0]) {
+		t.Errorf("processing day has %d rows for the payment, want only its booking", len(day1))
+	}
+	if len(day2) != 1 || !isReversalRow(day2[0]) {
+		t.Errorf("reversal day has %d rows for the payment, want only the reversal", len(day2))
+	}
+}
+
+// rowKey names a report line: a payment's booking, or its reversal.
+func rowKey(r ReconciliationRow) string {
+	if isReversalRow(r) {
+		return deref(r.PaymentID) + "/reversal"
+	}
+	return deref(r.PaymentID)
 }
 
 // TestRejectionReportIsTheComplement is the property the whole pair exists
@@ -203,10 +281,10 @@ func TestAccountFilterAndPaging(t *testing.T) {
 		p.PageNumber = pageNo
 		rows := IntradayReconciliation(payments, p)
 		for _, r := range rows {
-			if seen[*r.PaymentID] {
-				t.Fatalf("%s returned on more than one page", *r.PaymentID)
+			if seen[rowKey(r)] {
+				t.Fatalf("%s returned on more than one page", rowKey(r))
 			}
-			seen[*r.PaymentID] = true
+			seen[rowKey(r)] = true
 		}
 		if len(rows) < 2 {
 			break
@@ -268,7 +346,7 @@ func TestPagingIsStableAcrossShuffledInput(t *testing.T) {
 			q.PageNumber = pageNo
 			rows := IntradayReconciliation(payments, q)
 			for _, r := range rows {
-				got = append(got, *r.PaymentID)
+				got = append(got, rowKey(r))
 			}
 			if len(rows) < 2 {
 				break
@@ -317,6 +395,105 @@ func TestPagingIsStableAcrossShuffledInput(t *testing.T) {
 			if deref(got[i].PaymentReferenceNumber) != deref(first[i].PaymentReferenceNumber) {
 				t.Fatalf("rejection rotation %d reordered row %d", shift, i)
 			}
+		}
+	}
+}
+
+// TestProcessedTimestampOnlyOnceProcessed: the report carries booked and
+// processed payments alike, and processedTimestamp is what tells them
+// apart. A booked row with a timestamp would read as settled to a sweep.
+func TestProcessedTimestampOnlyOnceProcessed(t *testing.T) {
+	got := ids(IntradayReconciliation(samplePayments(), today()))
+
+	if got["bc_p_2"].ProcessedTimestamp != nil {
+		t.Errorf("booked-only payment has processedTimestamp %v", deref(got["bc_p_2"].ProcessedTimestamp))
+	}
+	for _, id := range []string{"bc_in_1", "bc_p_1", "bc_rev_1"} {
+		if got[id].ProcessedTimestamp == nil {
+			t.Errorf("%s is processed but has no processedTimestamp", id)
+		}
+	}
+}
+
+func TestPaymentStatusMapsEveryState(t *testing.T) {
+	for state, want := range map[NotificationType]string{
+		NotificationOutgoingPaymentBooked:    "PendingProcessing",
+		NotificationPaymentRouting:           "PendingProcessing",
+		NotificationOutgoingPaymentProcessed: "Processed",
+		NotificationOutgoingPaymentRejected:  "Rejected",
+		NotificationMissingFunding:           "MissingFunding",
+		NotificationReversed:                 "Reversed",
+	} {
+		if got := PaymentStatus(state); got != want {
+			t.Errorf("PaymentStatus(%s) = %s, want %s", state, got, want)
+		}
+	}
+}
+
+// TestReferenceFieldsAreTheBanks: paymentReferenceNumber is the bank's own
+// reference, never something we sent, and clientOrderId is only for FX
+// trades, which the lab has none of.
+func TestReferenceFieldsAreTheBanks(t *testing.T) {
+	payments := samplePayments()
+	payments[1].ReferenceNumber = "010F100000000042"
+	got := ids(IntradayReconciliation(payments, today()))
+
+	if ref := deref(got["bc_p_1"].PaymentReferenceNumber); ref != "010F100000000042" {
+		t.Errorf("paymentReferenceNumber = %q, want the bank's reference", ref)
+	}
+	if ref := got["bc_p_2"].PaymentReferenceNumber; ref != nil {
+		t.Errorf("paymentReferenceNumber = %q for a payment with no bank reference, want null", *ref)
+	}
+	for id, row := range got {
+		if row.ClientOrderID != nil {
+			t.Errorf("%s: clientOrderId = %q, want null outside FX trades", id, *row.ClientOrderID)
+		}
+	}
+}
+
+// TestReturnIsItsOwnIncomingRow: the returned payout's DBIT row is left
+// alone, and the return is a CRDT row of its own with `return: true`, the
+// remittance lines in paymentDetails, and the docs' return indicators in
+// additionalRemittanceInformation.
+func TestReturnIsItsOwnIncomingRow(t *testing.T) {
+	payments := samplePayments()
+	payout := payments[1]
+	payout.ReferenceNumber = "010F100000000001"
+	payout.ReturnedBy = "bc_ret_1"
+	payments = append(payments, &Payment{
+		ID: "bc_ret_1", FromAccountID: "acc_m1", ToAccountID: SGAAccountEUR,
+		Amount: "125.00", Currency: "EUR", ReferenceNumber: "010F100000000009",
+		State:     NotificationIncomingPaymentProcessed,
+		CreatedAt: "2026-09-18T11:00:00Z", UpdatedAt: "2026-09-18T11:00:05Z",
+		Return: true, ReturnOf: payout.ID, ReturnedReference: payout.ReferenceNumber,
+		ReturnReasonCode: "AC04", ReturnReasonDescription: "Closed account number",
+		Remittance: []string{"RETURN OF PAYMENT", payout.ReferenceNumber, "AC04 Closed account number"},
+	})
+	got := ids(IntradayReconciliation(payments, today()))
+
+	if orig := got["bc_p_1"]; deref(orig.CreditDebitIndicator) != "DBIT" || orig.Return != nil {
+		t.Errorf("payout row: indicator %s, return %v; want DBIT and null", deref(orig.CreditDebitIndicator), orig.Return)
+	}
+	ret, ok := got["bc_ret_1"]
+	if !ok {
+		t.Fatal("the return payment is not on the report")
+	}
+	if deref(ret.CreditDebitIndicator) != "CRDT" || derefF(ret.CreditAmount) != 125.0 || deref(ret.Account) != SGAAccountEUR {
+		t.Errorf("return row: %s %v on %s, want CRDT 125 on the safeguarding account",
+			deref(ret.CreditDebitIndicator), derefF(ret.CreditAmount), deref(ret.Account))
+	}
+	if ret.Return == nil || !*ret.Return {
+		t.Error("return row: `return` must be true")
+	}
+	for name, pair := range map[string][2]string{
+		"paymentDetails1":                  {deref(ret.PaymentDetails1), "RETURN OF PAYMENT"},
+		"paymentDetails2":                  {deref(ret.PaymentDetails2), "010F100000000001"},
+		"additionalRemittanceInformation1": {deref(ret.AdditionalRemittanceInfo1), "/RETN/"},
+		"additionalRemittanceInformation2": {deref(ret.AdditionalRemittanceInfo2), "/AC04/Closed account number"},
+		"additionalRemittanceInformation3": {deref(ret.AdditionalRemittanceInfo3), "/MREF/010F100000000001"},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s = %q, want %q", name, pair[0], pair[1])
 		}
 	}
 }
