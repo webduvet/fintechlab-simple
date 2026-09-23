@@ -189,15 +189,33 @@ Source: `apps/banking-circle/src/modules/{auth,outbound/accounts,webhooks/bc-web
   values (Go's GCM `Seal` appends the tag to the ciphertext by default —
   split them before sending, since BC's own wire format keeps them apart).
 - **Notification payload**: `{notifications: [{eventId, subscriptionId?,
-  subscriptionEventId?, notificationType, timestamp, targetId?, payment?:
-  {paymentId?, transactionReference?, amount?:{amount?,currency?},
-  creditorInformation?:{accountId?}, debtorInformation?:{accountId?}},
-  payload?}]}`. `transactionReference` is the bank's own reference for the
-  payment (`010F10…`, the report's `paymentReferenceNumber`), as in the
-  vendor's examples; a sender's reference (a Worldline lump sum's, a
-  return's "RETURN OF PAYMENT" lines) travels in
-  `transfer.remittanceInformation.line1-4`, and a return adds
-  `"return": true`.
+  subscriptionEventId?, notificationType, timestamp, targetId?, payment?,
+  payload?}]}`. The `payment` object has the two shapes of the vendor's
+  payload examples (docs/payload-examples), and amounts are JSON numbers
+  throughout:
+  - **Booked** (`OutgoingPaymentBooked`, `IncomingPaymentBooked`):
+    `{paymentId, transactionReference, valueDate, transactionDate, amount,
+    currency, transfer?:{remittanceInformation}}` — no status, no parties.
+    `amount` is signed by the effect on the balance: a payout's booking is
+    negative, money in and a reversal's booking positive.
+  - **Status events** (`OutgoingPaymentProcessed`, `OutgoingPaymentRejected`,
+    `MissingFunding`, `Reversed`, `IncomingPaymentProcessed`):
+    `{paymentId, transactionReference, status, return, debtorInformation,
+    creditorInformation, transfer?}`. `status` is the payment's status
+    (`Processed`, `Rejected`, `MissingFunding`, `Reversed`), not the event
+    name. Only our side is set: money leaving the safeguarding account
+    carries `debtorInformation: {accountId, debitAmount, instruction:
+    {amount}}` with `creditorInformation: null`; money arriving carries
+    `creditorInformation: {accountId, creditAmount}` with
+    `debtorInformation: null`. `return` is `true` on an incoming return
+    payment and null otherwise. `transfer.amount` is present on processed,
+    reversed and incoming processed payments (nothing was transferred on a
+    rejection or missing funding), and `transfer.remittanceInformation`
+    wherever there is remittance.
+  - `transactionReference` is the bank's own reference (`010F10…`, the
+    report's `paymentReferenceNumber`); a sender's reference (a Worldline
+    lump sum's, a return's "RETURN OF PAYMENT" lines) travels in the
+    remittance information.
 - **`notificationType`** — the full 13-value closed set (send only these):
   `IncomingPaymentProcessed`, `IncomingPaymentBooked`,
   `OutgoingPaymentProcessed`, `OutgoingPaymentBooked`,
@@ -444,6 +462,13 @@ failure this lab is built to catch.
 
 ### H. Banking Circle reconciliation reads
 
+Every date the lab puts on a booking — both reports' transaction and value
+dates, the booked webhooks' `valueDate`/`transactionDate` — is Banking
+Circle's business day, not the UTC calendar day: Central European time
+(read as Europe/Paris), with the day ending at 19:00 ("Payments after 19:00
+CET will appear in the next business day's report") and weekends rolling to
+Monday. Bank holidays are not modelled; the docs do not list them.
+
 A payment sweep (buddy's `BC_PAYMENT_RECONCILIATION` stage) confirms
 payouts without webhooks, from three vendor-shaped reads on the mTLS
 listener, all derived from the same payment records the notifications are:
@@ -455,7 +480,10 @@ listener, all derived from the same payment records the notifications are:
   leaves the payment's DBIT row in place and adds a second DBIT row on the
   same paymentId with `debitAmount` negated, on the day of the reversal,
   its reason in `statusReasonDescription` — the docs' "negative equivalent
-  of the original amount debited". `return` stays null: the docs reserve it
+  of the original amount debited". Subscribers get a second
+  `OutgoingPaymentBooked` for the reversal booking (same paymentId and
+  transactionReference), then `Reversed`, as the vendor's payload examples
+  describe. `return` stays null: the docs reserve it
   for an incoming return payment, a separate payment (see the return hook
   below). As on the real
   bank, `FromTransactionDate`, `ToTransactionDate`, `FromCreatedAt`,

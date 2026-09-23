@@ -264,6 +264,26 @@ endpoint, since a quiet log reads as *nothing happened*. It stops delivery
 and nothing else: payments still process, notifications are still produced,
 matched against subscriptions and ordered. They just wait.
 
+### Payouts: return and reverse
+
+The card's **Payouts** panel lists Banking Circle's outgoing payments,
+newest first, and offers the two things that can happen to one after it
+has been processed. **Return** is the beneficiary's bank sending it back:
+the payout stays processed, and the money arrives as a new incoming payment
+flagged `return`, the way the real bank models it. **Reverse** is the
+scheme undoing it: the payout becomes reversed, with a second booking.
+Only a processed payout that has not already come back gets the buttons;
+the console decides that from the vendor's own record, so it never offers
+a call the vendor would refuse.
+
+Each button is one call to the vendor's own hook,
+`POST /sim/payments/{id}/return` or `/reverse` on the credentialed listener
+(the same handlers as `/internal/payments/{id}/…` on the bridge), through
+`POST /api/banking-circle/payouts/{id}/return|reverse` here. Both are
+irreversible, so the confirm says so rather than asking whether you are
+sure. Pair either with a paused subscription to watch the platform find out
+late.
+
 ## Banks
 
 Two "sim banks", and they are not the same kind of thing:

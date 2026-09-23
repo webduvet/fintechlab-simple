@@ -605,3 +605,17 @@ func TestAccountIsTheIBAN(t *testing.T) {
 		}
 	}
 }
+
+// TestReconciliationDatesUseTheExampleFormat: reportDate and valueDate are
+// sent the way the reference example sends them, midnight UTC with an
+// offset, and still filter on the transaction date.
+func TestReconciliationDatesUseTheExampleFormat(t *testing.T) {
+	got := ids(IntradayReconciliation(samplePayments(), today()))
+	row := got["bc_p_1"]
+	if deref(row.ReportDate) != "2026-09-18T00:00:00+00:00" || deref(row.ValueDate) != "2026-09-18T00:00:00+00:00" {
+		t.Errorf("reportDate = %q, valueDate = %q; want 2026-09-18T00:00:00+00:00", deref(row.ReportDate), deref(row.ValueDate))
+	}
+	if _, ok := got["bc_old"]; ok {
+		t.Error("yesterday's payment is on today's report")
+	}
+}

@@ -614,19 +614,23 @@ func TestInternalPaymentLifecycleAndWebhookDelivery(t *testing.T) {
 	if n.SubscriptionEventID == "" {
 		t.Fatal("notification carries no subscriptionEventId; a client cannot tell which of its events fired")
 	}
-	pay := paymentOf(t, n)
-	if pay.PaymentID != "bcp_lifecycle1" {
-		t.Fatalf("payment = %+v", pay)
-	}
-	if pay.CreditorInformation == nil || pay.CreditorInformation.AccountID != merchantAccount {
-		t.Fatalf("creditorInformation = %+v", pay.CreditorInformation)
-	}
-	if pay.DebtorInformation == nil || pay.DebtorInformation.AccountID != sgaEUR {
-		t.Fatalf("debtorInformation = %+v", pay.DebtorInformation)
+	if booked, _ := n.Payment.(map[string]any); booked["paymentId"] != "bcp_lifecycle1" {
+		t.Fatalf("booked payment = %v", n.Payment)
 	}
 
-	// Processed notification follows after PROCESSING_DELAY.
-	stream.expect(bankingcircle.NotificationOutgoingPaymentProcessed)
+	// Processed notification follows after PROCESSING_DELAY. It carries our
+	// side only: the payout left the safeguarding account (debtor), and the
+	// creditor is someone else's, so null.
+	pay := paymentOf(t, stream.expect(bankingcircle.NotificationOutgoingPaymentProcessed))
+	if pay.PaymentID != "bcp_lifecycle1" || pay.Status != "Processed" {
+		t.Fatalf("payment = %+v, want bcp_lifecycle1 with status Processed", pay)
+	}
+	if pay.DebtorInformation == nil || pay.DebtorInformation.AccountID != sgaEUR {
+		t.Fatalf("debtorInformation = %+v, want the EUR safeguarding account", pay.DebtorInformation)
+	}
+	if pay.CreditorInformation != nil {
+		t.Fatalf("creditorInformation = %+v, want null on an outgoing payment", pay.CreditorInformation)
+	}
 
 	merchant, _ := a.ledger.Get(merchantAccount)
 	if merchant.Balance != "123.45" {
@@ -1066,12 +1070,13 @@ func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
 	resp.Body.Close()
 
 	tok := a.tokens.issue(time.Hour)
-	day := time.Now().UTC().Format("2006-01-02")
+	// The bank's business day, which after 19:00 CET is tomorrow's.
+	day := bankingcircle.BusinessDate(time.Now().UTC().Format(time.RFC3339))
 	valid := func() url.Values {
 		return url.Values{
 			"FromTransactionDate": {day},
 			"ToTransactionDate":   {day},
-			"FromCreatedAt":       {day + "T00:00:00.0000000Z"},
+			"FromCreatedAt":       {time.Now().UTC().Add(-time.Hour).Format("2006-01-02T15:04:05.0000000Z")},
 			"ToCreatedAt":         {time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)},
 			"PageNumber":          {"1"},
 			"PageSize":            {"500"},
@@ -1309,5 +1314,225 @@ func TestRejectionReportValidatesOverHTTP(t *testing.T) {
 	}
 	if code, body := get("TransactionDate=2026-09-18&IncludeReversals=true&ExcludeBooked=false"); code != 200 {
 		t.Errorf("valid request = %d %v, want 200", code, body)
+	}
+}
+
+// TestReturnAndReverseOnTheCredentialedListener: the console reaches the
+// two test hooks through /sim/payments on the mTLS listener, behind the same
+// bearer as everything else there.
+func TestReturnAndReverseOnTheCredentialedListener(t *testing.T) {
+	a := newTestApp(t)
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+
+	// Funded first, so both payouts can process rather than miss funding.
+	if _, err := a.ledger.Credit(sgaEUR, 1000); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"bcp_sim1", "bcp_sim2"} {
+		resp, err := http.Post(internalSrv.URL+"/internal/payments", "application/json",
+			strings.NewReader(`{"paymentId":"`+id+`","accountId":"`+merchantAccount+`","amount":"1.00","currency":"EUR"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	post := func(path, token string) int {
+		t.Helper()
+		req, _ := http.NewRequest("POST", srv.URL+path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	tok := a.tokens.issue(time.Hour)
+	if code := post("/sim/payments/bcp_sim1/return", ""); code != 401 {
+		t.Fatalf("return without a bearer = %d, want 401", code)
+	}
+	// Both payouts process after the engine's delay; wait on them.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		code1, code2 := post("/sim/payments/bcp_sim1/return", tok), 0
+		if code1 == 200 {
+			code2 = post("/sim/payments/bcp_sim2/reverse", tok)
+		}
+		if code1 == 200 && code2 == 200 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("return = %d, reverse = %d; want 200 once both payouts processed", code1, code2)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if code := post("/sim/payments/bcp_sim1/return", tok); code != 409 {
+		t.Fatalf("second return = %d, want 409", code)
+	}
+}
+
+// TestWebhookAmountsFollowTheVendorShape: every notification carries its
+// amount where Banking Circle's payload example for that event type does,
+// as a JSON number. Booked events have a flat amount signed by the effect on
+// the balance; the rest carry {currency, amount} objects under
+// debtorInformation, creditorInformation and transfer.
+func TestWebhookAmountsFollowTheVendorShape(t *testing.T) {
+	a := newTestApp(t)
+	receiver, deliveries := captureSubscriber(t)
+	subscribeAll(t, a, receiver.URL)
+	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+	post := func(path, body string) {
+		t.Helper()
+		resp, err := http.Post(internalSrv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	// raw is a notification's payment object as decoded JSON, so a number
+	// is a float64 and a string would show up as one.
+	raw := func(eventType bankingcircle.NotificationType) map[string]any {
+		t.Helper()
+		p, ok := stream.expect(eventType).Payment.(map[string]any)
+		if !ok {
+			t.Fatalf("%s: no payment object", eventType)
+		}
+		return p
+	}
+	money := func(where string, v any, want float64) {
+		t.Helper()
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Errorf("%s = %v, want a {currency, amount} object", where, v)
+			return
+		}
+		if m["amount"] != want || m["currency"] != "EUR" {
+			t.Errorf("%s = %v, want the number %v in EUR", where, m, want)
+		}
+	}
+	under := func(p map[string]any, keys ...string) any {
+		var v any = p
+		for _, k := range keys {
+			m, _ := v.(map[string]any)
+			v = m[k]
+		}
+		return v
+	}
+
+	post("/internal/incoming-payments", `{"currency":"EUR","amount":"100.00","reference":"fund"}`)
+	if p := raw(bankingcircle.NotificationIncomingPaymentBooked); p["amount"] != 100.0 || p["currency"] != "EUR" {
+		t.Errorf("IncomingPaymentBooked amount = %#v %v, want the number 100 in EUR", p["amount"], p["currency"])
+	}
+	p := raw(bankingcircle.NotificationIncomingPaymentProcessed)
+	money("IncomingPaymentProcessed transfer.amount", under(p, "transfer", "amount"), 100)
+	money("IncomingPaymentProcessed creditorInformation.creditAmount", under(p, "creditorInformation", "creditAmount"), 100)
+	if _, ok := p["amount"]; ok {
+		t.Error("IncomingPaymentProcessed has a flat amount; only booked events do")
+	}
+
+	post("/internal/payments", `{"paymentId":"bcp_amt1","accountId":"`+merchantAccount+`","amount":"10.00","currency":"EUR"}`)
+	if p := raw(bankingcircle.NotificationOutgoingPaymentBooked); p["amount"] != -10.0 {
+		t.Errorf("OutgoingPaymentBooked amount = %#v, want -10: a payout's booking takes money off the balance", p["amount"])
+	}
+	p = raw(bankingcircle.NotificationOutgoingPaymentProcessed)
+	money("OutgoingPaymentProcessed debtorInformation.debitAmount", under(p, "debtorInformation", "debitAmount"), 10)
+	money("OutgoingPaymentProcessed debtorInformation.instruction.amount", under(p, "debtorInformation", "instruction", "amount"), 10)
+	money("OutgoingPaymentProcessed transfer.amount", under(p, "transfer", "amount"), 10)
+
+	if _, err := a.engine.Reverse("bcp_amt1", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if p := raw(bankingcircle.NotificationOutgoingPaymentBooked); p["amount"] != 10.0 {
+		t.Errorf("reversal's OutgoingPaymentBooked amount = %#v, want +10: it puts the money back", p["amount"])
+	}
+	p = raw(bankingcircle.NotificationReversed)
+	money("Reversed debtorInformation.debitAmount", under(p, "debtorInformation", "debitAmount"), 10)
+
+	if _, err := a.engine.ForceNext([]bankingcircle.Outcome{bankingcircle.OutcomeRejected}); err != nil {
+		t.Fatal(err)
+	}
+	post("/internal/payments", `{"paymentId":"bcp_amt2","accountId":"`+merchantAccount+`","amount":"5.00","currency":"EUR"}`)
+	raw(bankingcircle.NotificationOutgoingPaymentBooked)
+	p = raw(bankingcircle.NotificationOutgoingPaymentRejected)
+	money("OutgoingPaymentRejected debtorInformation.debitAmount", under(p, "debtorInformation", "debitAmount"), 5)
+	if under(p, "transfer", "amount") != nil {
+		t.Error("OutgoingPaymentRejected has transfer.amount; nothing was transferred")
+	}
+}
+
+// TestWebhookShapeFollowsThePayloadExamples: status events carry the
+// payment's status and only our side of it — the other side and a
+// non-return's `return` are explicit nulls — and booked events carry
+// neither, as in the vendor's payload examples.
+func TestWebhookShapeFollowsThePayloadExamples(t *testing.T) {
+	a := newTestApp(t)
+	receiver, deliveries := captureSubscriber(t)
+	subscribeAll(t, a, receiver.URL)
+	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+	post := func(path, body string) {
+		t.Helper()
+		resp, err := http.Post(internalSrv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	raw := func(eventType bankingcircle.NotificationType) map[string]any {
+		t.Helper()
+		p, _ := stream.expect(eventType).Payment.(map[string]any)
+		return p
+	}
+	isNull := func(p map[string]any, key string) bool {
+		v, present := p[key]
+		return present && v == nil
+	}
+	accountOf := func(p map[string]any, side string) any {
+		m, _ := p[side].(map[string]any)
+		return m["accountId"]
+	}
+
+	post("/internal/incoming-payments", `{"currency":"EUR","amount":"100.00","reference":"WORLDLINE SETTLEMENT EUR"}`)
+	booked := raw(bankingcircle.NotificationIncomingPaymentBooked)
+	for _, key := range []string{"status", "debtorInformation", "creditorInformation", "return"} {
+		if _, ok := booked[key]; ok {
+			t.Errorf("IncomingPaymentBooked has %q; the booked example has none", key)
+		}
+	}
+	if booked["valueDate"] == "" || booked["transactionDate"] == "" {
+		t.Errorf("IncomingPaymentBooked dates = %v / %v, want both", booked["valueDate"], booked["transactionDate"])
+	}
+	in := raw(bankingcircle.NotificationIncomingPaymentProcessed)
+	if in["status"] != "Processed" || accountOf(in, "creditorInformation") != sgaEUR ||
+		!isNull(in, "debtorInformation") || !isNull(in, "return") {
+		t.Errorf("IncomingPaymentProcessed = status %v, creditor %v, debtor null %v, return null %v; "+
+			"want Processed, the safeguarding account, null, null",
+			in["status"], accountOf(in, "creditorInformation"), isNull(in, "debtorInformation"), isNull(in, "return"))
+	}
+
+	post("/internal/payments", `{"paymentId":"bcp_shape1","accountId":"`+merchantAccount+`","amount":"10.00","currency":"EUR"}`)
+	raw(bankingcircle.NotificationOutgoingPaymentBooked)
+	out := raw(bankingcircle.NotificationOutgoingPaymentProcessed)
+	if out["status"] != "Processed" || accountOf(out, "debtorInformation") != sgaEUR ||
+		!isNull(out, "creditorInformation") || !isNull(out, "return") {
+		t.Errorf("OutgoingPaymentProcessed = status %v, debtor %v, creditor null %v, return null %v; "+
+			"want Processed, the safeguarding account, null, null",
+			out["status"], accountOf(out, "debtorInformation"), isNull(out, "creditorInformation"), isNull(out, "return"))
+	}
+
+	if _, err := a.engine.Reverse("bcp_shape1", ""); err != nil {
+		t.Fatal(err)
+	}
+	raw(bankingcircle.NotificationOutgoingPaymentBooked)
+	if rev := raw(bankingcircle.NotificationReversed); rev["status"] != "Reversed" || !isNull(rev, "creditorInformation") {
+		t.Errorf("Reversed = status %v, creditor null %v; want Reversed and null", rev["status"], isNull(rev, "creditorInformation"))
 	}
 }

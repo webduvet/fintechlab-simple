@@ -231,7 +231,10 @@ func bookingRows(p *Payment, account *string) []ReconciliationRow {
 
 func reconciliationRow(p *Payment, account *string, bookedAt string) ReconciliationRow {
 	amount := amountFloat(p.Amount)
-	date := datePart(bookedAt)
+	// reportDate and valueDate in the reference example's form,
+	// 2025-01-31T00:00:00+00:00 (the schema says "format": "date", the
+	// example sends midnight UTC).
+	date := bcDate(BusinessDate(bookedAt))
 
 	row := ReconciliationRow{
 		PaymentID:                  str(p.ID),
@@ -239,8 +242,8 @@ func reconciliationRow(p *Payment, account *string, bookedAt string) Reconciliat
 		AccountCurrency:            str(p.Currency),
 		TransactionAmount:          amount,
 		TransactionAmountCurrency:  str(p.Currency),
-		ValueDate:                  str(date),
-		ReportDate:                 str(date),
+		ValueDate:                  date,
+		ReportDate:                 date,
 		LatestStatusChangedTimestp: str(p.UpdatedAt),
 		PaymentReferenceNumber:     str(p.ReferenceNumber),
 	}
@@ -295,9 +298,9 @@ func reconciliationRow(p *Payment, account *string, bookedAt string) Reconciliat
 // statusReasonCode, so that stays null.
 func reversalRow(p *Payment, original ReconciliationRow) ReconciliationRow {
 	row := original
-	date := datePart(firstNonEmpty(p.ReversedAt, p.UpdatedAt))
-	row.ValueDate = str(date)
-	row.ReportDate = str(date)
+	date := bcDate(BusinessDate(firstNonEmpty(p.ReversedAt, p.UpdatedAt)))
+	row.ValueDate = date
+	row.ReportDate = date
 	row.ProcessedTimestamp = str(firstNonEmpty(p.ReversedAt, p.UpdatedAt))
 	if original.DebitAmount != nil {
 		negated := -*original.DebitAmount
@@ -333,7 +336,7 @@ func firstNonEmpty(values ...string) string {
 func Rejections(payments []*Payment, q RejectionQuery) []RejectionRow {
 	rows := make([]RejectionRow, 0)
 	for _, p := range payments {
-		if datePart(p.CreatedAt) != q.TransactionDate {
+		if BusinessDate(p.CreatedAt) != q.TransactionDate {
 			continue
 		}
 		kind, ok := rejectionKindOf(p.State)
@@ -347,7 +350,7 @@ func Rejections(payments []*Payment, q RejectionQuery) []RejectionRow {
 			continue
 		}
 		status, reason := rejectionLabels(kind)
-		txnDate := bcDate(p.CreatedAt)
+		txnDate := bcDate(BusinessDate(p.CreatedAt))
 		rows = append(rows, RejectionRow{
 			PTxndate:               txnDate,
 			ReportDate:             bcDate(q.ReportDate),

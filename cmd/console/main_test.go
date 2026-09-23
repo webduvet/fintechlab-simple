@@ -840,3 +840,75 @@ func TestPauseSurfacesTheVendorsRefusal(t *testing.T) {
 		t.Errorf("the vendor's own words are the answer, got %s", w.Body.String())
 	}
 }
+
+// TestPayoutsOfferOnlyWhatTheVendorWouldDo: the card lists outgoing
+// payments newest first, offers Return and Reverse only on a processed
+// payout that has not come back, and each button is exactly one call to the
+// vendor's /sim hook — whose refusal comes back in its own words.
+func TestPayoutsOfferOnlyWhatTheVendorWouldDo(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/authorizations/authorize"):
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":300}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/payments":
+			_, _ = w.Write([]byte(`{"payments":[
+				{"id":"bcp_old","state":"OutgoingPaymentProcessed","amount":"1.00","currency":"EUR","createdAt":"2026-09-23T09:00:00Z","paymentReferenceNumber":"010F100000000001","settlementId":"sttl_v1:a"},
+				{"id":"bcp_new","state":"OutgoingPaymentBooked","amount":"2.00","currency":"EUR","createdAt":"2026-09-23T10:00:00Z"},
+				{"id":"bcp_back","state":"OutgoingPaymentProcessed","amount":"3.00","currency":"EUR","createdAt":"2026-09-23T09:30:00Z","returnedBy":"bcp_ret"},
+				{"id":"bcp_ret","state":"IncomingPaymentProcessed","amount":"3.00","currency":"EUR","createdAt":"2026-09-23T11:00:00Z","return":true}]}`))
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/sim/payments/"):
+			calls = append(calls, r.URL.Path)
+			if strings.Contains(r.URL.Path, "bcp_back") {
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"error":"bankingcircle: payment has already been returned"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":"bcp_ret2","return":true}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.bc.BaseURL = srv.URL
+
+	w := call(t, a, http.MethodGet, "/api/banking-circle/payouts", "")
+	var got struct {
+		Payouts []payoutView `json:"payouts"`
+		Total   int          `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("%v: %s", err, w.Body.String())
+	}
+	ids := []string{}
+	for _, p := range got.Payouts {
+		ids = append(ids, p.ID)
+	}
+	if strings.Join(ids, ",") != "bcp_new,bcp_back,bcp_old" || got.Total != 3 {
+		t.Fatalf("payouts = %v (total %d), want the three outgoing ones newest first", ids, got.Total)
+	}
+	offered := map[string]bool{}
+	for _, p := range got.Payouts {
+		offered[p.ID] = p.CanReturn && p.CanReverse
+	}
+	if !offered["bcp_old"] || offered["bcp_new"] || offered["bcp_back"] {
+		t.Errorf("offered = %v, want only the processed payout that has not come back", offered)
+	}
+
+	if w := call(t, a, http.MethodPost, "/api/banking-circle/payouts/bcp_old/return", ""); w.Code != 200 {
+		t.Fatalf("return = %d: %s", w.Code, w.Body.String())
+	}
+	if w := call(t, a, http.MethodPost, "/api/banking-circle/payouts/bcp_old/reverse", ""); w.Code != 200 {
+		t.Fatalf("reverse = %d: %s", w.Code, w.Body.String())
+	}
+	w = call(t, a, http.MethodPost, "/api/banking-circle/payouts/bcp_back/return", "")
+	if w.Code != 502 || !strings.Contains(w.Body.String(), "already been returned") {
+		t.Errorf("refused return = %d %s, want 502 with the vendor's own words", w.Code, w.Body.String())
+	}
+	want := []string{"/sim/payments/bcp_old/return", "/sim/payments/bcp_old/reverse", "/sim/payments/bcp_back/return"}
+	if strings.Join(calls, ",") != strings.Join(want, ",") {
+		t.Errorf("vendor saw %v, want %v — each button is exactly one call", calls, want)
+	}
+}

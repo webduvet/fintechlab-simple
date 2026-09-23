@@ -124,6 +124,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/banking-circle/subscriptions/{id}/test", a.bcSubscriptionTest)
 	mux.HandleFunc("POST /api/banking-circle/subscriptions/{id}/pause", a.bcSubscriptionPause)
 	mux.HandleFunc("POST /api/banking-circle/subscriptions/{id}/resume", a.bcSubscriptionPause)
+	mux.HandleFunc("GET /api/banking-circle/payouts", a.bcPayouts)
+	mux.HandleFunc("POST /api/banking-circle/payouts/{id}/return", a.bcPayoutAction)
+	mux.HandleFunc("POST /api/banking-circle/payouts/{id}/reverse", a.bcPayoutAction)
 
 	mux.HandleFunc("GET /api/banks", a.listBanks)
 	mux.HandleFunc("POST /api/banks/{id}/accounts", a.openAccount)

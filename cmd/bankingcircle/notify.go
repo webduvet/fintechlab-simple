@@ -22,25 +22,73 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 )
 
-// notificationPayment is the "payment" object inside a notification.
+// A notification's "payment" object comes in two shapes, both copied from
+// Banking Circle's payload examples
+// (https://docs.bankingcircleconnect.com/docs/payload-examples).
+//
+// The booked events (OutgoingPaymentBooked, IncomingPaymentBooked) are the
+// short one, bookedPayment: ids, dates, a flat signed amount, and the
+// remittance. Every other payment event is notificationPayment, which
+// carries the payment's status and the one side of it that is ours:
+// debtorInformation for money leaving our account, with
+// creditorInformation null, and creditorInformation for money arriving,
+// with debtorInformation null. Amounts are JSON numbers throughout.
+
+// notificationPayment is the "payment" object of a status-carrying event:
+// OutgoingPaymentProcessed, OutgoingPaymentRejected, MissingFunding,
+// Reversed, IncomingPaymentProcessed.
 type notificationPayment struct {
-	PaymentID            string              `json:"paymentId,omitempty"`
-	TransactionReference string              `json:"transactionReference,omitempty"`
-	Status               string              `json:"status,omitempty"`
-	Amount               *notificationAmount `json:"amount,omitempty"`
-	CreditorInformation  *notificationParty  `json:"creditorInformation,omitempty"`
-	DebtorInformation    *notificationParty  `json:"debtorInformation,omitempty"`
-	// Return is only sent on a return payment, as in Banking Circle's
-	// IncomingPaymentProcessed example (`"return": true`). Transfer carries
-	// the remittance lines, where a payment has any: a return's "RETURN OF
-	// PAYMENT" and the returned payment's reference, or the sender's
-	// reference on an incoming lump sum.
-	Return   *bool                 `json:"return,omitempty"`
-	Transfer *notificationTransfer `json:"transfer,omitempty"`
+	PaymentID            string `json:"paymentId"`
+	TransactionReference string `json:"transactionReference"`
+	// Status is the payment's status (Processed, Rejected, Reversed,
+	// MissingFunding), not the notification's type.
+	Status string `json:"status"`
+	// Return is true on an incoming return payment and null otherwise.
+	Return *bool `json:"return"`
+	// Exactly one side is set; the other is sent as null.
+	DebtorInformation   *notificationParty    `json:"debtorInformation"`
+	CreditorInformation *notificationParty    `json:"creditorInformation"`
+	Transfer            *notificationTransfer `json:"transfer,omitempty"`
+}
+
+// bookedPayment is the "payment" object of OutgoingPaymentBooked and
+// IncomingPaymentBooked. The amount is signed by the effect on the balance
+// ("the amount will correspond with the effect on the balance"): a payout's
+// booking is negative, money in is positive, and so is a reversal's
+// booking, which puts the payout's money back.
+type bookedPayment struct {
+	PaymentID            string                `json:"paymentId"`
+	TransactionReference string                `json:"transactionReference"`
+	ValueDate            string                `json:"valueDate"`
+	TransactionDate      string                `json:"transactionDate"`
+	Amount               json.Number           `json:"amount"`
+	Currency             string                `json:"currency"`
+	Transfer             *notificationTransfer `json:"transfer,omitempty"`
 }
 
 type notificationTransfer struct {
-	RemittanceInformation notificationRemittance `json:"remittanceInformation"`
+	Amount                *notificationMoney      `json:"amount,omitempty"`
+	RemittanceInformation *notificationRemittance `json:"remittanceInformation,omitempty"`
+}
+
+// notificationMoney is the vendor's {currency, amount} object.
+type notificationMoney struct {
+	Currency string      `json:"currency"`
+	Amount   json.Number `json:"amount"`
+}
+
+type notificationInstruction struct {
+	Amount *notificationMoney `json:"amount,omitempty"`
+}
+
+// notificationParty is our side of a payment: the account it left
+// (debtorInformation, with debitAmount and the instruction's amount) or
+// the account it arrived on (creditorInformation, with creditAmount).
+type notificationParty struct {
+	AccountID    string                   `json:"accountId"`
+	DebitAmount  *notificationMoney       `json:"debitAmount,omitempty"`
+	CreditAmount *notificationMoney       `json:"creditAmount,omitempty"`
+	Instruction  *notificationInstruction `json:"instruction,omitempty"`
 }
 
 // notificationRemittance sends all four lines, null when unused, as the
@@ -52,23 +100,82 @@ type notificationRemittance struct {
 	Line4 *string `json:"line4"`
 }
 
-func remittanceOf(lines []string) notificationRemittance {
+func remittanceOf(lines []string) *notificationRemittance {
+	if len(lines) == 0 {
+		return nil
+	}
 	at := func(i int) *string {
 		if i < len(lines) && lines[i] != "" {
 			return &lines[i]
 		}
 		return nil
 	}
-	return notificationRemittance{Line1: at(0), Line2: at(1), Line3: at(2), Line4: at(3)}
+	return &notificationRemittance{Line1: at(0), Line2: at(1), Line3: at(2), Line4: at(3)}
 }
 
-type notificationAmount struct {
-	Amount   string `json:"amount,omitempty"`
-	Currency string `json:"currency,omitempty"`
+// paymentDetail is the "payment" object for p's current state, in the shape
+// the vendor's example for that event type has.
+func paymentDetail(p *bankingcircle.Payment) any {
+	money := &notificationMoney{Currency: p.Currency, Amount: json.Number(p.Amount)}
+	switch p.State {
+	case bankingcircle.NotificationOutgoingPaymentBooked, bankingcircle.NotificationIncomingPaymentBooked:
+		amount := p.Amount
+		if p.State == bankingcircle.NotificationOutgoingPaymentBooked && p.ReversedAt == "" {
+			amount = "-" + amount
+		}
+		detail := &bookedPayment{
+			PaymentID:            p.ID,
+			TransactionReference: p.ReferenceNumber,
+			ValueDate:            bookingDate(p.UpdatedAt),
+			TransactionDate:      bookingDate(p.CreatedAt),
+			Amount:               json.Number(amount),
+			Currency:             p.Currency,
+		}
+		if rem := remittanceOf(p.Remittance); rem != nil {
+			detail.Transfer = &notificationTransfer{RemittanceInformation: rem}
+		}
+		return detail
+	}
+
+	detail := &notificationPayment{
+		PaymentID:            p.ID,
+		TransactionReference: p.ReferenceNumber,
+		Status:               bankingcircle.PaymentStatus(p.State),
+	}
+	if p.Return {
+		detail.Return = &p.Return
+	}
+	if p.State == bankingcircle.NotificationIncomingPaymentProcessed {
+		detail.CreditorInformation = &notificationParty{AccountID: p.ToAccountID, CreditAmount: money}
+		detail.Transfer = &notificationTransfer{Amount: money}
+	} else {
+		// Nothing was transferred on a rejection or missing funding, so
+		// only a processed or reversed payout carries transfer.amount.
+		detail.DebtorInformation = &notificationParty{
+			AccountID:   p.FromAccountID,
+			DebitAmount: money,
+			Instruction: &notificationInstruction{Amount: money},
+		}
+		if p.State == bankingcircle.NotificationOutgoingPaymentProcessed || p.State == bankingcircle.NotificationReversed {
+			detail.Transfer = &notificationTransfer{Amount: money}
+		}
+	}
+	if rem := remittanceOf(p.Remittance); rem != nil {
+		if detail.Transfer == nil {
+			detail.Transfer = &notificationTransfer{}
+		}
+		detail.Transfer.RemittanceInformation = rem
+	}
+	return detail
 }
 
-type notificationParty struct {
-	AccountID string `json:"accountId,omitempty"`
+// bookingDate renders the business day a timestamp books on the way the
+// booked examples do: 2024-07-26T00:00:00.
+func bookingDate(ts string) string {
+	if d := bankingcircle.BusinessDate(ts); d != "" {
+		return d + "T00:00:00"
+	}
+	return ""
 }
 
 // onTransition fires on every notification the engine produces.
@@ -104,20 +211,7 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 	// (010F10…, the report's paymentReferenceNumber), as in Banking Circle's
 	// webhook examples — never a reference the sender chose; that travels in
 	// the remittance information.
-	detail := &notificationPayment{
-		PaymentID:            p.ID,
-		TransactionReference: p.ReferenceNumber,
-		Status:               eventType,
-		Amount:               &notificationAmount{Amount: p.Amount, Currency: p.Currency},
-		CreditorInformation:  &notificationParty{AccountID: p.ToAccountID},
-		DebtorInformation:    &notificationParty{AccountID: p.FromAccountID},
-	}
-	if p.Return {
-		detail.Return = &p.Return
-	}
-	if len(p.Remittance) > 0 {
-		detail.Transfer = &notificationTransfer{RemittanceInformation: remittanceOf(p.Remittance)}
-	}
+	detail := paymentDetail(p)
 	for _, rec := range recipients {
 		a.dispatch.Enqueue(rec.Subscription, newNotification(rec, eventType, detail))
 	}

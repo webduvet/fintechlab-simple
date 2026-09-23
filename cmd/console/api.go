@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -715,6 +716,94 @@ func (a *app) bcSubscriptionPause(w http.ResponseWriter, r *http.Request) {
 	var out map[string]any
 	if err := a.bc.AuthorizedPost(ctx,
 		"/sim/subscription/"+url.PathEscape(r.PathValue("id"))+"/"+action, &out); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, out)
+}
+
+// payoutView is one outgoing payment as the Banking Circle card shows it.
+// CanReturn / CanReverse are decided here, from the vendor's own record, so
+// the page never offers a button the vendor would refuse.
+type payoutView struct {
+	ID          string `json:"id"`
+	Reference   string `json:"reference,omitempty"`
+	ExternalRef string `json:"external_ref,omitempty"`
+	Amount      string `json:"amount"`
+	Currency    string `json:"currency"`
+	State       string `json:"state"`
+	CreatedAt   string `json:"created_at"`
+	ReturnedBy  string `json:"returned_by,omitempty"`
+	CanReturn   bool   `json:"can_return"`
+	CanReverse  bool   `json:"can_reverse"`
+}
+
+// payoutsShown is how many payouts the card lists, newest first. The rest
+// are counted, not dropped silently.
+const payoutsShown = 20
+
+// bcPayouts lists Banking Circle's outgoing payments, newest first, for the
+// card's Return and Reverse buttons. Incoming payments are left out: a
+// return is one, and it shows up as the payout's returned_by instead.
+func (a *app) bcPayouts(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+
+	var listed struct {
+		Payments []struct {
+			ID           string `json:"id"`
+			SettlementID string `json:"settlementId"`
+			Reference    string `json:"paymentReferenceNumber"`
+			Amount       string `json:"amount"`
+			Currency     string `json:"currency"`
+			State        string `json:"state"`
+			CreatedAt    string `json:"createdAt"`
+			ReturnedBy   string `json:"returnedBy"`
+		} `json:"payments"`
+	}
+	if err := a.bc.AuthorizedGet(ctx, "/payments", &listed); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	out := []payoutView{}
+	for _, p := range listed.Payments {
+		if strings.HasPrefix(p.State, "Incoming") {
+			continue
+		}
+		processed := p.State == "OutgoingPaymentProcessed" && p.ReturnedBy == ""
+		out = append(out, payoutView{
+			ID: p.ID, Reference: p.Reference, ExternalRef: p.SettlementID,
+			Amount: p.Amount, Currency: p.Currency, State: p.State,
+			CreatedAt: p.CreatedAt, ReturnedBy: p.ReturnedBy,
+			CanReturn: processed, CanReverse: processed,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAt != out[j].CreatedAt {
+			return out[i].CreatedAt > out[j].CreatedAt
+		}
+		return out[i].ID > out[j].ID
+	})
+	total := len(out)
+	if len(out) > payoutsShown {
+		out = out[:payoutsShown]
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"payouts": out, "total": total})
+}
+
+// bcPayoutAction returns or reverses one payout through the vendor's own
+// /sim hooks. The action is read off the route, as pause/resume's is, so a
+// URL nobody registered is a 404 rather than a guess.
+func (a *app) bcPayoutAction(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	action := "reverse"
+	if strings.HasSuffix(r.URL.Path, "/return") {
+		action = "return"
+	}
+	var out map[string]any
+	if err := a.bc.AuthorizedPost(ctx,
+		"/sim/payments/"+url.PathEscape(r.PathValue("id"))+"/"+action, &out); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
 	}

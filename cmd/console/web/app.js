@@ -312,6 +312,92 @@ function subscriptionPanel(s) {
     </table></div>`;
 }
 
+/* The payouts Banking Circle holds, with the two things the recipient's side
+   can do to one after it has been processed: send it back (a return) or
+   have the scheme undo it (a reversal). A nested card like the activity
+   logs, so it can sit closed while you read something else. */
+const PAYOUT_STATE = {
+  OutgoingPaymentBooked: ['booked', ''],
+  OutgoingPaymentProcessed: ['processed', 'ok'],
+  OutgoingPaymentRejected: ['rejected', 'bad'],
+  MissingFunding: ['missing funding', 'warn'],
+  Reversed: ['reversed', 'warn'],
+};
+
+function payoutsPanel(s) {
+  if (s.id !== 'banking-circle') return '';
+  const d = state.payouts;
+  if (!d) return '';
+  if (d.error) return `<div class="note bad">Payouts unavailable — ${esc(d.error)}</div>`;
+
+  const id = 'banking-circle:payouts';
+  const open = isOpen(id);
+  const payouts = d.payouts || [];
+  const returned = payouts.filter((p) => p.returned_by).length;
+  const reversed = payouts.filter((p) => p.state === 'Reversed').length;
+  const rejected = payouts.filter((p) => p.state === 'OutgoingPaymentRejected').length;
+  // Counts are data, so they carry status colour; the total never does.
+  const pills = [`<span class="pill">${d.total} total</span>`]
+    .concat(returned ? [`<span class="pill warn">${returned} returned</span>`] : [])
+    .concat(reversed ? [`<span class="pill warn">${reversed} reversed</span>`] : [])
+    .concat(rejected ? [`<span class="pill bad">${rejected} rejected</span>`] : [])
+    .join(' ');
+  const last = payouts[0];
+  const desc = last
+    ? `${esc(last.id)} ${esc(last.amount)} ${esc(last.currency)} ${esc((PAYOUT_STATE[last.state] || [last.state])[0])} — ${ago(last.created_at)} ago`
+    : 'Nothing yet.';
+
+  let body = '';
+  if (open) {
+    const rows = payouts.map((p) => {
+      const [label, tone] = PAYOUT_STATE[p.state] || [p.state, ''];
+      const statePills = `<span class="pill ${tone}">${esc(label)}</span>` +
+        (p.returned_by ? `<span class="pill warn">returned</span>` : '');
+      const act = (action, text, allowed) => allowed
+        ? `<button class="danger small" data-action="${action}" data-id="${esc(p.id)}"
+             data-amount="${esc(p.amount)}" data-currency="${esc(p.currency)}">${text}</button>`
+        : '';
+      return `<tr>
+        <td class="mono">${esc(p.id)}</td>
+        <td class="mono">${esc(p.reference || '—')}</td>
+        <td class="mono">${esc(p.external_ref || '—')}</td>
+        <td class="mono num">${esc(p.amount)} ${esc(p.currency)}</td>
+        <td><div class="pill-row">${statePills}</div></td>
+        <td class="actions">${act('bc-return', 'Return', p.can_return)}</td>
+        <td class="actions">${act('bc-reverse', 'Reverse', p.can_reverse)}</td>
+      </tr>`;
+    }).join('');
+    body = `<div class="card-body">
+      <div class="note"><b>Return</b> is the beneficiary's bank sending a processed payout
+        back: the payout stays processed, and the money arrives as a new incoming payment
+        flagged <span class="mono">return</span>. <b>Reverse</b> is the scheme undoing it:
+        the payout becomes reversed, with a second booking. Only a processed payout that
+        has not come back can be either, so only those rows have buttons.</div>
+      ${payouts.length ? `<div class="table-scroll"><table>
+        <thead><tr>
+          <th>Payment</th><th>Reference</th><th>External ref</th><th class="num">Amount</th>
+          <th>State</th><th class="actions"></th><th class="actions"></th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      ${d.total > payouts.length ? `<div class="log-foot">Showing the newest ${payouts.length} of ${d.total}.</div>` : ''}`
+      : `<div class="empty">No payouts yet. A settlement run sends them here through B4B —
+          start one from the local runner card.</div>`}
+    </div>`;
+  }
+
+  return `<div class="card log ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">Payouts ${pills}</span>
+        <span class="desc">${desc}</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
+}
+
 /* A service's recent history is fetched only while its card is open. Every
    vendor polling its own log every five seconds would be a lot of traffic
    to show nobody, and the panel is the thing that says you are watching. */
@@ -339,6 +425,11 @@ async function loadActivity() {
       state.subs = await api('GET', '/api/banking-circle/subscriptions');
     } catch (err) {
       state.subs = { error: err.message };
+    }
+    try {
+      state.payouts = await api('GET', '/api/banking-circle/payouts');
+    } catch (err) {
+      state.payouts = { error: err.message };
     }
   }
   await Promise.all(watched.map(async (s) => {
@@ -813,6 +904,7 @@ function serviceCard(s) {
       </dl>
       ${clockPanel(s)}
       ${subscriptionPanel(s)}
+      ${payoutsPanel(s)}
       ${activityPanels(s)}
       ${(s.endpoints || []).length ? `<div class="table-scroll"><table>
         <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
@@ -1202,6 +1294,21 @@ const ACTIONS = {
       r.released ? `${r.released} notification(s) released to ${r.endpoint}, oldest first.`
                  : `${r.endpoint}\nNothing was waiting.`,
       'good');
+  },
+
+  /* Return and reverse are two routes for the same reason pause and release
+     are, and both are irreversible, so the confirm says what cannot be
+     undone rather than asking whether you are sure. */
+  'bc-return': async (d) => {
+    if (!confirm(`Return ${d.id}? It stays processed, and ${d.amount} ${d.currency} comes back to the safeguarding account as a new incoming payment flagged return. A payout comes back once — there is no undo.`)) return;
+    const r = await api('POST', `/api/banking-circle/payouts/${encodeURIComponent(d.id)}/return`);
+    toast('Payout returned', `${r.id} brings ${r.amount} ${r.currency} back, flagged return.\n${d.id} stays processed.`, 'good');
+  },
+
+  'bc-reverse': async (d) => {
+    if (!confirm(`Reverse ${d.id}? It becomes reversed, and ${d.amount} ${d.currency} is booked back to the safeguarding account. There is no undo.`)) return;
+    const r = await api('POST', `/api/banking-circle/payouts/${encodeURIComponent(d.id)}/reverse`);
+    toast('Payout reversed', `${r.id} is now ${r.state}.\nThe reversal is booked back to the safeguarding account.`, 'good');
   },
 
   'runner-fund-sga': async () => {

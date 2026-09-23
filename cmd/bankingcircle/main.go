@@ -287,6 +287,11 @@ func (a *app) mux() *http.ServeMux {
 	// file's plus whatever BC_TIME_SCALE overrode. Reading the file alone
 	// reports a schedule nobody is on.
 	mux.HandleFunc("GET /sim/delivery-config", a.requireBearer(a.deliveryConfig))
+	// The return and reversal test hooks again, for the console: the same
+	// handlers as on the internal listener, here because this is the
+	// surface the console holds a token for.
+	mux.HandleFunc("POST /sim/payments/{id}/return", a.requireBearer(a.returnInternalPayment))
+	mux.HandleFunc("POST /sim/payments/{id}/reverse", a.requireBearer(a.reverseInternalPayment))
 	// The console reads this one. It sits on the credentialed API
 	// rather than the bridge because that is the surface the console
 	// already holds a token for, and an observability endpoint is not

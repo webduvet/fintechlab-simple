@@ -203,13 +203,18 @@ func TestEngineReverseOnlyFromProcessed(t *testing.T) {
 		t.Fatalf("processedAt = %q, reversedAt = %q; want both kept", reversed.ProcessedAt, reversed.ReversedAt)
 	}
 
-	select {
-	case got := <-events:
-		if got.State != NotificationReversed {
-			t.Fatalf("notification = %s, want Reversed", got.State)
+	// The reversal is booked (a second OutgoingPaymentBooked, same payment
+	// and reference) and then reported as Reversed.
+	for _, want := range []NotificationType{NotificationOutgoingPaymentBooked, NotificationReversed} {
+		select {
+		case got := <-events:
+			if got.State != want || got.ID != p.ID || got.ReferenceNumber != reversed.ReferenceNumber {
+				t.Fatalf("notification = %s for %s (%s), want %s for %s (%s)",
+					got.State, got.ID, got.ReferenceNumber, want, p.ID, reversed.ReferenceNumber)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for %s notification", want)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for Reversed notification")
 	}
 
 	merchant, _ := ledger.Get("bc_acc_test_merchant")

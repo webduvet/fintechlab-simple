@@ -262,8 +262,13 @@ func (e *Engine) List() []*Payment {
 }
 
 // Reverse manually transitions an OutgoingPaymentProcessed payment to
-// Reversed, reversing the ledger credit (toAccount -> fromAccount) and
-// firing the Reversed notification. Lab-only test hook, reachable via
+// Reversed, reversing the ledger credit (toAccount -> fromAccount). It
+// fires two notifications: OutgoingPaymentBooked for the reversal booking —
+// Banking Circle's payload examples: "In a Reversal-scenario, two
+// OutgoingPaymentBooked-webhooks will be triggered", the second "when it's
+// later reversed", with the same account and transaction reference — and
+// then Reversed, the status change. The docs do not say which of the two
+// comes first. Lab-only test hook, reachable via
 // POST /internal/payments/{id}/reverse — real reversals are bank-driven and
 // asynchronous; this lets the harness exercise that path deterministically,
 // the same purpose the old Return() served. reason becomes the reversal
@@ -298,6 +303,9 @@ func (e *Engine) Reverse(id, reason string) (*Payment, error) {
 	p.UpdatedAt = p.ReversedAt
 	cp := *p
 	e.mu.Unlock()
+	booking := cp
+	booking.State = NotificationOutgoingPaymentBooked
+	e.notify(booking)
 	e.notify(cp)
 	return &cp, nil
 }
