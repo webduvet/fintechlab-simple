@@ -328,6 +328,8 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 		return nil, err
 	}
 
+	// The sender's reference reaches the beneficiary as remittance
+	// information, the way Banking Circle shows it.
 	now := time.Now().UTC().Format(time.RFC3339)
 	p := &Payment{
 		ID:            "bcp_" + randomHex(6),
@@ -337,6 +339,7 @@ func (e *Engine) CreditIncoming(toAccountID, currency, amount, reference string)
 		Currency:      currency,
 		Reference:     reference,
 		State:         NotificationIncomingPaymentBooked,
+		Remittance:    nonEmpty(reference),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -365,6 +368,17 @@ func (e *Engine) processIncoming(p *Payment) {
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)
+}
+
+// nonEmpty is lines without the empty ones, nil when none are left.
+func nonEmpty(lines ...string) []string {
+	var out []string
+	for _, line := range lines {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // returnRemittance is the remittance information of a return payment, as

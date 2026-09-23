@@ -30,10 +30,11 @@ type notificationPayment struct {
 	Amount               *notificationAmount `json:"amount,omitempty"`
 	CreditorInformation  *notificationParty  `json:"creditorInformation,omitempty"`
 	DebtorInformation    *notificationParty  `json:"debtorInformation,omitempty"`
-	// Return and Transfer are only sent on a return payment, where Banking
-	// Circle's IncomingPaymentProcessed example carries `"return": true` and
-	// the remittance lines ("RETURN OF PAYMENT", the returned payment's
-	// reference) that identify it.
+	// Return is only sent on a return payment, as in Banking Circle's
+	// IncomingPaymentProcessed example (`"return": true`). Transfer carries
+	// the remittance lines, where a payment has any: a return's "RETURN OF
+	// PAYMENT" and the returned payment's reference, or the sender's
+	// reference on an incoming lump sum.
 	Return   *bool                 `json:"return,omitempty"`
 	Transfer *notificationTransfer `json:"transfer,omitempty"`
 }
@@ -99,9 +100,13 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 		log.Printf("banking-circle: %s for payment %s matched no active subscription", eventType, p.ID)
 		return
 	}
+	// transactionReference is the bank's own reference for the payment
+	// (010F10…, the report's paymentReferenceNumber), as in Banking Circle's
+	// webhook examples — never a reference the sender chose; that travels in
+	// the remittance information.
 	detail := &notificationPayment{
 		PaymentID:            p.ID,
-		TransactionReference: p.Reference,
+		TransactionReference: p.ReferenceNumber,
 		Status:               eventType,
 		Amount:               &notificationAmount{Amount: p.Amount, Currency: p.Currency},
 		CreditorInformation:  &notificationParty{AccountID: p.ToAccountID},
@@ -109,6 +114,8 @@ func (a *app) onTransition(p *bankingcircle.Payment) {
 	}
 	if p.Return {
 		detail.Return = &p.Return
+	}
+	if len(p.Remittance) > 0 {
 		detail.Transfer = &notificationTransfer{RemittanceInformation: remittanceOf(p.Remittance)}
 	}
 	for _, rec := range recipients {

@@ -525,6 +525,7 @@ func (a *app) intradayReconciliationReport(w http.ResponseWriter, r *http.Reques
 		writeValidationProblem(w, problems)
 		return
 	}
+	query.IBAN = a.accountIBAN
 	rows := bankingcircle.IntradayReconciliation(a.engine.List(), query)
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"reconciliations": propertySelection(q).Project(rows),
@@ -542,7 +543,7 @@ func reconciliationQuery(q url.Values) (bankingcircle.ReconciliationQuery, map[s
 	problems := map[string][]string{}
 	for _, name := range []string{"FromTransactionDate", "ToTransactionDate", "FromCreatedAt", "ToCreatedAt"} {
 		if v := q.Get(name); v != "" && !isReportDateTime(v) {
-			problems[name] = append(problems[name], fmt.Sprintf("The value '%s' is not valid for %s.", v, name))
+			problems[name] = append(problems[name], invalidParameter(name, v))
 		}
 	}
 	positive := func(name string) int {
@@ -552,7 +553,7 @@ func reconciliationQuery(q url.Values) (bankingcircle.ReconciliationQuery, map[s
 		}
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 {
-			problems[name] = append(problems[name], fmt.Sprintf("The value '%s' is not valid for %s.", v, name))
+			problems[name] = append(problems[name], invalidParameter(name, v))
 		}
 		return n
 	}
@@ -566,13 +567,23 @@ func reconciliationQuery(q url.Values) (bankingcircle.ReconciliationQuery, map[s
 	}
 	for _, name := range []string{"FromTransactionDate", "ToTransactionDate", "FromCreatedAt", "ToCreatedAt", "PageNumber", "PageSize"} {
 		if q.Get(name) == "" {
-			problems[name] = append(problems[name], fmt.Sprintf("The %s field is required.", name))
+			problems[name] = append(problems[name], missingParameter(name))
 		}
 	}
 	if ids := q.Get("AccountId"); ids != "" {
 		query.AccountIDs = strings.Split(ids, ",")
 	}
 	return query, problems
+}
+
+// accountIBAN is how both reports name an account: its IBAN from the
+// ledger, empty (reported as null) for an account the ledger does not hold.
+func (a *app) accountIBAN(accountID string) string {
+	acc, err := a.ledger.Get(accountID)
+	if err != nil {
+		return ""
+	}
+	return acc.VIBAN
 }
 
 // reportDateTimeLayouts are the forms the reference shows for the report's
@@ -611,36 +622,100 @@ func propertySelection(q url.Values) bankingcircle.PropertySelection {
 	return sel
 }
 
-// writeValidationProblem answers 400 with the body the reference declares
-// for these reports: a ProblemDetails, in the ASP.NET Core validation shape
-// (type, title, status, errors keyed by parameter) that the rejection
-// report's 400 schema spells out. The status code and shape are Banking
-// Circle's; the message wording is ASP.NET Core's default, not observed
-// from the real bank, so a client must not match on it.
+// writeValidationProblem answers 400 with the body Banking Circle's
+// reports send, copied from the rejection report reference's own example:
+//
+//	{"type": "https://tools.ietf.org/html/rfc7231#section-6.5.1",
+//	 "title": "One or more validation errors occurred.", "status": 400,
+//	 "extensions": {"traceId": "..."},
+//	 "errors": {"transactionDate": ["A value for the 'TransactionDate'
+//	            parameter or property was not provided."]}}
+//
+// problems is keyed by query parameter name; the errors object keys it
+// with a lower-case first letter, as the example does.
 func writeValidationProblem(w http.ResponseWriter, problems map[string][]string) {
+	errs := make(map[string][]string, len(problems))
+	for name, messages := range problems {
+		errs[strings.ToLower(name[:1])+name[1:]] = messages
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(400)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"type":   "https://tools.ietf.org/html/rfc9110#section-15.5.1",
-		"title":  "One or more validation errors occurred.",
-		"status": 400,
-		"errors": problems,
+		"type":       "https://tools.ietf.org/html/rfc7231#section-6.5.1",
+		"title":      "One or more validation errors occurred.",
+		"status":     400,
+		"extensions": map[string]string{"traceId": traceID()},
+		"errors":     errs,
 	})
 }
 
+// missingParameter is the reference example's wording for a required
+// parameter that was not sent.
+func missingParameter(name string) string {
+	return fmt.Sprintf("A value for the '%s' parameter or property was not provided.", name)
+}
+
+// invalidParameter is ASP.NET Core's default wording for a value that does
+// not parse, the framework the example's shape comes from; the reference
+// has no example of this one, so a client must not match on it.
+func invalidParameter(name, value string) string {
+	return fmt.Sprintf("The value '%s' is not valid for %s.", value, name)
+}
+
+// traceID is a random id in the example's 8-4-4-4-12 shape.
+func traceID() string {
+	h := randomHex(16)
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
 // rejectionReport implements GET /api/v1/reports/rejection-report: the
-// complement of the reconciliation report, carrying the payments that did
-// not book and why.
+// payments that could not be processed on a transaction date, with a
+// status and reason. TransactionDate is required (400 without it, as in the
+// reference's own error example); the booleans are optional, and an
+// unparseable one is a 400 too. IncludeReversals is accepted and has
+// nothing to act on: it covers direct-debit reversals only.
 func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	rows := bankingcircle.Rejections(a.engine.List(), bankingcircle.RejectionQuery{
-		TransactionDate:     q.Get("TransactionDate"),
-		IncludeReceived:     boolOr(q.Get("IncludeReceived"), true),
-		IncludeMissingFunds: boolOr(q.Get("IncludeMissingFunds"), true),
-		IncludeReversals:    boolOr(q.Get("IncludeReversals"), true),
-		ExcludeBooked:       boolOr(q.Get("ExcludeBooked"), false),
-	})
-	httputilx.WriteJSON(w, 200, map[string]any{"rejections": rows})
+	problems := map[string][]string{}
+	date := q.Get("TransactionDate")
+	switch {
+	case date == "":
+		problems["TransactionDate"] = []string{missingParameter("TransactionDate")}
+	case !isReportDateTime(date):
+		problems["TransactionDate"] = []string{invalidParameter("TransactionDate", date)}
+	}
+	flag := func(name string, def bool) bool {
+		v := q.Get(name)
+		if v == "" {
+			return def
+		}
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			problems[name] = []string{invalidParameter(name, v)}
+		}
+		return b
+	}
+	query := bankingcircle.RejectionQuery{
+		TransactionDate:     datePrefix(date),
+		IncludeReceived:     flag("IncludeReceived", true),
+		IncludeMissingFunds: flag("IncludeMissingFunds", true),
+		ExcludeBooked:       flag("ExcludeBooked", false),
+		ReportDate:          time.Now().UTC().Format("2006-01-02"),
+		IBAN:                a.accountIBAN,
+	}
+	flag("IncludeReversals", false)
+	if len(problems) > 0 {
+		writeValidationProblem(w, problems)
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"rejections": bankingcircle.Rejections(a.engine.List(), query)})
+}
+
+func datePrefix(v string) string {
+	if len(v) >= 10 {
+		return v[:10]
+	}
+	return v
 }
 
 // paymentStatus implements GET /api/v1/payments/singles/{payment-id}/status:
@@ -653,17 +728,6 @@ func (a *app) paymentStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputilx.WriteJSON(w, 200, map[string]string{"status": bankingcircle.PaymentStatus(p.State)})
-}
-
-func boolOr(s string, def bool) bool {
-	if s == "" {
-		return def
-	}
-	v, err := strconv.ParseBool(s)
-	if err != nil {
-		return def
-	}
-	return v
 }
 
 // --- the B4B<->Banking-Circle bridge (INTERNAL_LISTEN, no auth) --------

@@ -1098,7 +1098,7 @@ func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
 			t.Fatalf("%s: got %d %s, want 400 application/problem+json", param, code, ctype)
 		}
 		errs, _ := body["errors"].(map[string]any)
-		if _, ok := errs[param]; !ok {
+		if _, ok := errs[strings.ToLower(param[:1])+param[1:]]; !ok {
 			t.Fatalf("%s: errors = %v, want an entry for it", param, body["errors"])
 		}
 	}
@@ -1132,8 +1132,8 @@ func TestIntradayReportValidatesAndProjectsOverHTTP(t *testing.T) {
 		return rows[0].(map[string]any)
 	}
 
-	if got := row(valid()); got["paymentId"] != nil || got["account"] == nil {
-		t.Fatalf("default properties: paymentId = %v, account = %v; want null and set", got["paymentId"], got["account"])
+	if got := row(valid()); got["paymentId"] != nil || got["account"] != "BE00SIMSGA00000001" {
+		t.Fatalf("default properties: paymentId = %v, account = %v; want null and the EUR safeguarding IBAN", got["paymentId"], got["account"])
 	}
 	q := valid()
 	q.Set("PropertiesIncluded", "PaymentId,ProcessedTimestamp,Return")
@@ -1214,5 +1214,100 @@ func TestReturnHookOverHTTP(t *testing.T) {
 
 	if code, _ := post("/internal/payments/bcp_return1/return", ``); code != 409 {
 		t.Fatalf("second return = %d, want 409", code)
+	}
+}
+
+// TestWebhookTransactionReferenceIsTheBanks: a notification's
+// transactionReference is the bank's own reference for the payment (the
+// report's paymentReferenceNumber), for payouts and incoming payments
+// alike. A sender's own reference arrives as remittance information.
+func TestWebhookTransactionReferenceIsTheBanks(t *testing.T) {
+	a := newTestApp(t)
+	receiver, deliveries := captureSubscriber(t)
+	subscribeAll(t, a, receiver.URL)
+	stream := &notifStream{t: t, ch: deliveries, key: a.notifKey}
+	internalSrv := httptest.NewServer(a.internalMux())
+	defer internalSrv.Close()
+
+	post := func(path, body string) bankingcircle.Payment {
+		t.Helper()
+		resp, err := http.Post(internalSrv.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var p bankingcircle.Payment
+		_ = json.NewDecoder(resp.Body).Decode(&p)
+		return p
+	}
+
+	lump := post("/internal/incoming-payments", `{"currency":"EUR","amount":"100.00","reference":"WORLDLINE SETTLEMENT EUR"}`)
+	in := paymentOf(t, stream.expect(bankingcircle.NotificationIncomingPaymentProcessed))
+	if !strings.HasPrefix(in.TransactionReference, "010F10") || in.TransactionReference != lump.ReferenceNumber {
+		t.Errorf("incoming transactionReference = %q, want the bank's reference %q", in.TransactionReference, lump.ReferenceNumber)
+	}
+	if in.Transfer == nil || in.Transfer.RemittanceInformation.Line1 == nil ||
+		*in.Transfer.RemittanceInformation.Line1 != "WORLDLINE SETTLEMENT EUR" {
+		t.Errorf("incoming remittance = %+v, want the sender's reference on line 1", in.Transfer)
+	}
+	if in.Return != nil {
+		t.Errorf("incoming lump sum return = %v, want it absent: it is not a return", *in.Return)
+	}
+
+	payout := post("/internal/payments", `{"paymentId":"bcp_txref1","accountId":"`+merchantAccount+`","amount":"10.00","currency":"EUR","externalRef":"settle_1"}`)
+	out := paymentOf(t, stream.expect(bankingcircle.NotificationOutgoingPaymentProcessed))
+	if !strings.HasPrefix(out.TransactionReference, "010F10") || out.TransactionReference != payout.ReferenceNumber {
+		t.Errorf("payout transactionReference = %q, want the bank's reference %q", out.TransactionReference, payout.ReferenceNumber)
+	}
+	if out.TransactionReference == in.TransactionReference {
+		t.Error("two payments share a transactionReference")
+	}
+}
+
+// TestRejectionReportValidatesOverHTTP: TransactionDate is required, and a
+// request without it gets the reference's own 400 example back — same
+// type, title, extensions.traceId, and errors keyed "transactionDate" with
+// the same message. An unparseable flag is a 400 too.
+func TestRejectionReportValidatesOverHTTP(t *testing.T) {
+	a := newTestApp(t)
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	tok := a.tokens.issue(time.Hour)
+	get := func(query string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest("GET", srv.URL+"/api/v1/reports/rejection-report?"+query, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body := map[string]any{}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return resp.StatusCode, body
+	}
+
+	code, body := get("")
+	if code != 400 {
+		t.Fatalf("no TransactionDate = %d, want 400", code)
+	}
+	if body["type"] != "https://tools.ietf.org/html/rfc7231#section-6.5.1" ||
+		body["title"] != "One or more validation errors occurred." {
+		t.Errorf("problem = %v, want the reference example's type and title", body)
+	}
+	if ext, _ := body["extensions"].(map[string]any); ext == nil || ext["traceId"] == "" || ext["traceId"] == nil {
+		t.Errorf("extensions = %v, want a traceId", body["extensions"])
+	}
+	errs, _ := body["errors"].(map[string]any)
+	msgs, _ := errs["transactionDate"].([]any)
+	if len(msgs) != 1 || msgs[0] != "A value for the 'TransactionDate' parameter or property was not provided." {
+		t.Errorf("errors = %v, want the reference example's transactionDate message", body["errors"])
+	}
+
+	if code, body := get("TransactionDate=2026-09-18&IncludeReceived=maybe"); code != 400 {
+		t.Errorf("IncludeReceived=maybe = %d %v, want 400", code, body)
+	}
+	if code, body := get("TransactionDate=2026-09-18&IncludeReversals=true&ExcludeBooked=false"); code != 200 {
+		t.Errorf("valid request = %d %v, want 200", code, body)
 	}
 }

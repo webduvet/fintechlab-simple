@@ -1,13 +1,16 @@
 package bankingcircle
 
 import (
+	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 )
 
 // samplePayments is one day's activity: a lump sum in, three payouts that
-// booked, one rejected, one short of funds, and one returned after booking.
+// booked, one rejected, one short of funds, and one reversed after processing.
 func samplePayments() []*Payment {
-	return []*Payment{
+	payments := []*Payment{
 		{ID: "bc_in_1", FromAccountID: "external", ToAccountID: SGAAccountEUR,
 			Amount: "4120.00", Currency: "EUR", Reference: "wl-lump-1",
 			State:     NotificationIncomingPaymentProcessed,
@@ -45,13 +48,26 @@ func samplePayments() []*Payment {
 			State:     NotificationOutgoingPaymentProcessed,
 			CreatedAt: "2026-09-17T09:00:00Z", UpdatedAt: "2026-09-17T09:00:10Z"},
 	}
+	// Each has the bank's own reference, as every accepted payment does.
+	for i, p := range payments {
+		p.ReferenceNumber = fmt.Sprintf("010F10%010d", i+1)
+	}
+	return payments
 }
 
 func today() ReconciliationQuery {
 	return ReconciliationQuery{
 		FromTransactionDate: "2026-09-18", ToTransactionDate: "2026-09-18",
-		PageNumber: 1, PageSize: 100,
+		PageNumber: 1, PageSize: 100, IBAN: testIBAN,
 	}
+}
+
+// testIBAN is the safeguarding accounts' IBANs, as the ledger seeds them.
+func testIBAN(accountID string) string {
+	return map[string]string{
+		SGAAccountEUR: "BE00SIMSGA00000001",
+		SGAAccountGBP: "GB00SIMSGA00000001",
+	}[accountID]
 }
 
 func ids(rows []ReconciliationRow) map[string]ReconciliationRow {
@@ -197,66 +213,130 @@ func rowKey(r ReconciliationRow) string {
 	return deref(r.PaymentID)
 }
 
-// TestRejectionReportIsTheComplement is the property the whole pair exists
-// for: every payment on the date appears in exactly one of the two reports.
-// If both could omit a payment, a sweep would silently lose money.
+// TestRejectionReportIsTheComplement is the property the pair exists for:
+// every payment instructed on the date appears in at least one of the two
+// reports, and only a pending payment that has already booked appears in
+// both. If both could omit a payment, a sweep would silently lose money.
 func TestRejectionReportIsTheComplement(t *testing.T) {
 	payments := samplePayments()
 	booked := ids(IntradayReconciliation(payments, today()))
-	rejected := Rejections(payments, RejectionQuery{
-		TransactionDate:     "2026-09-18",
-		IncludeMissingFunds: true, IncludeReversals: true, IncludeReceived: true,
-	})
-
-	rejectedRefs := map[string]bool{}
-	for _, r := range rejected {
-		if r.PaymentReferenceNumber != nil {
-			rejectedRefs[*r.PaymentReferenceNumber] = true
-		}
+	rejected := map[string]RejectionRow{}
+	for _, r := range Rejections(payments, defaultRejections()) {
+		rejected[deref(r.PaymentReferenceNumber)] = r
 	}
 
 	for _, p := range payments {
-		if datePart(p.UpdatedAt) != "2026-09-18" {
+		if datePart(p.CreatedAt) != "2026-09-18" || incoming(p.State) {
 			continue
 		}
 		_, inRecon := booked[p.ID]
-		inRejected := rejectedRefs[p.Reference]
+		_, inRejected := rejected[p.ReferenceNumber]
 		switch {
 		case !inRecon && !inRejected:
 			t.Errorf("%s (%s) is in neither report — a sweep would lose it", p.ID, p.State)
-		case inRecon && inRejected && p.State != NotificationReversed:
+		case inRecon && inRejected && p.State != NotificationOutgoingPaymentBooked:
 			t.Errorf("%s (%s) is in both reports", p.ID, p.State)
 		}
 	}
 
-	// And the rejection rows say why, since that report does carry a status.
-	for _, r := range rejected {
-		if r.Status == nil || *r.Status == "" {
-			t.Errorf("rejection row %v has no status", deref(r.PaymentReferenceNumber))
+	// The statuses are the documented ones, and only a failure has a reason.
+	for id, want := range map[string][2]string{
+		"bc_r_1": {"Rejected", "reason"},
+		"bc_r_2": {"Insufficient Funds", "reason"},
+		"bc_p_2": {"Received", ""},
+	} {
+		var ref string
+		for _, p := range payments {
+			if p.ID == id {
+				ref = p.ReferenceNumber
+			}
 		}
-		if r.StatusReason == nil || *r.StatusReason == "" {
-			t.Errorf("rejection row %v has no reason", deref(r.PaymentReferenceNumber))
+		r, ok := rejected[ref]
+		if !ok {
+			t.Errorf("%s is not on the rejection report", id)
+			continue
+		}
+		if deref(r.Status) != want[0] {
+			t.Errorf("%s: status = %q, want %q", id, deref(r.Status), want[0])
+		}
+		if hasReason := deref(r.StatusReason) != ""; hasReason != (want[1] != "") {
+			t.Errorf("%s: statusReason = %q", id, deref(r.StatusReason))
+		}
+	}
+	if _, ok := rejected["010F100000000007"]; ok {
+		t.Error("the reversed payout is on the rejection report; IncludeReversals covers direct debits only")
+	}
+}
+
+// defaultRejections is a request for 2026-09-18 with the defaults the
+// handler applies.
+func defaultRejections() RejectionQuery {
+	return RejectionQuery{TransactionDate: "2026-09-18", IncludeReceived: true, IncludeMissingFunds: true, ReportDate: "2026-09-19", IBAN: testIBAN}
+}
+
+// TestRejectionFiltersAreHonoured: IncludeMissingFunds and IncludeReceived
+// drop their kind, and ExcludeBooked drops pending payments that have
+// already booked.
+func TestRejectionFiltersAreHonoured(t *testing.T) {
+	payments := samplePayments()
+	all := Rejections(payments, defaultRejections())
+	if len(all) != 3 {
+		t.Fatalf("default report has %d rows, want the rejected, missing-funds and pending payouts", len(all))
+	}
+	noFunds := defaultRejections()
+	noFunds.IncludeMissingFunds = false
+	noReceived := defaultRejections()
+	noReceived.IncludeReceived = false
+	noBooked := defaultRejections()
+	noBooked.ExcludeBooked = true
+
+	for name, q := range map[string]RejectionQuery{
+		"IncludeMissingFunds=false": noFunds,
+		"IncludeReceived=false":     noReceived,
+		"ExcludeBooked=true":        noBooked,
+	} {
+		if got := len(Rejections(payments, q)); got != len(all)-1 {
+			t.Errorf("%s: %d rows, want exactly one fewer than %d", name, got, len(all))
 		}
 	}
 }
 
-// TestRejectionFiltersAreHonoured: the sweep turns these on and off, and a
-// mock that ignored them would report a clean day as a broken one.
-func TestRejectionFiltersAreHonoured(t *testing.T) {
+// TestRejectionRowMatchesTheReference: the fields a row carries and their
+// shapes are the reference's, spelling included.
+func TestRejectionRowMatchesTheReference(t *testing.T) {
 	payments := samplePayments()
-	base := RejectionQuery{TransactionDate: "2026-09-18", IncludeMissingFunds: true, IncludeReversals: true}
-
-	all := Rejections(payments, base)
-	noFunds := base
-	noFunds.IncludeMissingFunds = false
-	noReversals := base
-	noReversals.IncludeReversals = false
-
-	if len(Rejections(payments, noFunds)) != len(all)-1 {
-		t.Error("IncludeMissingFunds=false should drop exactly the missing-funds row")
+	payments[4].ToIBAN = "BE10001001111111"
+	var row RejectionRow
+	for _, r := range Rejections(payments, defaultRejections()) {
+		if deref(r.PaymentReferenceNumber) == payments[4].ReferenceNumber {
+			row = r
+		}
 	}
-	if len(Rejections(payments, noReversals)) != len(all)-1 {
-		t.Error("IncludeReversals=false should drop exactly the reversal row")
+	for name, pair := range map[string][2]string{
+		"pTxndate":         {deref(row.PTxndate), "2026-09-18T00:00:00+00:00"},
+		"valueDate":        {deref(row.ValueDate), "2026-09-18T00:00:00+00:00"},
+		"reportDate":       {deref(row.ReportDate), "2026-09-19T00:00:00+00:00"},
+		"transferCurrency": {deref(row.TransferCurrency), "EUR"},
+		"destinationIban":  {deref(row.DestinationIban), "BE10001001111111"},
+		"sourceType":       {deref(row.SourceType), "Single payment"},
+		"status":           {deref(row.Status), "Rejected"},
+	} {
+		if pair[0] != pair[1] {
+			t.Errorf("%s = %q, want %q", name, pair[0], pair[1])
+		}
+	}
+	if row.FileReferenceNumber == nil || *row.FileReferenceNumber != "" {
+		t.Errorf("fileReferenceNumber = %v, want \"\" for a single payment", row.FileReferenceNumber)
+	}
+	if row.PIdChanneluser != nil || row.CustomerID != nil {
+		t.Error("pIdChanneluser and customerId must be null: the lab has neither")
+	}
+
+	raw, _ := json.Marshal(row)
+	for _, key := range []string{`"pIdChanneluser"`, `"pTxndate"`, `"customerId"`, `"transferCurrency"`, `"destinationIban"`} {
+		if !strings.Contains(string(raw), key) {
+			t.Errorf("row JSON has no %s property", key)
+		}
 	}
 }
 
@@ -303,7 +383,7 @@ func TestAccountFilterAndPaging(t *testing.T) {
 // our record at all.
 func TestEveryRowCarriesACorrelationHandle(t *testing.T) {
 	payments := samplePayments()
-	for _, r := range Rejections(payments, RejectionQuery{TransactionDate: "2026-09-18", IncludeMissingFunds: true, IncludeReversals: true}) {
+	for _, r := range Rejections(payments, defaultRejections()) {
 		if r.PaymentReferenceNumber == nil && r.UserReferenceNumber == nil && r.FileReferenceNumber == nil {
 			t.Error("a rejection row with no reference of any kind cannot be correlated")
 		}
@@ -383,7 +463,7 @@ func TestPagingIsStableAcrossShuffledInput(t *testing.T) {
 	}
 
 	// And the rejection report is stable too, even though it is not paged.
-	q := RejectionQuery{TransactionDate: "2026-09-18", IncludeMissingFunds: true, IncludeReversals: true}
+	q := defaultRejections()
 	first := Rejections(base, q)
 	for shift := 1; shift < len(base); shift++ {
 		rotated := append(append([]*Payment{}, base[shift:]...), base[:shift]...)
@@ -436,6 +516,7 @@ func TestPaymentStatusMapsEveryState(t *testing.T) {
 func TestReferenceFieldsAreTheBanks(t *testing.T) {
 	payments := samplePayments()
 	payments[1].ReferenceNumber = "010F100000000042"
+	payments[2].ReferenceNumber = ""
 	got := ids(IntradayReconciliation(payments, today()))
 
 	if ref := deref(got["bc_p_1"].PaymentReferenceNumber); ref != "010F100000000042" {
@@ -478,7 +559,7 @@ func TestReturnIsItsOwnIncomingRow(t *testing.T) {
 	if !ok {
 		t.Fatal("the return payment is not on the report")
 	}
-	if deref(ret.CreditDebitIndicator) != "CRDT" || derefF(ret.CreditAmount) != 125.0 || deref(ret.Account) != SGAAccountEUR {
+	if deref(ret.CreditDebitIndicator) != "CRDT" || derefF(ret.CreditAmount) != 125.0 || deref(ret.Account) != "BE00SIMSGA00000001" {
 		t.Errorf("return row: %s %v on %s, want CRDT 125 on the safeguarding account",
 			deref(ret.CreditDebitIndicator), derefF(ret.CreditAmount), deref(ret.Account))
 	}
@@ -494,6 +575,33 @@ func TestReturnIsItsOwnIncomingRow(t *testing.T) {
 	} {
 		if pair[0] != pair[1] {
 			t.Errorf("%s = %q, want %q", name, pair[0], pair[1])
+		}
+	}
+}
+
+// TestAccountIsTheIBAN: both reports name an account by its IBAN ("IBAN of
+// your account"), never by the id the AccountId filter matches on, and an
+// account with no known IBAN is null rather than its id.
+func TestAccountIsTheIBAN(t *testing.T) {
+	payments := samplePayments()
+
+	q := today()
+	q.AccountIDs = []string{SGAAccountGBP}
+	gbp := IntradayReconciliation(payments, q)
+	if len(gbp) != 1 || deref(gbp[0].Account) != "GB00SIMSGA00000001" {
+		t.Fatalf("GBP rows = %d, account %q; want one, on the GBP IBAN", len(gbp), deref(gbp[0].Account))
+	}
+	for _, r := range Rejections(payments, defaultRejections()) {
+		if deref(r.Account) != "BE00SIMSGA00000001" {
+			t.Errorf("rejection row %s: account = %q, want the EUR IBAN", deref(r.PaymentReferenceNumber), deref(r.Account))
+		}
+	}
+
+	q = today()
+	q.IBAN = func(string) string { return "" }
+	for _, r := range IntradayReconciliation(payments, q) {
+		if r.Account != nil {
+			t.Errorf("%s: account = %q with no IBAN known, want null", deref(r.PaymentID), *r.Account)
 		}
 	}
 }

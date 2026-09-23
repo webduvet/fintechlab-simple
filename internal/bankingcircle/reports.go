@@ -20,14 +20,15 @@ import (
 // existence *is* the statement that a booking happened — so only booked and
 // processed payments appear, and a reversal appears as a second, negative
 // booking on the same payment rather than as an absence. What tells booked
-// and processed apart is
-// `processedTimestamp`: null while the payment is only booked (the real
-// report's pendingProcessing), set once it is processed.
+// and processed apart is `processedTimestamp`: null while the payment is
+// only booked (the real report's pendingProcessing), set once it is
+// processed.
 //
-// The rejection report is the complement: payments that did not book on the
-// requested date, with an explicit status and reason. Between them every
-// payment submitted on a date is accounted for exactly once, which is the
-// property a sweep relies on.
+// The rejection report lists what could not be processed on the requested
+// transaction date, with a status: rejected, missing funding, or still
+// pending processing. Pending payments that have booked appear in both
+// reports, as they do at the bank; every other payment instructed on a
+// date appears in exactly one, which is the property a sweep relies on.
 
 // ReconciliationRow is one booking line. Field names are the wire contract;
 // the pointer-ish `*string` shapes exist because the real report sends null
@@ -61,16 +62,26 @@ type ReconciliationRow struct {
 	AdditionalRemittanceInfo3  *string  `json:"additionalRemittanceInformation3"`
 }
 
-// RejectionRow is one payment that did not book. It carries no paymentId —
-// only reference numbers — which is why this mock populates all three
-// reference fields with something correlatable. See ReferenceFields.
+// RejectionRow is one payment that could not be processed on the
+// transaction date. Every property Banking Circle's reference lists is sent,
+// in its spelling — pIdChanneluser and pTxndate here, unlike the
+// reconciliation report's pIdChannelUser and pTxnDate. It carries no
+// paymentId; paymentReferenceNumber, the bank's own reference, is the
+// handle back to the payment.
 type RejectionRow struct {
+	// PIdChanneluser (the requesting API user) and CustomerID are null: the
+	// lab models neither users behind its tokens nor customer ids.
+	PIdChanneluser         *string `json:"pIdChanneluser"`
+	PTxndate               *string `json:"pTxndate"`
+	ReportDate             *string `json:"reportDate"`
+	CustomerID             *string `json:"customerId"`
 	Account                *string `json:"account"`
 	AccountCurrency        *string `json:"accountCurrency"`
 	ValueDate              *string `json:"valueDate"`
-	ReportDate             *string `json:"reportDate"`
 	PaymentAmount          float64 `json:"paymentAmount"`
 	PaymentCurrency        *string `json:"paymentCurrency"`
+	TransferCurrency       *string `json:"transferCurrency"`
+	DestinationIban        *string `json:"destinationIban"`
 	PaymentReferenceNumber *string `json:"paymentReferenceNumber"`
 	UserReferenceNumber    *string `json:"userReferenceNumber"`
 	FileReferenceNumber    *string `json:"fileReferenceNumber"`
@@ -88,15 +99,40 @@ type ReconciliationQuery struct {
 	AccountIDs          []string
 	PageNumber          int
 	PageSize            int
+	// IBAN names an account on the report. See AccountIBAN.
+	IBAN AccountIBAN
 }
 
-// RejectionQuery is the filter the rejection report accepts.
+// AccountIBAN resolves an account id to the account's IBAN. Both reports'
+// `account` is the IBAN ("IBAN of your account"), not the id: the id is
+// only what the AccountId filter matches on. An account it cannot resolve
+// is reported as null, never as its id.
+type AccountIBAN func(accountID string) string
+
+func (f AccountIBAN) of(accountID string) *string {
+	if f == nil {
+		return nil
+	}
+	return str(f(accountID))
+}
+
+// RejectionQuery is the filter the rejection report accepts, with the
+// reference's meanings:
+//   - IncludeReceived: "Include payments in pending processing";
+//   - IncludeMissingFunds: "Include payments with insufficient funds";
+//   - ExcludeBooked: "Exclude booked payments" (default false).
+//
+// IncludeReversals is not here: it means "Include only Direct Debit and SEPA
+// Direct Debit reversals", and the lab has no direct debits to reverse.
 type RejectionQuery struct {
 	TransactionDate     string
 	IncludeReceived     bool
 	IncludeMissingFunds bool
-	IncludeReversals    bool
 	ExcludeBooked       bool
+	// ReportDate is the day the report is generated, YYYY-MM-DD.
+	ReportDate string
+	// IBAN names an account on the report. See AccountIBAN.
+	IBAN AccountIBAN
 }
 
 // booked reports whether a state means value moved on an account.
@@ -149,7 +185,7 @@ func IntradayReconciliation(payments []*Payment, q ReconciliationQuery) []Reconc
 		if len(q.AccountIDs) > 0 && !containsFold(q.AccountIDs, account) {
 			continue
 		}
-		for _, row := range bookingRows(p, account) {
+		for _, row := range bookingRows(p, q.IBAN.of(account)) {
 			if withinDates(derefStr(row.ReportDate), q.FromTransactionDate, q.ToTransactionDate) {
 				rows = append(rows, row)
 			}
@@ -185,7 +221,7 @@ func derefStr(s *string) string {
 // bookingRows is every line a payment puts on the report. A report lists
 // bookings, and a booking is never rewritten, so a reversed payment keeps
 // the row it booked with and gains a second one for the reversal.
-func bookingRows(p *Payment, account string) []ReconciliationRow {
+func bookingRows(p *Payment, account *string) []ReconciliationRow {
 	if p.State != NotificationReversed {
 		return []ReconciliationRow{reconciliationRow(p, account, p.UpdatedAt)}
 	}
@@ -193,13 +229,13 @@ func bookingRows(p *Payment, account string) []ReconciliationRow {
 	return []ReconciliationRow{original, reversalRow(p, original)}
 }
 
-func reconciliationRow(p *Payment, account, bookedAt string) ReconciliationRow {
+func reconciliationRow(p *Payment, account *string, bookedAt string) ReconciliationRow {
 	amount := amountFloat(p.Amount)
 	date := datePart(bookedAt)
 
 	row := ReconciliationRow{
 		PaymentID:                  str(p.ID),
-		Account:                    str(account),
+		Account:                    account,
 		AccountCurrency:            str(p.Currency),
 		TransactionAmount:          amount,
 		TransactionAmountCurrency:  str(p.Currency),
@@ -245,7 +281,7 @@ func reconciliationRow(p *Payment, account, bookedAt string) ReconciliationRow {
 	// paymentReferenceNumber is the bank's own reference (set above), and
 	// clientOrderId stays null: the docs fill it only for FX trades executed
 	// via the FX API, which this lab does not simulate.
-	_, row.UserReferenceNumber, _ = ReferenceFields(p)
+	row.UserReferenceNumber = userReference(p)
 	return row
 }
 
@@ -290,42 +326,44 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// Rejections returns the payments that did not book on a date.
+// Rejections returns the payments that could not be processed, instructed
+// on the transaction date. By default the reference lists three kinds:
+// missing funding, pending processing and rejected. Outgoing payments only:
+// the report is about payments you instructed.
 func Rejections(payments []*Payment, q RejectionQuery) []RejectionRow {
 	rows := make([]RejectionRow, 0)
 	for _, p := range payments {
-		if q.TransactionDate != "" && datePart(p.UpdatedAt) != q.TransactionDate {
+		if datePart(p.CreatedAt) != q.TransactionDate {
 			continue
 		}
-		status, reason, ok := rejectionStatus(p.State)
+		kind, ok := rejectionKindOf(p.State)
 		if !ok {
 			continue
 		}
-		if p.State == NotificationMissingFunding && !q.IncludeMissingFunds {
+		switch {
+		case kind == rejectionMissingFunds && !q.IncludeMissingFunds,
+			(kind == rejectionPending || kind == rejectionPendingBooked) && !q.IncludeReceived,
+			kind == rejectionPendingBooked && q.ExcludeBooked:
 			continue
 		}
-		if p.State == NotificationReversed && !q.IncludeReversals {
-			continue
-		}
-		account := p.FromAccountID
-		if incoming(p.State) {
-			account = p.ToAccountID
-		}
-		date := datePart(p.UpdatedAt)
-		ref, user, order := ReferenceFields(p)
+		status, reason := rejectionLabels(kind)
+		txnDate := bcDate(p.CreatedAt)
 		rows = append(rows, RejectionRow{
-			Account:                str(account),
+			PTxndate:               txnDate,
+			ReportDate:             bcDate(q.ReportDate),
+			Account:                q.IBAN.of(p.FromAccountID),
 			AccountCurrency:        str(p.Currency),
-			ValueDate:              str(date),
-			ReportDate:             str(date),
+			ValueDate:              txnDate,
 			PaymentAmount:          amountFloat(p.Amount),
 			PaymentCurrency:        str(p.Currency),
-			PaymentReferenceNumber: ref,
-			UserReferenceNumber:    user,
-			FileReferenceNumber:    order,
-			SourceType:             str("Api"),
-			Status:                 str(status),
-			StatusReason:           str(reason),
+			TransferCurrency:       str(p.Currency),
+			DestinationIban:        str(p.ToIBAN),
+			PaymentReferenceNumber: str(p.ReferenceNumber),
+			UserReferenceNumber:    userReference(p),
+			FileReferenceNumber:    &empty,
+			SourceType:             str("Single payment"),
+			Status:                 &status,
+			StatusReason:           &reason,
 		})
 	}
 	// Same reason as the reconciliation report, even though this one is
@@ -341,40 +379,73 @@ func Rejections(payments []*Payment, q RejectionQuery) []RejectionRow {
 	return rows
 }
 
-// rejectionStatus maps a state onto the report's status/reason pair, and
-// reports whether the payment belongs in this report at all.
-func rejectionStatus(s NotificationType) (status, reason string, ok bool) {
+// empty is the value the reference's example sends for a field that does
+// not apply on a single payment (fileReferenceNumber: ""), where the
+// reconciliation report would send null.
+var empty = ""
+
+type rejectionKind int
+
+const (
+	rejectionRejected rejectionKind = iota
+	rejectionMissingFunds
+	// rejectionPending has not been booked yet; rejectionPendingBooked has
+	// (value already moved), which is what ExcludeBooked drops.
+	rejectionPending
+	rejectionPendingBooked
+)
+
+// rejectionKindOf reports whether a payment in state s belongs in the
+// report, and as which kind. A reversal is not one of the report's default
+// statuses, and IncludeReversals only covers direct debits, so an outgoing
+// Reversed payment never appears.
+func rejectionKindOf(s NotificationType) (rejectionKind, bool) {
 	switch s {
 	case NotificationOutgoingPaymentRejected:
-		return "Rejected", "Payment rejected by the beneficiary bank (simulated)", true
+		return rejectionRejected, true
 	case NotificationMissingFunding:
-		return "MissingFunding", "Insufficient funds on the debtor account (simulated)", true
-	case NotificationReversed:
-		return "Reversed", "Payment returned after booking (simulated)", true
+		return rejectionMissingFunds, true
+	case NotificationOutgoingPaymentBooked:
+		return rejectionPendingBooked, true
 	case NotificationPaymentRouting, NotificationOutgoingDirectDebitPendingProcessing:
-		return "Pending", "Still processing at the requested date (simulated)", true
+		return rejectionPending, true
 	}
-	return "", "", false
+	return 0, false
 }
 
-// ReferenceFields is the one correlation seam a caller has to a rejection
-// row, which carries no paymentId.
-//
-// The mapping from an outbound external reference to one of Banking
-// Circle's three reference fields is not something this mock can confirm,
-// so it does not guess: all three are populated with something the caller
-// sent, and whichever one a client matches on will work. If a real response
-// turns out to use only one, narrow this and the tests that assert it.
-func ReferenceFields(p *Payment) (paymentRef, userRef, clientOrderID *string) {
-	ref := p.Reference
-	if ref == "" {
-		ref = p.SettlementID
+// rejectionLabels is the status and statusReason a row carries. The docs
+// give "Rejected" for a rejection and "Insufficient Funds" for missing
+// funding. For pending processing they disagree: the guide says the status
+// is blank, while the API reference's example row is a pending payment
+// (the parameter that includes those is IncludeReceived) with status
+// "Received" and an empty statusReason. This follows the API reference,
+// the wire contract. The reasons are descriptive text, the lab's own.
+func rejectionLabels(kind rejectionKind) (status, reason string) {
+	switch kind {
+	case rejectionRejected:
+		return "Rejected", "Payment rejected by the beneficiary bank (simulated)"
+	case rejectionMissingFunds:
+		return "Insufficient Funds", "Insufficient funds on the debtor account (simulated)"
 	}
-	order := p.SettlementID
-	if order == "" {
-		order = p.Reference
+	return "Received", ""
+}
+
+// bcDate renders a date the way both reports' examples do:
+// 2024-12-30T00:00:00+00:00.
+func bcDate(ts string) *string {
+	if d := datePart(ts); d != "" {
+		return str(d + "T00:00:00+00:00")
 	}
-	return str(ref), str(ref), str(order)
+	return nil
+}
+
+// userReference is userReferenceNumber: the debtor reference the payment
+// instruction carried. The lab's payouts are created without one, so they
+// stand in with the reference the caller sent the payment under
+// (externalRef); whether the real bridge carries that as the debtor
+// reference is not something this mock can confirm.
+func userReference(p *Payment) *string {
+	return str(firstNonEmpty(p.Reference, p.SettlementID))
 }
 
 // page applies PageNumber/PageSize. Page numbers are 1-based; a page past

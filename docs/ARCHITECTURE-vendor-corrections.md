@@ -192,7 +192,12 @@ Source: `apps/banking-circle/src/modules/{auth,outbound/accounts,webhooks/bc-web
   subscriptionEventId?, notificationType, timestamp, targetId?, payment?:
   {paymentId?, transactionReference?, amount?:{amount?,currency?},
   creditorInformation?:{accountId?}, debtorInformation?:{accountId?}},
-  payload?}]}`.
+  payload?}]}`. `transactionReference` is the bank's own reference for the
+  payment (`010F10…`, the report's `paymentReferenceNumber`), as in the
+  vendor's examples; a sender's reference (a Worldline lump sum's, a
+  return's "RETURN OF PAYMENT" lines) travels in
+  `transfer.remittanceInformation.line1-4`, and a return adds
+  `"return": true`.
 - **`notificationType`** — the full 13-value closed set (send only these):
   `IncomingPaymentProcessed`, `IncomingPaymentBooked`,
   `OutgoingPaymentProcessed`, `OutgoingPaymentBooked`,
@@ -455,18 +460,37 @@ listener, all derived from the same payment records the notifications are:
   below). As on the real
   bank, `FromTransactionDate`, `ToTransactionDate`, `FromCreatedAt`,
   `ToCreatedAt`, `PageNumber` and `PageSize` are required: a missing or
-  malformed one is a 400 ProblemDetails (`errors` keyed by parameter), not a
-  defaulted page. `paymentId`, `processedTimestamp` and `return` are not in
-  the default property list, so they come back null unless requested with
+  malformed one is a 400 ProblemDetails (shape below, with the rejection
+  report), not a defaulted page. `paymentId`, `processedTimestamp` and
+  `return` are not in the default property list, so they come back null
+  unless requested with
   `PropertiesIncluded` (or everything, with an empty `PropertiesExcluded`);
   a property not selected is sent as null, as in the reference's example.
   Values follow the docs too: `creditDebitIndicator` is `DBIT`/`CRDT`,
   `return` is `true` or null (never `false`), `paymentReferenceNumber` is
   the bank's own reference (`010F10…`, assigned when the payment is
   accepted, opaque to clients), and `clientOrderId` is null — the bank only
-  fills it for FX trades.
-- `GET /api/v1/reports/rejection-report` — payments that did not book,
-  with status and reason, but no `paymentId`.
+  fills it for FX trades. In both reports `account` is the account's IBAN
+  (from the ledger), not its id; the id is only what `AccountId` filters
+  on.
+- `GET /api/v1/reports/rejection-report` — outgoing payments instructed
+  on `TransactionDate` (required) that could not be processed, with every
+  property the reference lists (`pIdChanneluser`/`pTxndate` spelled as it
+  spells them; `pIdChanneluser` and `customerId` null, since the lab has no
+  users or customer ids). No `paymentId`: `paymentReferenceNumber`, the
+  bank's `010F10…` reference, is the handle back. `status` is `Rejected`,
+  `Insufficient Funds` (missing funding) or `Received` (pending
+  processing, with an empty `statusReason`); the guide says blank for
+  pending, and this follows the API reference's example instead.
+  `sourceType` is `Single payment` and `fileReferenceNumber` `""`, as in
+  that example. `IncludeReceived` and `IncludeMissingFunds` (default true)
+  drop their kind, and `ExcludeBooked` drops pending payments that have
+  already booked. `IncludeReversals` covers direct-debit reversals only,
+  which the lab has none of, so an outgoing reversal never appears. Both
+  reports answer a bad request with the reference's 400 example shape:
+  `type` rfc7231, `extensions.traceId`, and `errors` keyed by camelCase
+  parameter ("A value for the 'TransactionDate' parameter or property was
+  not provided.").
 - `GET /api/v1/payments/singles/{payment-id}/status` — `{"status": ...}` in
   Banking Circle's `PaymentStatus` vocabulary (`PendingProcessing`,
   `Processed`, `Rejected`, `MissingFunding`, `Reversed`); 404 for an
