@@ -24,9 +24,10 @@ schedule (11 steps, real delays; `time_scale` compresses them for the lab);
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | env/flags; builds the mTLS listener (`tlsListener`, modes `require`/`optional`/`off`); wires `Ledger`+`Engine`+`SubscriptionStore`+`Dispatcher` into one `*app`; seeds a default subscription; starts both listeners (the internal one on its own goroutine) |
+| `main.go` | env/flags; builds the mTLS listener (`tlsListener`, modes `require`/`optional`/`off`); wires `Ledger`+`Engine`+`SubscriptionStore`+`Dispatcher` into one `*app`; seeds a default subscription; follows the runner's clock (`RUNNER_CLOCK_URL`); starts both listeners (the internal one on its own goroutine). Also the report handlers (intraday reconciliation, rejection; parameter validation and the 400 body), the payment-status read, and the lab hooks: `/internal/payments/{id}/return\|reverse` (mirrored at `/sim/payments/…` for the console) and `/internal/payments/outcomes` |
 | `subscriptions.go` | REST handlers for the subscription self-service API — create/list/get/update/activate/deactivate/delete, events + targets, `If-Match` concurrency |
-| `notify.go` | `onTransition` (routes a `Payment` into subscription-matched `Notification`s), `sendEncrypted` + `encryptNotification` (the real AES-256-GCM envelope), `clientTest` handler |
+| `notify.go` | `onTransition` (routes a `Payment` into subscription-matched `Notification`s), `paymentDetail` (the two payload shapes of the vendor's examples: booked vs status events), `sendEncrypted` + `encryptNotification` (the real AES-256-GCM envelope), `clientTest` handler |
+| `activity.go` | summaries for the `/sim/activity` logs the console reads |
 
 `tokenStore` (bearer-token issuance) is defined in `main.go`, not in
 `internal/bankingcircle` — auth/routing glue stays in `cmd`, domain logic
@@ -37,11 +38,16 @@ goes in `internal`.
 | File | Responsibility |
 | --- | --- |
 | `ledger.go` | `Account`/`Ledger` — in-memory balances, one safeguarding account (SGA) per currency seeded at **zero**, auto-vivified creditor accounts, `Move`/`Credit` |
-| `payment.go` | `Engine` — outgoing (`Create`) and incoming (`CreditIncoming`) payment lifecycle, fires notifications through an injected callback |
+| `payment.go` | `Engine` — outgoing (`Create`) and incoming (`CreditIncoming`) payment lifecycle, reversal (`Reverse`) and return (`Return`, a new incoming payment), forced outcomes (`ForceNext`), the bank's own reference numbers; fires notifications through an injected callback |
 | `subscription.go` | `SubscriptionStore` — subscription CRUD, `rowVersion`/`If-Match` optimistic concurrency, event/target matching |
 | `dispatcher.go` | `Dispatcher` — one queue per subscription, batches, drives retries via an injected `Send` func |
 | `delivery.go` | `DeliveryConfig` (loaded from `config/banking-circle.json`), the retry-schedule math, `Notification`/`Envelope` wire types, `MailBox` |
 | `reconciliation.go` | `Reconcile()` — one pure filter function |
+| `reports.go` | the intraday reconciliation report (booking rows, reversal rows, paging, account IBANs) and the rejection report |
+| `properties.go` | `PropertiesIncluded`/`PropertiesExcluded` selection for the reconciliation report |
+| `status.go` | `PaymentStatus` — a payment's state in the vendor's `PaymentStatus` vocabulary |
+| `businessdate.go` | `BusinessDate` — the bank's business day (CET, 19:00 cutoff, weekends to Monday) |
+| `accountid.go` | account-id validation and the safeguarding account ids |
 
 Every file above has a `_test.go` sibling exercised by `make test`
 (`go test ./...`, no Docker). `internal/harness/scenario_bankingcircle.go`

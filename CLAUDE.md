@@ -17,6 +17,13 @@ The kernel/pod/recipe experiment lives on its own branches and is parked.
 Do not add `core/`, `recipes/` or a pod runtime here. If a simulation needs
 new behaviour, it goes in that vendor's own package.
 
+## Driving the lab headless
+
+[agent.runbooks.md](agent.runbooks.md) is the how-to: ports, bringing the
+lab and the platform's runner up, the shared clock, running a settlement
+and the reconciliation sweep, the Banking Circle test hooks, and what looks
+broken but is not. Read it before driving the lab from a session.
+
 ## What this exists to do
 
 Run the settle path end to end against mocked third parties, so the real

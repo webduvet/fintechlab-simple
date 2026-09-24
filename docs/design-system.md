@@ -402,6 +402,19 @@ colour, the one arrow that just moved would compete with eleven that did
 not. Participants get their own, quieter scale — active while their traffic
 moves, `--flow-done` light grey once it has been through.
 
+**The system under test is marked in the identity colour, never a status
+one.** One participant is the thing being tested; the rest are the world
+it talks to. It gets a wider box, a thicker border and a purple wash, and a
+solid purple lifeline where the others are dashed grey — purple because
+that is decoration, which this is. Its border still carries its state like
+every other box, so being the platform never looks like being healthy.
+
+**Say what time it is on the platform.** Above the diagram, one line with
+the platform's clock in UTC and in the zones its calendars live in, whether
+it is shifted from the real clock, and whether it is a business day —
+amber when it is not. A run that did nothing because the platform was on a
+Sunday must be explainable from this screen.
+
 **A box reports on the participant, an arrow on the hop.** One report stage
 failing on a mail hop does not make the bank unwell. Red on a box means the
 service is unreachable; red on an arrow means that traffic failed. A box

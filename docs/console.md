@@ -51,6 +51,12 @@ it, and nothing of yours did. A batch whose endpoint cannot be read is
 counted on the lab's side — the confirmations arrow claims your listener was
 called, and that claim is never a guess.
 
+The platform's clock heads the diagram — UTC, Paris, Stockholm and London,
+shifted or not, business day or not (amber when it is not) — with a link to
+move it. And the platform is drawn as what it is, the system under test:
+a wider box with a thicker border and a purple wash, and a solid purple
+lifeline where the vendors' are dashed grey.
+
 It is drawn by hand in SVG rather than with a diagram library, for the
 reasons in [design-system.md](design-system.md#sequence-diagram): no CDN is
 allowed here, and a library that re-renders from a text description cannot
@@ -178,11 +184,22 @@ its runs as an activity panel, and offers two buttons:
 
 The card also carries the runner's **simulated clock**, because settlement
 only runs on a business day and that makes the calendar a test input rather
-than an obstacle. The note says what day the stack thinks it is, in both
-calendars the platform checks, and whether settlement will run at all. The
-buttons — *Move to Sunday*, *±1 day*, *Nearest business day*, *Real clock* —
-are each one `POST /sim/clock`, and every one of the runner's processes
-picks the change up within a second without restarting.
+than an obstacle. The note says what time the stack thinks it is — in UTC,
+and in Paris, Stockholm and London, where the platform's and the bank's
+calendars live — and whether settlement will run at all. The buttons —
+*Now* (back to the real clock), *+10 min*, *+30 min*, *+1 hour*, *±1 day*,
+*Nearest business day*, *Move to Sunday* — and the *Date (UTC)* / *Time
+(UTC)* fields with *Set clock* are each one `POST /sim/clock` (`advance`,
+`at` or `mode`). Every one of the runner's processes picks the change up
+within a second without restarting, and so does every vendor in the lab:
+they follow the runner's clock (`RUNNER_CLOCK_URL`), so bookings, files and
+report dates move with the platform. What you type in the picker survives
+the five-second refresh, and a hint beside it says what that UTC time is in
+Paris and Stockholm.
+
+Moving the clock drives scheduled vendor work too: move past Worldline's
+morning or afternoon slot (08:30 / 15:30) and that slot's file is delivered
+within a few seconds, as it would have been when the day got there.
 
 The scenario worth knowing: move to a Sunday and run, and the balance check
 completes as `NON_BUSINESS_DAY` with **0 payouts**; advance a day and run

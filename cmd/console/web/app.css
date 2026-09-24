@@ -274,6 +274,7 @@ input:focus, select:focus, textarea:focus {
   padding: 9px 12px; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   font-size: 12.5px; color: var(--text-dim); margin: 12px 0;
 }
+.note a { color: var(--accent-hi); }
 .note.bad { border-left-color: var(--down); background: color-mix(in srgb, var(--down) 9%, transparent); }
 .note.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 9%, transparent); }
 .empty { color: var(--text-faint); font-size: 13px; padding: 28px 0; text-align: center; }
@@ -563,6 +564,10 @@ input:focus, select:focus, textarea:focus {
   fill: var(--panel); stroke: var(--flow-idle); stroke-width: 1.5;
   transition: stroke .3s, fill .3s;
 }
+/* The system under test: identity colour, not status. Placed before the
+   state rules so a state's fill still wins; the border width is its own. */
+.flow-box.is-sut rect { stroke-width: 2.5; fill: color-mix(in srgb, var(--accent) 9%, var(--panel)); }
+.flow-box.is-sut .flow-title { fill: var(--accent-hi); }
 .flow-box.is-active rect { stroke: var(--flow-active); fill: color-mix(in srgb, var(--up) 8%, var(--panel)); }
 .flow-box.is-done rect { stroke: var(--flow-done); }
 .flow-box.is-failed rect { stroke: var(--flow-failed); fill: color-mix(in srgb, var(--down) 9%, var(--panel)); }
@@ -579,6 +584,7 @@ input:focus, select:focus, textarea:focus {
 .flow-health.not-probed { fill: none; stroke: var(--text-faint); stroke-dasharray: 2 2; }
 
 .flow-life { stroke: var(--border-soft); stroke-width: 1; stroke-dasharray: 3 5; }
+.flow-life.is-sut { stroke: var(--accent-line); stroke-width: 2.5; stroke-dasharray: none; }
 
 /* arrows */
 .flow-line, .flow-step path.flow-line {

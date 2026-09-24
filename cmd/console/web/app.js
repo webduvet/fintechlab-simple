@@ -165,6 +165,13 @@ async function load() {
     if (state.view === 'flow') {
       state.data.flow = await api('GET', '/api/flow');
       flowObserve(state.data.flow);
+      // The platform's clock heads the diagram. A runner that is not up is
+      // a note there, not a broken page.
+      try {
+        state.clock = await api('GET', '/api/runner/clock');
+      } catch (err) {
+        state.clock = { error: err.message };
+      }
     }
     if (isServiceView()) {
       state.data.overview = await api('GET', '/api/overview');
@@ -205,21 +212,57 @@ function clockPanel(s) {
 
   const shifted = Math.abs(c.offset_hours) >= 0.05;
   const when = (c.now || '').replace('T', ' ').slice(0, 16);
+  // What you are typing survives the five-second re-render; until you type,
+  // the fields show the clock as it stands.
+  const pick = state.clockPick || { date: (c.now || '').slice(0, 10), time: (c.now || '').slice(11, 16) };
   return `<div class="note${c.business_day ? '' : ' warn'}">
-      Simulated clock <span class="mono">${esc(when)}</span> —
-      ${esc(c.stockholm)} in Stockholm, ${esc(c.london)} in London.
+      Simulated clock <span class="mono">${esc(when)} UTC</span> —
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/Paris'))}</span> in Paris,
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/Stockholm'))}</span> in Stockholm,
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/London'))}</span> in London.
       ${c.business_day
         ? 'A business day, so settlement will run.'
         : '<b>Not a business day</b>: the balance check will skip and settlement will not leave the safeguarding account.'}
       ${shifted ? ` Shifted ${esc(String(c.offset_hours))}h from the real clock${c.pinned ? ', pinned' : ''}.` : ''}
+      Every vendor in the lab follows this clock.
     </div>
     <div class="form">
-      <button class="ghost small" data-action="clock-sunday">Move to Sunday</button>
+      <button class="ghost small" data-action="clock-real">Now</button>
+      <button class="ghost small" data-action="clock-advance" data-spec="10m">+10 min</button>
+      <button class="ghost small" data-action="clock-advance" data-spec="30m">+30 min</button>
+      <button class="ghost small" data-action="clock-advance" data-spec="1h">+1 hour</button>
       <button class="ghost small" data-action="clock-advance" data-spec="1d">+1 day</button>
       <button class="ghost small" data-action="clock-advance" data-spec="-1d">−1 day</button>
       <button class="ghost small" data-action="clock-auto">Nearest business day</button>
-      <button class="ghost small" data-action="clock-real">Real clock</button>
+      <button class="ghost small" data-action="clock-sunday">Move to Sunday</button>
+    </div>
+    <div class="form">
+      <div class="field"><label>Date (UTC)</label>
+        <input type="date" data-clock-pick="date" value="${esc(pick.date)}" aria-label="Date (UTC)"></div>
+      <div class="field"><label>Time (UTC)</label>
+        <input type="time" step="60" data-clock-pick="time" value="${esc(pick.time)}" aria-label="Time (UTC)"></div>
+      <button class="ghost small" data-action="clock-set">Set clock</button>
+      <span class="hint" data-clock-hint>${esc(pickHint(pick))}</span>
     </div>`;
+}
+
+/* HH:MM, weekday, in a timezone — for saying what a UTC instant is where
+   the platform's calendars live. */
+function zoneTime(iso, timeZone) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', { timeZone, weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(d);
+}
+
+/* The picked UTC date and time as an instant, or null while incomplete. */
+function pickedInstant(pick) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(pick.date || '') || !/^\d{2}:\d{2}$/.test(pick.time || '')) return null;
+  return `${pick.date}T${pick.time}:00Z`;
+}
+
+function pickHint(pick) {
+  const at = pickedInstant(pick);
+  return at ? `= ${zoneTime(at, 'Europe/Paris')} Paris, ${zoneTime(at, 'Europe/Stockholm')} Stockholm` : 'pick a date and a time';
 }
 
 /* The next occurrence of a weekday at 11:00 UTC — late enough that every
@@ -687,10 +730,34 @@ function flowDelta(id, count) {
 const FLOW_W = 1000;
 const FLOW_PAD = 96;         // half a box, so the outer lifelines sit inside
 const FLOW_BOX_W = 178;
+const FLOW_SUT_W = 196;      // the system under test's box: wider, still clear of its neighbours
+const FLOW_SUT = 'platform'; // the participant being tested; the rest are the world it talks to
 const FLOW_BOX_H = 78;
 const FLOW_TOP = 10;
 const FLOW_ROW = 52;
 const FLOW_FIRST_ROW = 124;
+
+/* The platform's clock, above the diagram: in UTC and where its calendars
+   live, shifted or not, business day or not. */
+function flowClock() {
+  const c = state.clock;
+  if (!c) return '';
+  if (c.error) {
+    return `<div class="note">Platform clock unavailable — ${esc(c.error)}. The vendors keep the
+      last time they were given, or the real clock if they never had one.</div>`;
+  }
+  const shifted = Math.abs(c.offset_hours) >= 0.05;
+  const when = (c.now || '').replace('T', ' ').slice(0, 16);
+  return `<div class="note${c.business_day ? '' : ' warn'}">
+      Platform clock <span class="mono">${esc(when)} UTC</span> —
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/Paris'))}</span> Paris,
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/Stockholm'))}</span> Stockholm,
+      <span class="mono">${esc(zoneTime(c.now, 'Europe/London'))}</span> London.
+      ${shifted ? `Shifted ${esc(String(c.offset_hours))}h from the real clock.` : 'On the real clock.'}
+      ${c.business_day ? 'A business day.' : '<b>Not a business day</b>: settlement will not leave the bank.'}
+      <a href="#platform">Move it</a>.
+    </div>`;
+}
 
 function flowColumns(participants) {
   const span = FLOW_W - FLOW_PAD * 2;
@@ -701,7 +768,9 @@ function flowColumns(participants) {
 }
 
 function flowBox(p, x, klass, deltas) {
-  const left = x - FLOW_BOX_W / 2;
+  const sut = p.id === FLOW_SUT;
+  const width = sut ? FLOW_SUT_W : FLOW_BOX_W;
+  const left = x - width / 2;
   const stats = (p.stats || []).map((st, i) => {
     const d = deltas[i] ? ` <tspan class="flow-delta">${esc(deltas[i])}</tspan>` : '';
     return `<text class="flow-stat" x="${left + 10}" y="${FLOW_TOP + 48 + i * 13}">${esc(st.label)}: <tspan class="flow-stat-v">${esc(st.value)}</tspan>${d}</text>`;
@@ -710,12 +779,12 @@ function flowBox(p, x, klass, deltas) {
   // gets what fits in it, because a title clipped by the viewBox reads as a
   // rendering bug rather than as a long name.
   const short = String(p.label || '').replace(/\s*\(.*\)\s*$/, '');
-  return `<g class="flow-box ${klass}">
+  return `<g class="flow-box ${klass}${sut ? ' is-sut' : ''}">
     <title>${esc(p.label)}${p.error ? ' — ' + esc(p.error) : ''}</title>
-    <rect x="${left}" y="${FLOW_TOP}" width="${FLOW_BOX_W}" height="${FLOW_BOX_H}" rx="9"></rect>
+    <rect x="${left}" y="${FLOW_TOP}" width="${width}" height="${FLOW_BOX_H}" rx="9"></rect>
     <text class="flow-title" x="${left + 10}" y="${FLOW_TOP + 19}">${esc(short)}</text>
     <text class="flow-role" x="${left + 10}" y="${FLOW_TOP + 33}">${esc(p.role || '')}</text>
-    <circle class="flow-health ${esc(p.status || 'unknown')}" cx="${left + FLOW_BOX_W - 12}" cy="${FLOW_TOP + 15}" r="3.5"></circle>
+    <circle class="flow-health ${esc(p.status || 'unknown')}" cx="${left + width - 12}" cy="${FLOW_TOP + 15}" r="3.5"></circle>
     ${stats}
   </g>`;
 }
@@ -784,7 +853,7 @@ function renderFlow() {
   }).join('');
 
   const lifelines = parts.map((p) =>
-    `<line class="flow-life" x1="${at[p.id]}" y1="${FLOW_TOP + FLOW_BOX_H}" x2="${at[p.id]}" y2="${height - 12}"></line>`
+    `<line class="flow-life${p.id === FLOW_SUT ? ' is-sut' : ''}" x1="${at[p.id]}" y1="${FLOW_TOP + FLOW_BOX_H}" x2="${at[p.id]}" y2="${height - 12}"></line>`
   ).join('');
 
   const arrows = steps.map((s, i) => flowArrow(s, at, FLOW_FIRST_ROW + i * FLOW_ROW)).join('');
@@ -800,7 +869,7 @@ function renderFlow() {
   const unreachable = Object.entries(d.errors || {})
     .map(([id, msg]) => `<div class="note bad">${esc(id)} could not be read — ${esc(msg)}</div>`).join('');
 
-  return `${banner}${unreachable}
+  return `${flowClock()}${banner}${unreachable}
     <div class="flow-wrap">
       <svg class="flow" viewBox="0 0 ${FLOW_W} ${height}" role="img"
            aria-label="Sequence diagram of one settlement run">
@@ -1272,7 +1341,15 @@ const ACTIONS = {
   },
   'clock-advance': async (d) => moveClock({ advance: d.spec }),
   'clock-auto': async () => moveClock({ mode: 'auto-business-day' }),
-  'clock-real': async () => moveClock({ mode: 'real' }),
+  'clock-real': async () => { state.clockPick = null; await moveClock({ mode: 'real' }); },
+  'clock-set': async () => {
+    const at = pickedInstant(state.clockPick || {
+      date: $('[data-clock-pick="date"]').value, time: $('[data-clock-pick="time"]').value,
+    });
+    if (!at) throw new Error('Pick a date and a time (UTC) first.');
+    state.clockPick = null;
+    await moveClock({ at, reason: `set to ${at}` });
+  },
 
   'bc-test': async (d) => {
     const r = await api('POST', `/api/banking-circle/subscriptions/${encodeURIComponent(d.id)}/test`);
@@ -1401,6 +1478,20 @@ const ACTIONS = {
 };
 
 function bindChanges(root) {
+  // The clock picker keeps what is being typed in state, so a re-render
+  // does not throw it away, and says live what the time is in Paris.
+  root.querySelectorAll('[data-clock-pick]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const scope = input.closest('.form');
+      state.clockPick = {
+        date: scope.querySelector('[data-clock-pick="date"]').value,
+        time: scope.querySelector('[data-clock-pick="time"]').value,
+      };
+      const hint = scope.querySelector('[data-clock-hint]');
+      if (hint) hint.textContent = pickHint(state.clockPick);
+    });
+    input.addEventListener('click', (ev) => ev.stopPropagation());
+  });
   root.querySelectorAll('[data-action-change="sanctions"]').forEach((sel) => {
     sel.addEventListener('change', async (ev) => {
       ev.stopPropagation();

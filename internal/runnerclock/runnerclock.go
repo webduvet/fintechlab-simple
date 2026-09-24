@@ -133,12 +133,13 @@ func FollowEnv(ctx context.Context, service string) {
 }
 
 // sleepSlice is how often Wait re-reads the clock.
-var sleepSlice = 30 * time.Second
+var sleepSlice = 5 * time.Second
 
 // Wait blocks until the runner's clock reaches the next scheduled time and
 // returns it. next says, for any "now", when the schedule fires next.
 //
-// It re-reads the clock at least every 30 seconds and re-plans each time:
+// It re-reads the clock at least every 5 seconds and re-plans each time —
+// a clock moved and moved back within that window can go unnoticed:
 //   - moved forward past the planned time, it returns — the platform's day
 //     has reached that point, so whatever was scheduled for it happens;
 //   - moved back, it takes whatever next now says, which may be earlier —
