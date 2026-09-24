@@ -57,6 +57,13 @@ move it. And the platform is drawn as what it is, the system under test:
 a wider box with a thicker border and a purple wash, and a solid purple
 lifeline where the vendors' are dashed grey.
 
+**The bottom arrow is the reconciliation sweep**: *intraday reconciliation*,
+from Banking Circle to the platform, lights when the platform reads the
+intraday report — about an hour after a run, or when the platform clock is
+moved forward and the sweep triggered. It counts intraday report reads only;
+the status fallback and the rejection report are in the Banking Circle
+card's *Reconciliation reads* panel. A refused read shows amber.
+
 It is drawn by hand in SVG rather than with a diagram library, for the
 reasons in [design-system.md](design-system.md#sequence-diagram): no CDN is
 allowed here, and a library that re-renders from a text description cannot
@@ -137,7 +144,7 @@ expanded card shows it as a panel per conversation:
 | Service | Panels |
 | --- | --- |
 | **B4B Payments** | *Payouts received* — every call to the payments API and what was answered · *Callbacks sent* — each lifecycle callback, and whether the client took it |
-| **Banking Circle** | *Payments received* — payouts arriving over the lab bridge, and money landing on the safeguarding accounts · *Notifications sent* — each encrypted batch, its event types, and the endpoint's answer, plus whatever a paused subscription is holding |
+| **Banking Circle** | *Payments received* — payouts arriving over the lab bridge, and money landing on the safeguarding accounts · *Notifications sent* — each encrypted batch, its event types, and the endpoint's answer, plus whatever a paused subscription is holding · *Reconciliation reads* — every intraday report, rejection report and payment-status call: when, what was asked (dates, page, properties) and what went back; a refused one amber with the parameters it lacked · *Payouts* — the outgoing payments, with *Return* and *Reverse* on the processed ones |
 | **Worldline** | *File exchange* — every SFTP session the platform opened, and the files it listed, collected or delivered |
 
 This exists because the three most common questions during a run —

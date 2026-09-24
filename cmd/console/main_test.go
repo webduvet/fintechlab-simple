@@ -369,7 +369,12 @@ func flowPeers(t *testing.T) *httptest.Server {
 				{"seq":3,"at":"2026-09-18T21:04:01Z","op":"notification","summary":"batch of 2 to the platform","status":"ok",
 				 "detail":{"endpoint":"http://host.containers.internal:3114/api/v1/banking-circle/webhook"}},
 				{"seq":2,"at":"2026-09-18T21:04:00Z","op":"notification","summary":"batch of 5","status":"ok",
-				 "detail":{"endpoint":"https://receiver:8443/raw-events"}}]}]}`,
+				 "detail":{"endpoint":"https://receiver:8443/raw-events"}}]},
+			{"name":"reports","total":4,"events":[
+				{"seq":4,"at":"2026-09-18T22:05:02Z","op":"payment.status","summary":"status of bcp_1 → Processed","status":"ok"},
+				{"seq":3,"at":"2026-09-18T22:05:01Z","op":"report.intraday","summary":"intraday report 2026-09-18, page 1 → 6 row(s)","status":"ok"},
+				{"seq":2,"at":"2026-09-18T22:05:00Z","op":"report.intraday","summary":"intraday report refused — PageSize","status":"warn"},
+				{"seq":1,"at":"2026-09-18T22:04:00Z","op":"report.rejection","summary":"rejection report 2026-09-18 → 0 row(s)","status":"ok"}]}]}`,
 		"/runner/sim/activity": `{"logs":[{"name":"runs","total":4,"events":[]}]}`,
 		"/runner/status": `{"status":"ok","running_now":null,"last_run":{"id":"run-1","root":"r1",
 			"payouts":{"count":6,"total":"27698.78","statuses":{"SUCCESS":2,"IN_PROGRESS":4}},
@@ -444,6 +449,7 @@ func TestFlowCountsWhatEachHopActuallyCarried(t *testing.T) {
 		{"fund", 1, "platform", "banking-circle"}, // payment.incoming only
 		{"callbacks", 2, "b4b", "platform"},
 		{"notify", 1, "banking-circle", "receiver"},
+		{"recon", 2, "banking-circle", "platform"}, // intraday report reads only, refused one included
 	} {
 		got := steps[tc.id]
 		if got.Count != tc.count {
@@ -581,7 +587,7 @@ func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
 	if got.Errors["b4b"] == "" {
 		t.Error("the unreachable vendor should be named in errors")
 	}
-	if len(got.Participants) != 5 || len(got.Steps) != 10 {
+	if len(got.Participants) != 5 || len(got.Steps) != 11 {
 		t.Errorf("the diagram should still be whole: %d participants, %d steps",
 			len(got.Participants), len(got.Steps))
 	}
@@ -910,5 +916,20 @@ func TestPayoutsOfferOnlyWhatTheVendorWouldDo(t *testing.T) {
 	want := []string{"/sim/payments/bcp_old/return", "/sim/payments/bcp_old/reverse", "/sim/payments/bcp_back/return"}
 	if strings.Join(calls, ",") != strings.Join(want, ",") {
 		t.Errorf("vendor saw %v, want %v — each button is exactly one call", calls, want)
+	}
+}
+
+// TestFlowReconciliationArrowCountsIntradayReads: the sweep's arrow lights
+// on intraday report reads only — not a status read, not the rejection
+// report — and a refused read shows as refused, not as traffic that worked.
+func TestFlowReconciliationArrowCountsIntradayReads(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	recon := flowOf(t, flowApp(t, peers))["recon"]
+	if recon.Count != 2 || recon.Refused != 1 {
+		t.Errorf("recon = count %d refused %d, want 2 and 1", recon.Count, recon.Refused)
+	}
+	if recon.LastSummary != "intraday report 2026-09-18, page 1 → 6 row(s)" {
+		t.Errorf("last summary %q, want the newest intraday read", recon.LastSummary)
 	}
 }

@@ -72,6 +72,7 @@ func newTestApp(t *testing.T) *app {
 		RequestTimeout:                    bankingcircle.Duration(2 * time.Second),
 	}
 	a.notifLog = activity.New("notifications", "Notifications sent", "")
+	a.reportLog = activity.New("reports", "Reconciliation reads", "")
 	a.dispatch = bankingcircle.NewDispatcher(cfg, a.subs, a.mail, t.Logf)
 	a.dispatch.Send = a.sendEncrypted
 	a.dispatch.OnQueued = a.recordQueued
@@ -1534,5 +1535,50 @@ func TestWebhookShapeFollowsThePayloadExamples(t *testing.T) {
 	raw(bankingcircle.NotificationOutgoingPaymentBooked)
 	if rev := raw(bankingcircle.NotificationReversed); rev["status"] != "Reversed" || !isNull(rev, "creditorInformation") {
 		t.Errorf("Reversed = status %v, creditor null %v; want Reversed and null", rev["status"], isNull(rev, "creditorInformation"))
+	}
+}
+
+// TestReconciliationReadsAreLogged: every report and status read lands in
+// the "reports" log the console shows — a refused one amber, with the
+// parameters it lacked — so the operator can see the sweep hit the bank.
+func TestReconciliationReadsAreLogged(t *testing.T) {
+	a := newTestApp(t)
+	srv := httptest.NewServer(a.mux())
+	defer srv.Close()
+	tok := a.tokens.issue(time.Hour)
+	get := func(path string) {
+		t.Helper()
+		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	get("/api/v1/reports/intraday-reconciliation-paged-report?FromTransactionDate=2026-09-24&ToTransactionDate=2026-09-24" +
+		"&FromCreatedAt=2026-09-23T22:00:00Z&ToCreatedAt=2026-09-24T10:00:00Z&PageNumber=1&PageSize=1000&PropertiesIncluded=PaymentId")
+	get("/api/v1/reports/intraday-reconciliation-paged-report?PageNumber=1")
+	get("/api/v1/reports/rejection-report?TransactionDate=2026-09-24")
+	get("/api/v1/payments/singles/bcp_nope/status")
+
+	events := a.reportLog.Recent(10) // newest first
+	if len(events) != 4 {
+		t.Fatalf("logged %d reads, want 4: %+v", len(events), events)
+	}
+	want := []struct{ op, status, summary string }{
+		{"payment.status", activity.StatusWarn, "status of bcp_nope → not found (404)"},
+		{"report.rejection", activity.StatusOK, "rejection report 2026-09-24 → 0 row(s)"},
+		{"report.intraday", activity.StatusWarn, "intraday report refused — FromCreatedAt, FromTransactionDate, PageSize, ToCreatedAt, ToTransactionDate"},
+		{"report.intraday", activity.StatusOK, "intraday report 2026-09-24, page 1 → 0 row(s)"},
+	}
+	for i, w := range want {
+		e := events[i]
+		if e.Op != w.op || e.Status != w.status || e.Summary != w.summary {
+			t.Errorf("read %d = %s %s %q, want %s %s %q", i, e.Op, e.Status, e.Summary, w.op, w.status, w.summary)
+		}
+	}
+	if events[3].Detail["properties"] != "PaymentId" {
+		t.Errorf("intraday detail = %v, want the properties asked for", events[3].Detail)
 	}
 }

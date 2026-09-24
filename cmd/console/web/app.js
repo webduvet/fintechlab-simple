@@ -557,6 +557,7 @@ const EMPTY_HINTS = {
   'b4b:callbacks': 'Nothing yet. Callbacks appear once a payment moves; a refused one is shown in red, which is usually the thing you are looking for.',
   'banking-circle:payments': 'Nothing yet. B4B posts here once a payout clears its gates, and funding the safeguarding account shows up here too.',
   'banking-circle:notifications': 'Nothing yet. Notification batches appear here as they are posted to a subscription endpoint.',
+  'banking-circle:reports': 'Nothing yet. The platform\'s reconciliation sweep reads the intraday report here about an hour after a settlement — move the platform clock forward an hour and trigger it to see one.',
   'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
 };
 

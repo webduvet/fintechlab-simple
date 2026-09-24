@@ -415,6 +415,14 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 			"banking-circle", true, platformBatches),
 		step("reports", "platform", "platform",
 			"daily reports", "five report jobs; the mail hop fails alone when no mailer runs", "", true, nil),
+		// Last, because it comes last: the platform's reconciliation sweep
+		// runs an hour or more after the settlement it checks. Drawn from the
+		// bank to the platform, as the bookings it returns travel.
+		step("recon", "banking-circle", "platform",
+			"intraday reconciliation",
+			"the platform's sweep reading the day's bookings — a payout it finds processed moves to SUCCESS "+
+				"without waiting for a webhook; refused reads are amber",
+			"banking-circle", false, bc.find("reports", "report.intraday")),
 	}
 
 	// The two self-arrows are stages, not vendor traffic, so they are read

@@ -121,6 +121,19 @@ records how in `raw_webhook_payload->>'report'`: `intraday-reconciliation`
 `PROCESSING` until a tick finds nothing open, and completes as
 `PARTIALLY_PROCESSED` if anything is still open at 19:00 Paris time.
 
+Where the lab shows it:
+
+- **Diagram** (System in test): the bottom arrow, *intraday reconciliation*,
+  Banking Circle → platform, lights on each intraday report read. It counts
+  those reads only; a refused (400) read turns it amber.
+- **Banking Circle card → *Reconciliation reads***: every intraday report,
+  rejection report and payment-status call — time, caller, dates, page,
+  properties asked for, rows or status returned. Refused calls are amber
+  with the parameters they lacked; a status read for an unknown payment is
+  amber `not found (404)`. A healthy sweep is one line like
+  `intraday report 2026-09-24, page 1 → 8 row(s)` (payouts plus the day's
+  incoming lump sums) and no status lines.
+
 ## Make Banking Circle misbehave on purpose
 
 Bridge (`:8095`, no auth) or console (`:8090`) — both are one call:
@@ -159,6 +172,25 @@ curl -s localhost:3114/api/v1/internal/payments/<bcPaymentId>/status
 The last two go through buddy's own BC client to the lab's report and status
 endpoints — the same path the sweep takes.
 
+The console's panels and diagram are plain JSON underneath:
+
+```sh
+# a vendor's activity logs — banking-circle has payments, notifications, reports
+curl -s localhost:8090/api/services/banking-circle/activity | python3 -c "
+import json,sys
+for l in json.load(sys.stdin)['logs']:
+    if l['name'] == 'reports':
+        for e in l['events'][:5]: print(e['at'], e['op'], e['status'], e['summary'])"
+# one diagram arrow: count, when it last moved, and what moved it
+curl -s localhost:8090/api/flow | python3 -c "
+import json,sys
+for s in json.load(sys.stdin)['steps']:
+    if s['id'] == 'recon': print(s['count'], s.get('last_at'), s.get('last_summary'))"
+```
+
+Step ids, top to bottom: `pull`, `collect`, `ingest`, `fund`, `payouts`,
+`bridge`, `callbacks`, `notify`, `confirm`, `reports`, `recon`.
+
 ## Screenshots without a browser window
 
 Playwright is in buddy's `node_modules` and its headless Chromium is cached:
@@ -187,6 +219,10 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
 - **`IncomingPaymentProcessed` ignored** by accounts-settlement: buddy does
   not act on incoming payments (including returns) today.
 - **A subscription id you used an hour ago is gone:** the lab was restarted.
+- **No *intraday reconciliation* arrow and an empty *Reconciliation reads*
+  panel right after a run:** the sweep only takes stages an hour old by the
+  runner's clock. Advance the clock an hour and trigger it. The panel is
+  also emptied by a lab restart (activity logs are in memory).
 - **The report has no rows for a late-evening payout on today's date:** the
   bank dates bookings on its business day — CET, 19:00 cutoff, weekends to
   Monday. Ask for the next business day.

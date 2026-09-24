@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -156,4 +159,47 @@ func statusText(status int) string {
 		return ""
 	}
 	return strconv.Itoa(status)
+}
+
+// recordRead logs one reconciliation read — a report or a payment's status
+// — with who asked, what they asked for and what went back. The
+// Reconciliation reads panel and the diagram's reconciliation arrow are
+// both read from this log.
+func (a *app) recordRead(r *http.Request, op, summary string, detail map[string]string, status string) {
+	a.reportLog.Record(activity.Event{Op: op, Peer: remoteHost(r), Summary: summary, Detail: nonEmpty(detail), Status: status})
+}
+
+// problemNames is the parameters a refused report named, sorted.
+func problemNames(problems map[string][]string) string {
+	names := make([]string, 0, len(problems))
+	for name := range problems {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// dateRange is "d" for a single day and "from..to" otherwise.
+func dateRange(from, to string) string {
+	if from == to {
+		return from
+	}
+	return from + ".." + to
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func remoteHost(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

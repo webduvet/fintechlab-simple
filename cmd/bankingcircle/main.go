@@ -77,6 +77,9 @@ type app struct {
 	// empty is a specific, common and otherwise invisible failure.
 	payLog   *activity.Log
 	notifLog *activity.Log
+	// reportLog is every reconciliation read: the two reports and a
+	// payment's status. See recordRead.
+	reportLog *activity.Log
 }
 
 func main() {
@@ -160,6 +163,9 @@ func main() {
 		notifLog: activity.New("notifications", "Notifications sent",
 			"Each encrypted batch this vendor posted to a subscription's endpoint, and what that endpoint answered. "+
 				"A subscription whose delivery is paused shows its notifications queued here instead, until it is resumed."),
+		reportLog: activity.New("reports", "Reconciliation reads",
+			"Each call to the intraday reconciliation report, the rejection report and a payment's status: when, what was asked, "+
+				"and what went back. The platform's reconciliation sweep is what normally makes these; a refused one is amber, with the reason."),
 	}
 	a.dispatch = bankingcircle.NewDispatcher(deliveryCfg, a.subs, a.mail, log.Printf)
 	a.dispatch.Send = a.sendEncrypted
@@ -302,7 +308,7 @@ func (a *app) mux() *http.ServeMux {
 	// rather than the bridge because that is the surface the console
 	// already holds a token for, and an observability endpoint is not
 	// a reason to open a second unauthenticated door.
-	mux.HandleFunc("GET /sim/activity", a.requireBearer(activity.Handler(a.payLog, a.notifLog)))
+	mux.HandleFunc("GET /sim/activity", a.requireBearer(activity.Handler(a.payLog, a.notifLog, a.reportLog)))
 	// Debug/introspection endpoints kept from the old surface — not part of
 	// the real Banking Circle contract, but useful for the harness and kept
 	// behind the same credentials as everything else on this listener.
@@ -532,12 +538,22 @@ func (a *app) reconcile(w http.ResponseWriter, r *http.Request) {
 func (a *app) intradayReconciliationReport(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	query, problems := reconciliationQuery(q)
+	detail := map[string]string{
+		"transaction_date": q.Get("FromTransactionDate") + ".." + q.Get("ToTransactionDate"),
+		"created_at":       q.Get("FromCreatedAt") + ".." + q.Get("ToCreatedAt"),
+		"page":             q.Get("PageNumber") + " of size " + q.Get("PageSize"),
+		"properties":       firstNonEmptyString(q.Get("PropertiesIncluded"), "default"),
+	}
 	if len(problems) > 0 {
+		a.recordRead(r, "report.intraday", "intraday report refused — "+problemNames(problems), detail, activity.StatusWarn)
 		writeValidationProblem(w, problems)
 		return
 	}
 	query.IBAN = a.accountIBAN
 	rows := bankingcircle.IntradayReconciliation(a.engine.List(), query)
+	detail["rows"] = strconv.Itoa(len(rows))
+	a.recordRead(r, "report.intraday", fmt.Sprintf("intraday report %s, page %d → %d row(s)",
+		dateRange(query.FromTransactionDate, query.ToTransactionDate), query.PageNumber, len(rows)), detail, activity.StatusOK)
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"reconciliations": propertySelection(q).Project(rows),
 	})
@@ -716,10 +732,20 @@ func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
 	}
 	flag("IncludeReversals", false)
 	if len(problems) > 0 {
+		a.recordRead(r, "report.rejection", "rejection report refused — "+problemNames(problems),
+			map[string]string{"transaction_date": date}, activity.StatusWarn)
 		writeValidationProblem(w, problems)
 		return
 	}
-	httputilx.WriteJSON(w, 200, map[string]any{"rejections": bankingcircle.Rejections(a.engine.List(), query)})
+	rows := bankingcircle.Rejections(a.engine.List(), query)
+	a.recordRead(r, "report.rejection", fmt.Sprintf("rejection report %s → %d row(s)", query.TransactionDate, len(rows)),
+		map[string]string{
+			"transaction_date": query.TransactionDate,
+			"rows":             strconv.Itoa(len(rows)),
+			"filters": fmt.Sprintf("received=%t missing_funds=%t exclude_booked=%t",
+				query.IncludeReceived, query.IncludeMissingFunds, query.ExcludeBooked),
+		}, activity.StatusOK)
+	httputilx.WriteJSON(w, 200, map[string]any{"rejections": rows})
 }
 
 func datePrefix(v string) string {
@@ -733,12 +759,16 @@ func datePrefix(v string) string {
 // the vendor's one-payment status read, `{"status": "..."}`, 404 for an id
 // it has never seen.
 func (a *app) paymentStatus(w http.ResponseWriter, r *http.Request) {
-	p, err := a.engine.Get(r.PathValue("paymentId"))
+	id := r.PathValue("paymentId")
+	p, err := a.engine.Get(id)
 	if err != nil {
+		a.recordRead(r, "payment.status", "status of "+id+" → not found (404)", map[string]string{"payment_id": id}, activity.StatusWarn)
 		httputilx.Error(w, 404, "payment not found")
 		return
 	}
-	httputilx.WriteJSON(w, 200, map[string]string{"status": bankingcircle.PaymentStatus(p.State)})
+	status := bankingcircle.PaymentStatus(p.State)
+	a.recordRead(r, "payment.status", "status of "+id+" → "+status, map[string]string{"payment_id": id, "status": status}, activity.StatusOK)
+	httputilx.WriteJSON(w, 200, map[string]string{"status": status})
 }
 
 // --- the B4B<->Banking-Circle bridge (INTERNAL_LISTEN, no auth) --------
