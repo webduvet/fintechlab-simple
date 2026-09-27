@@ -21,8 +21,9 @@ make up
 ```
 
 A platform that reads the lab's keys from disk is pointed at the same path.
-The subdirectory names below are the ones buddy's local runner reads, so
-there it is one variable:
+The subdirectory names below are the ones buddy's local runner reads, and
+its default is this directory (`~/gh/fintechlab-simple/keys`), so it needs
+one variable only when you move them:
 
 ```sh
 export FINTECH_SIM_LAB=~/lab-keys   # buddy: setup.sh, init/run-banking-circle.sh

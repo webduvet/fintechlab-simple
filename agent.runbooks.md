@@ -55,10 +55,10 @@ make start    # restart from the images already built
 Runner, from `~/infinite/buddy/infinite-local-runner`:
 
 ```sh
-# start (long-running: background it, output to a file). FINTECH_SIM_LAB is
-# where apps/banking-circle reads the lab's mTLS certificate: the lab's keys
-# directory (LAB_KEYS_DIR, default ~/gh/fintechlab-simple/keys).
-FINTECH_SIM_LAB=~/gh/fintechlab-simple/keys node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
+# start (long-running: background it, output to a file). apps/banking-circle
+# reads the lab's mTLS certificate from FINTECH_SIM_LAB, default
+# ~/gh/fintechlab-simple/keys; export it only if the lab's LAB_KEYS_DIR differs.
+node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
 # stop: SIGINT the up.ts process, it takes its children with it
 kill -INT "$(pgrep -f '^node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts$')"
 # ready when every process reports up
@@ -78,9 +78,11 @@ curl -OJ localhost:8090/api/connect/env/b4b              # one vendor
 curl -OJ localhost:8090/api/connect/files/banking-circle/fintechlab-ca.pem   # NODE_EXTRA_CA_CERTS
 ```
 
-`LAB_KEYS_DIR` moves them: `make` generates into that path instead, and
-buddy reads it as `FINTECH_SIM_LAB` (the subdirectory names are the ones its
-`setup.sh` and `init/run-banking-circle.sh` expect).
+`LAB_KEYS_DIR` moves them: `make` generates into that path instead. buddy
+reads the same directory as `FINTECH_SIM_LAB`, whose default is this repo's
+`keys/` (`~/gh/fintechlab-simple/keys`), so it needs setting only when
+`LAB_KEYS_DIR` does (the subdirectory names are the ones its `setup.sh` and
+`init/run-banking-circle.sh` expect).
 
 `make keys-regenerate CONFIRM=yes` issues new keys and restarts the lab
 (`make pod-up REGENERATE_KEYS=true` for the pod). Every copy the platform

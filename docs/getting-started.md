@@ -38,14 +38,16 @@ green within a few seconds.
 
 ```sh
 cd ~/infinite/buddy
-export FINTECH_SIM_LAB=~/gh/fintechlab-simple/keys     # = LAB_KEYS_DIR
 pnpm nx up infinite-local-runner
 ```
 
-`FINTECH_SIM_LAB` is where the runner reads the lab's mTLS client
-certificate for Banking Circle (`certs/`), and where `setup.sh` takes the
-B4B and Worldline keys from when it first writes its `.env`. Without it,
-Banking Circle refuses the platform's TLS handshake.
+The runner reads the lab's mTLS client certificate for Banking Circle from
+the lab's keys directory, and `setup.sh` takes the B4B and Worldline keys
+from there when it first writes its `.env`. That directory is
+`FINTECH_SIM_LAB`, default `~/gh/fintechlab-simple/keys` — the lab's own
+default. If the lab is checked out elsewhere or you set `LAB_KEYS_DIR`,
+export `FINTECH_SIM_LAB` to the same path first; a wrong one shows up as
+Banking Circle refusing the platform's TLS handshake.
 
 In the console, **Platform → Local runner** turns green, and the **Vendors →
 Banking Circle** card lists a subscription to
