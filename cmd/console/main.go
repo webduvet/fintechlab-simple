@@ -41,6 +41,10 @@ type app struct {
 	// keysDir is the lab's keys directory, read for the connect-your-
 	// platform downloads.
 	keysDir string
+	// bcInternal is Banking Circle's internal bridge, where Worldline's
+	// wire into the safeguarding accounts lands (Fund safeguarding
+	// accounts on its card).
+	bcInternal string
 	// bc is the same Banking Circle client the Banks view uses, kept
 	// directly so the Configuration view can ask the service what delivery
 	// schedule it is *actually* running.
@@ -72,6 +76,10 @@ func main() {
 		secure:  secure,
 		bcCfg:   env("CONSOLE_BC_DELIVERY_CONFIG", "config/banking-circle.json"),
 		keysDir: env("CONSOLE_KEYS_DIR", "keys"),
+		// The bridge, not the credentialed API: crediting a safeguarding
+		// account stands in for a wire arriving, and the real bank has no
+		// caller-facing route for that.
+		bcInternal: env("CONSOLE_BC_INTERNAL_URL", "http://127.0.0.1:8095"),
 	}
 	a.mon = console.NewMonitor(cat, a.clientFor, envDuration("CONSOLE_PROBE_INTERVAL", 5*time.Second), 3*time.Second)
 
@@ -156,17 +164,22 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/connect/env/{service}", a.connectEnv)
 	mux.HandleFunc("GET /api/connect/files/{service}/{name}", a.connectFile)
 
+	mux.HandleFunc("GET /api/clock", a.labClock)
+	mux.HandleFunc("POST /api/clock", a.setLabClock)
+
 	mux.HandleFunc("GET /api/config", a.getConfig)
 	mux.HandleFunc("PUT /api/config/worldline-channel", a.putWorldlineChannel)
 
 	mux.HandleFunc("POST /api/actions/worldline-cycle", a.runWorldlineCycle)
 	mux.HandleFunc("POST /api/actions/settlement-pull", a.settlementPull)
-	mux.HandleFunc("POST /api/actions/runner-settle", a.runnerSettle)
-	mux.HandleFunc("POST /api/actions/runner-fund-sga", a.runnerFundSGA)
-	mux.HandleFunc("POST /api/actions/runner-sweep", a.runnerSweep)
-	mux.HandleFunc("GET /api/runner/files", a.runnerFiles)
-	mux.HandleFunc("GET /api/runner/clock", a.runnerClock)
-	mux.HandleFunc("POST /api/runner/clock", a.setRunnerClock)
+	mux.HandleFunc("POST /api/actions/fund-sga", a.fundSGA)
+
+	mux.HandleFunc("GET /api/plugins", a.listPlugins)
+	mux.HandleFunc("POST /api/plugins", a.registerPlugin)
+	mux.HandleFunc("DELETE /api/plugins/{id}", a.unregisterPlugin)
+	mux.HandleFunc("POST /api/plugins/{id}/actions/{action}", a.pluginAction)
+	mux.HandleFunc("GET /api/plugins/{id}/files", a.pluginFiles)
+	mux.HandleFunc("POST /api/plugins/{id}/run", a.pluginRun)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

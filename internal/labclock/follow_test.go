@@ -1,4 +1,4 @@
-package runnerclock
+package labclock
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// TestNowIsShiftedByTheOffset: Now is the wall clock plus the runner's
+// TestNowIsShiftedByTheOffset: Now is the wall clock plus the clock's
 // offset, and a zero offset is the wall clock.
 func TestNowIsShiftedByTheOffset(t *testing.T) {
 	defer Set(0)
@@ -23,10 +23,10 @@ func TestNowIsShiftedByTheOffset(t *testing.T) {
 	}
 }
 
-// TestFollowTracksTheRunnerAndSurvivesItGoingAway: a move on the runner is
-// picked up on the next poll, and while the runner does not answer the last
+// TestFollowTracksTheClockAndSurvivesItGoingAway: a move on the clock is
+// picked up on the next poll, and while the clock does not answer the last
 // offset it gave stands rather than snapping back to the real clock.
-func TestFollowTracksTheRunnerAndSurvivesItGoingAway(t *testing.T) {
+func TestFollowTracksTheClockAndSurvivesItGoingAway(t *testing.T) {
 	defer Set(0)
 	var offsetMs atomic.Int64
 	var down atomic.Bool
@@ -62,7 +62,7 @@ func TestFollowTracksTheRunnerAndSurvivesItGoingAway(t *testing.T) {
 	down.Store(true)
 	time.Sleep(50 * time.Millisecond)
 	if Offset() != -48*time.Hour {
-		t.Fatalf("offset = %s while the runner is down, want the last one it gave", Offset())
+		t.Fatalf("offset = %s while the clock is down, want the last one it gave", Offset())
 	}
 	down.Store(false)
 	offsetMs.Store(0)
@@ -79,10 +79,10 @@ func TestFetchRefusesAnAnswerWithoutAnOffset(t *testing.T) {
 	}
 }
 
-// TestWaitFollowsTheRunnerBothWays: a wait for a daily 08:30 wakes as soon
-// as the runner is moved past it, and one planned while the runner was days
-// ahead re-plans to the earlier slot when the runner is moved back.
-func TestWaitFollowsTheRunnerBothWays(t *testing.T) {
+// TestWaitFollowsTheClockBothWays: a wait for a daily 08:30 wakes as soon
+// as the clock is moved past it, and one planned while the clock was days
+// ahead re-plans to the earlier slot when the clock is moved back.
+func TestWaitFollowsTheClockBothWays(t *testing.T) {
 	defer Set(0)
 	defer func(old time.Duration) { sleepSlice = old }(sleepSlice)
 	sleepSlice = 10 * time.Millisecond
@@ -111,7 +111,7 @@ func TestWaitFollowsTheRunnerBothWays(t *testing.T) {
 			t.Errorf("woke for %s, want %s", got, planned)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("still waiting after the runner moved past the slot")
+		t.Fatal("still waiting after the clock moved past the slot")
 	}
 
 	// Back: planned two days ahead, then the clock returns; the wait must

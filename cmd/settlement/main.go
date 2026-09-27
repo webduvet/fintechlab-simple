@@ -35,8 +35,8 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
 	"github.com/webduvet/fintechlab-simple/internal/sftp"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
@@ -66,7 +66,7 @@ type app struct {
 
 func main() {
 	addr := env("LISTEN", ":8083")
-	runnerclock.FollowEnv(context.Background(), "settlement")
+	labclock.FollowEnv(context.Background(), "settlement")
 	bankURL := strings.TrimRight(env("BANK_URL", "http://bank:8081"), "/")
 	sftpOutDir := env("SFTP_OUT_DIR", "/sftp/out")
 	sftpStagingDir := env("SFTP_STAGING_DIR", "/sftp/staging")
@@ -165,7 +165,7 @@ func main() {
 // resulting range may not exceed 90 days (matching Worldline's 3-month
 // limit).
 func parseDateRange(from, to string) (time.Time, time.Time, error) {
-	now := runnerclock.Now()
+	now := labclock.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 	fromDate := today.AddDate(0, 0, -7)
 	toDate := today
@@ -333,7 +333,7 @@ func (a *app) generate(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	yesterday := runnerclock.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	yesterday := labclock.Now().AddDate(0, 0, -1).Format("2006-01-02")
 	from, to := req.FromDate, req.ToDate
 	if from == "" {
 		from = yesterday
@@ -891,7 +891,7 @@ func (a *app) submitPayout(rec *settlement.SettlementRecord) {
 		CreditorAccount:        b4bAccountRef{Account: ben.AccountNumber, FinancialInstitution: ben.FinancialInstitution, Country: country},
 		CreditorName:           ben.AccountName,
 		ChargeBearer:           "SHA",
-		RequestedExecutionDate: runnerclock.Now().Format("2006-01-02"),
+		RequestedExecutionDate: labclock.Now().Format("2006-01-02"),
 	})
 	if err != nil {
 		log.Printf("settlement: payout request for %s: marshal error: %v", rec.ID, err)
@@ -1124,12 +1124,12 @@ func (a *app) runCutoffLoop(cutoff string) {
 		return
 	}
 	for {
-		// On the platform's clock: moving the runner past the cutoff runs
-		// the batch, as the day reaching it would.
-		runnerclock.Wait(func(now time.Time) time.Time {
+		// On the lab clock: moving it past the cutoff runs the batch, as the
+		// day reaching it would.
+		labclock.Wait(func(now time.Time) time.Time {
 			return now.Add(durationUntilCutoff(now, cutoff))
 		})
-		yesterday := runnerclock.Now().AddDate(0, 0, -1).Format("2006-01-02")
+		yesterday := labclock.Now().AddDate(0, 0, -1).Format("2006-01-02")
 		ids, err := a.runBatch(yesterday, yesterday, "")
 		if err != nil {
 			log.Printf("settlement: cutoff batch for %s failed: %v", yesterday, err)

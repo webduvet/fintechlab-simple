@@ -404,11 +404,42 @@ func flowApp(t *testing.T, peers *httptest.Server) *app {
 		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: peers.URL + "/worldline", Activity: "/sim/activity", HealthPath: "/health"},
 		{ID: "b4b", Name: "B4B Payments", Kind: console.KindVendor, BaseURL: peers.URL + "/b4b", Activity: "/sim/activity", HealthPath: "/health"},
 		{ID: "banking-circle", Name: "Banking Circle", Kind: console.KindVendor, BaseURL: peers.URL + "/bc", Activity: "/sim/activity", HealthPath: "/health"},
-		{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: peers.URL + "/runner", Activity: "/sim/activity", HealthPath: "/status"},
 		{ID: "receiver", Name: "Webhook receiver", Kind: console.KindPlatform, BaseURL: peers.URL, HealthPath: "/health"},
 	}
 	a.bc.BaseURL = peers.URL + "/bc"
+	register(t, a, testPlugin(peers.URL+"/runner"))
 	return a
+}
+
+// testPlugin is a settling platform as a plugin declares itself — the
+// shape buddy's runner registers, with its stage names.
+func testPlugin(base string) console.Plugin {
+	return console.Plugin{
+		ID: "test-platform", Name: "Test platform", Summary: "a platform under test",
+		BaseURL: base, HealthPath: "/status", ActivityPath: "/sim/activity",
+		Clock: console.ClockFollows,
+		Actions: []console.PluginAction{
+			{ID: "sweep", Label: "Run reconciliation sweep", Path: "/sim/sweep", Primary: true},
+		},
+		Settlement: &console.PluginSettlement{
+			FilesPath: "/sim/files", RunPath: "/sim/run", StatusPath: "/status", RunsLog: "runs",
+			Stages: map[string][]string{
+				"ingest": {"SETTLEMENT_FILE_INGESTION", "DAILY_MOVEMENT_PROCESSING"},
+				"reports": {"DAILY_MERCHANT_HELD_REPORT", "MERCHANT_DEFICIT_REPORT",
+					"VERIFY_DAILY_SETTLEMENT_STATISTICS", "DAILY_SETTLEMENT_REPORT",
+					"DAILY_REJECTED_SETTLEMENT_REPORT"},
+			},
+		},
+	}
+}
+
+// register posts p to the console the way a plugin does.
+func register(t *testing.T, a *app, p console.Plugin) {
+	t.Helper()
+	body, _ := json.Marshal(p)
+	if w := call(t, a, http.MethodPost, "/api/plugins", string(body)); w.Code != 200 {
+		t.Fatalf("register %s = %d %s", p.ID, w.Code, w.Body.String())
+	}
 }
 
 func flowOf(t *testing.T, a *app) map[string]flowStep {
@@ -934,11 +965,12 @@ func TestFlowReconciliationArrowCountsIntradayReads(t *testing.T) {
 	}
 }
 
-// TestRunnerSettleForwardsTheFilesAsAsked: picking files is the runner's
-// API, not the console's — {"files": […]} reaches /sim/run as it was sent,
-// several files are still one call, and the runner's refusal comes back
-// with its own status and words rather than as a console error.
-func TestRunnerSettleForwardsTheFilesAsAsked(t *testing.T) {
+// TestPluginRunForwardsTheFilesAsAsked: picking files is the platform's
+// API, not the console's — {"files": […]} reaches the plugin's declared
+// run_path as it was sent, several files are still one call, and the
+// platform's refusal comes back with its own status and words rather than
+// as a console error.
+func TestPluginRunForwardsTheFilesAsAsked(t *testing.T) {
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -963,30 +995,31 @@ func TestRunnerSettleForwardsTheFilesAsAsked(t *testing.T) {
 	}))
 	defer srv.Close()
 	a := testApp(t, srv)
-	a.cat.Services = append(a.cat.Services, console.Service{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: srv.URL, HealthPath: "/status"})
+	register(t, a, testPlugin(srv.URL))
 
-	w := call(t, a, http.MethodGet, "/api/runner/files", "")
+	w := call(t, a, http.MethodGet, "/api/plugins/test-platform/files", "")
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "worldline-reconciliation-sample-gbp.csv") {
 		t.Fatalf("files = %d %s", w.Code, w.Body.String())
 	}
 
 	both := `{"files":["worldline-reconciliation-sample.csv","worldline-reconciliation-sample-gbp.csv"]}`
-	if w := call(t, a, http.MethodPost, "/api/actions/runner-settle", both); w.Code != 202 {
-		t.Fatalf("run both = %d %s, want the runner's 202", w.Code, w.Body.String())
+	if w := call(t, a, http.MethodPost, "/api/plugins/test-platform/run", both); w.Code != 202 {
+		t.Fatalf("run both = %d %s, want the platform's 202", w.Code, w.Body.String())
 	}
-	w = call(t, a, http.MethodPost, "/api/actions/runner-settle", `{"files":["worldline-reconciliation-sample-gbp.csv"]}`)
+	w = call(t, a, http.MethodPost, "/api/plugins/test-platform/run", `{"files":["worldline-reconciliation-sample-gbp.csv"]}`)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "already in flight") {
-		t.Errorf("second GBP run = %d %s, want the runner's 409 and its words", w.Code, w.Body.String())
+		t.Errorf("second GBP run = %d %s, want the platform's 409 and its words", w.Code, w.Body.String())
 	}
 	if len(bodies) != 2 || bodies[0] != both {
-		t.Errorf("runner saw %q, want the body as sent, one call per click", bodies)
+		t.Errorf("platform saw %q, want the body as sent, one call per click", bodies)
 	}
 }
 
-// The sweep is one call to the runner, and its refusal comes back as the
-// runner said it — a second click while one is running is the runner's 409,
-// not a console-made error.
-func TestRunnerSweepIsOneCallAndPassesTheRefusalThrough(t *testing.T) {
+// A declared action is one call to the path the plugin declared, and its
+// refusal comes back as the platform said it — a second click while a sweep
+// is running is the platform's 409, not a console-made error. An action it
+// did not declare goes nowhere.
+func TestPluginActionIsOneCallToTheDeclaredPath(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/sim/sweep" {
@@ -1005,16 +1038,124 @@ func TestRunnerSweepIsOneCallAndPassesTheRefusalThrough(t *testing.T) {
 	}))
 	defer srv.Close()
 	a := testApp(t, srv)
-	a.cat.Services = append(a.cat.Services, console.Service{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: srv.URL})
+	register(t, a, testPlugin(srv.URL))
 
-	if w := call(t, a, http.MethodPost, "/api/actions/runner-sweep", "{}"); w.Code != 202 {
-		t.Fatalf("first sweep = %d %s, want the runner's 202", w.Code, w.Body)
+	if w := call(t, a, http.MethodPost, "/api/plugins/test-platform/actions/sweep", "{}"); w.Code != 202 {
+		t.Fatalf("first sweep = %d %s, want the platform's 202", w.Code, w.Body)
 	}
-	w := call(t, a, http.MethodPost, "/api/actions/runner-sweep", "{}")
+	w := call(t, a, http.MethodPost, "/api/plugins/test-platform/actions/sweep", "{}")
 	if w.Code != 409 || !strings.Contains(w.Body.String(), "already running") {
-		t.Errorf("second sweep = %d %s, want the runner's 409 and its words", w.Code, w.Body)
+		t.Errorf("second sweep = %d %s, want the platform's 409 and its words", w.Code, w.Body)
+	}
+	if w := call(t, a, http.MethodPost, "/api/plugins/test-platform/actions/drop-tables", "{}"); w.Code != 404 {
+		t.Errorf("undeclared action = %d, want 404", w.Code)
 	}
 	if calls != 2 {
-		t.Errorf("runner saw %d calls, want one per click", calls)
+		t.Errorf("platform saw %d calls, want one per click", calls)
+	}
+}
+
+// TestAPluginCardAppearsGoesGreyAndComesBack: a registered platform is in
+// the overview with its buttons; once it unregisters, its card stays with
+// the words on how to start it, grey rather than red, and its buttons are
+// refused with a reason rather than forwarded into a closed port.
+func TestAPluginCardAppearsGoesGreyAndComesBack(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	defer up.Close()
+	a := testApp(t, nil)
+	p := testPlugin(up.URL)
+	p.StartHint = "start it with make platform"
+	register(t, a, p)
+
+	overview := func() map[string]any {
+		t.Helper()
+		var got struct {
+			Services []map[string]any `json:"services"`
+		}
+		_ = json.Unmarshal(call(t, a, http.MethodGet, "/api/overview", "").Body.Bytes(), &got)
+		for _, s := range got.Services {
+			if s["id"] == "test-platform" {
+				return s
+			}
+		}
+		t.Fatal("the registered platform is not in the overview")
+		return nil
+	}
+	s := overview()
+	if s["kind"] != "platform" || s["plugin"].(map[string]any)["state"] != "live" {
+		t.Fatalf("registered card: %v", s)
+	}
+
+	// Its last probe said up — the moment before it said goodbye.
+	a.mon.Probe(context.Background(), "test-platform")
+	if w := call(t, a, http.MethodDelete, "/api/plugins/test-platform", ""); w.Code != 204 {
+		t.Fatalf("unregister = %d", w.Code)
+	}
+	s = overview()
+	plugin := s["plugin"].(map[string]any)
+	status := s["status"].(map[string]any)
+	if plugin["state"] != "stopped" || plugin["start_hint"] != "start it with make platform" || status["state"] != "unknown" {
+		t.Fatalf("stopped card: plugin %v status %v", plugin, status)
+	}
+	if w := call(t, a, http.MethodPost, "/api/plugins/test-platform/actions/sweep", "{}"); w.Code != 409 {
+		t.Errorf("action on a stopped plugin = %d, want 409", w.Code)
+	}
+
+	register(t, a, p)
+	if overview()["plugin"].(map[string]any)["state"] != "live" {
+		t.Error("re-registering did not bring the card back")
+	}
+}
+
+// TestRegistrationRefusesWhatTheConsoleWouldForwardBlindly: the console
+// sends a declared path to the plugin's own base URL and nowhere else, so a
+// path that names another host or climbs out is refused at the door, as is
+// an id that would shadow one of the lab's own services.
+func TestRegistrationRefusesWhatTheConsoleWouldForwardBlindly(t *testing.T) {
+	a := testApp(t, nil)
+	for name, mutate := range map[string]func(*console.Plugin){
+		"absolute URL as a path": func(p *console.Plugin) { p.Actions[0].Path = "http://evil.test/x" },
+		"scheme-relative path":   func(p *console.Plugin) { p.Actions[0].Path = "//evil.test/x" },
+		"climbing path":          func(p *console.Plugin) { p.Settlement.RunPath = "/../../admin" },
+		"lab service id":         func(p *console.Plugin) { p.ID = "worldline" },
+		"no clock policy":        func(p *console.Plugin) { p.Clock = "" },
+		"GET action":             func(p *console.Plugin) { p.Actions[0].Method = "GET" },
+		"not a URL":              func(p *console.Plugin) { p.BaseURL = "file:///etc" },
+	} {
+		p := testPlugin("http://127.0.0.1:1")
+		mutate(&p)
+		body, _ := json.Marshal(p)
+		if w := call(t, a, http.MethodPost, "/api/plugins", string(body)); w.Code != 400 {
+			t.Errorf("%s: register = %d, want 400", name, w.Code)
+		}
+	}
+}
+
+// TestTheClockDoesNotMoveUnderAWallClockPlatform: a platform that registered
+// on the wall clock cannot follow a move, so the console refuses one — and
+// passes the clock service's own refusal (a hold) through as it came.
+func TestTheClockDoesNotMoveUnderAWallClockPlatform(t *testing.T) {
+	moves := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		moves++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(409)
+		_, _ = w.Write([]byte(`{"error":"clock is held: runner holds the clock: settlement in flight"}`))
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.cat.Services = append(a.cat.Services, console.Service{ID: "clock", Name: "Lab clock", Kind: console.KindPlatform, BaseURL: srv.URL})
+
+	w := call(t, a, http.MethodPost, "/api/clock", `{"advance":"1h"}`)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "settlement in flight") || moves != 1 {
+		t.Fatalf("held clock = %d %s after %d calls, want the service's 409", w.Code, w.Body, moves)
+	}
+
+	p := testPlugin("http://127.0.0.1:1")
+	p.Clock = console.ClockWall
+	register(t, a, p)
+	w = call(t, a, http.MethodPost, "/api/clock", `{"advance":"1h"}`)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "wall clock") || moves != 1 {
+		t.Fatalf("under a wall-clock platform = %d %s after %d calls, want the console's own 409 and no call", w.Code, w.Body, moves)
 	}
 }

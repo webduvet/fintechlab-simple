@@ -23,6 +23,28 @@ services:
       - ${LAB_KEYS_DIR:-./keys}/certs:/keys/certs
       - ./ca/generate.sh:/generate.sh:ro
 
+  # The lab's business clock. Every vendor follows its offset (LAB_CLOCK_URL
+  # below), and so does a platform under test that registers with the
+  # console. In memory: restarting it puts the lab back on the real time.
+  clock:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.clock
+    ports:
+      - "8096:8096"
+    environment:
+      LISTEN: ":8096"
+      # Where the clock starts: "auto-business-day" keeps the lab inside the
+      # most recent business day, so a settlement runs on a weekend evening
+      # too; empty or "real" is the wall clock; an RFC 3339 instant pins it.
+      CLOCK_START: auto-business-day
+      # The calendars a business day must satisfy, and each one's bank
+      # holidays (CLOCK_HOLIDAYS_<CODE>, YYYY-MM-DD, comma-separated) -- the
+      # GBP and EUR (Stockholm) settlement calendars, 2026-2027.
+      CLOCK_CALENDARS: GB=Europe/London,SE=Europe/Stockholm
+      CLOCK_HOLIDAYS_GB: "2026-01-01,2026-04-03,2026-04-06,2026-05-04,2026-05-25,2026-08-31,2026-12-25,2026-12-28,2027-01-01,2027-03-26,2027-03-29,2027-05-03,2027-05-31,2027-08-30,2027-12-27,2027-12-28"
+      CLOCK_HOLIDAYS_SE: "2026-01-01,2026-01-06,2026-04-03,2026-04-06,2026-05-01,2026-05-14,2026-06-19,2026-12-24,2026-12-25,2026-12-31,2027-01-01,2027-01-06,2027-03-26,2027-03-29,2027-05-06,2027-06-25,2027-12-24,2027-12-31"
+
   bank:
     build:
       context: .
@@ -30,9 +52,9 @@ services:
     ports:
       - "8081:8081"
     environment:
-      # The platform's clock (infinite-local-runner), as banking-circle's:
-      # business dates follow it, elapsed time does not.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock, as banking-circle's: business dates follow it,
+      # elapsed time does not.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8081"
 
   notifier:
@@ -94,9 +116,9 @@ services:
     ports:
       - "8083:8083"
     environment:
-      # The platform's clock (infinite-local-runner), as banking-circle's:
-      # business dates follow it, elapsed time does not.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock, as banking-circle's: business dates follow it,
+      # elapsed time does not.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8083"
       BANK_URL: http://bank:8081
       SFTP_OUT_DIR: /sftp/out
@@ -188,9 +210,9 @@ services:
       # corrections.md section 2) -- a genuine SSH/SFTP listener, not HTTP.
       - "2222:2222"
     environment:
-      # The platform's clock (infinite-local-runner), as banking-circle's:
-      # business dates follow it, elapsed time does not.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock, as banking-circle's: business dates follow it,
+      # elapsed time does not.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8084"
       SFTP_BASE_DIR: /sftp
       MERCHANT_ID: "GB00SIM0000000000003"
@@ -274,12 +296,11 @@ services:
       LISTEN: ":8085"
       INTERNAL_LISTEN: ":8095"
       PROCESSING_DELAY: 2s
-      # The platform's clock, when infinite-local-runner is up: bookings are
-      # dated on the day the platform thinks it is, not the wall clock's.
-      # Named the way a container reaches the host, as the console's is.
-      # Unreachable, the bank keeps its last reading (the wall clock if it
-      # never had one); empty, it never follows anything.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock (the clock service below): bookings are dated on the
+      # day the lab says it is, not the wall clock's. A platform under test
+      # follows the same clock. Unreachable, the bank keeps its last reading
+      # (the wall clock if it never had one); empty, it never follows anything.
+      LAB_CLOCK_URL: http://clock:8096/clock
       # receiver only understands the HMAC scheme (notifier's, above) --
       # it cannot verify or store this different, AES-256-GCM wire format,
       # so this points at receiver's raw, unvalidated capture endpoint
@@ -336,9 +357,9 @@ services:
     ports:
       - "8086:8086"
     environment:
-      # The platform's clock (infinite-local-runner), as banking-circle's:
-      # business dates follow it, elapsed time does not.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock, as banking-circle's: business dates follow it,
+      # elapsed time does not.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8086"
       B4B_JWT_KEYS_DIR: /keys/b4b-keys
       # Set this instead to verify inbound tokens against a *client's* own
@@ -399,9 +420,9 @@ services:
     ports:
       - "8087:8087"
     environment:
-      # The platform's clock (infinite-local-runner), as banking-circle's:
-      # business dates follow it, elapsed time does not.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock, as banking-circle's: business dates follow it,
+      # elapsed time does not.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8087"
       # 64 hex chars -> 32 raw bytes. Obviously fake, not ACI's own
       # published sample key (see internal/aci's known-answer test).
@@ -428,9 +449,9 @@ services:
     ports:
       - "8088:8088"
     environment:
-      # The platform's clock (infinite-local-runner), as banking-circle's:
-      # business dates follow it, elapsed time does not.
-      RUNNER_CLOCK_URL: http://host.containers.internal:3109/sim/clock
+      # The lab clock, as banking-circle's: business dates follow it,
+      # elapsed time does not.
+      LAB_CLOCK_URL: http://clock:8096/clock
       LISTEN: ":8088"
       VERIFICATION_INTERNAL_API_KEY: sim-verify-key-dev-only
       VERIFY_PROCESSING_DELAY: 100ms
@@ -476,15 +497,12 @@ services:
       CONSOLE_URL_PAYMENT_API: http://payment-api:8080
       CONSOLE_URL_BANK: http://bank:8081
       CONSOLE_URL_NOTIFIER: http://notifier:8082
+      CONSOLE_URL_CLOCK: http://clock:8096
       CONSOLE_BROWSE_HOST: 127.0.0.1
       CONSOLE_PROBE_INTERVAL: 5s
-      # The platform under test, when there is one: infinite-local-runner's
-      # control API. It runs on the host, not in this network, so it is
-      # named the way a container reaches the host. Set
-      # CONSOLE_LOCAL_RUNNER=off to drop the card entirely — the lab stands
-      # alone and a permanently red row for something nobody started is
-      # worse than no row.
-      CONSOLE_URL_LOCAL_RUNNER: http://host.containers.internal:3109
+      # Banking Circle's internal bridge: "Fund safeguarding accounts" on
+      # its card credits the platform's SGAs there, as Worldline's wire does.
+      CONSOLE_BC_INTERNAL_URL: http://banking-circle:8095
       CONSOLE_STATE_FILE: /console-data/registry.json
       CONSOLE_BC_DELIVERY_CONFIG: /config/banking-circle.json
       # Banking Circle's API requires mTLS by default (BC_MTLS above), so
@@ -520,21 +538,6 @@ services:
         condition: service_started
       settlement:
         condition: service_started
-
-  # --- pods -----------------------------------------------------------
-  #
-  # The kernel/pod architecture (docs/kernels.md). Vendor pods + platform
-  # ledger-recon sit behind the `pods` profile, so `make up` starts exactly
-  # what it started before and `docker compose --profile pods up` adds them.
-  # They run alongside the standalone services rather than replacing any.
-  #
-  # One image, many containers: which pod a container becomes is POD_RECIPE,
-  # decided here rather than at build time. That is the architecture's whole
-  # claim made operational — a new vendor is a directory, not a Dockerfile.
-
-
-
-
 
 volumes:
   # Named (not a host bind mount): this is internal state, not something a

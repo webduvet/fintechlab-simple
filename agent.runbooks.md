@@ -6,6 +6,8 @@ against the lab. The design docs say *why*; this says *how*.
 
 The platform under test is **buddy** (the Infinite monorepo), run locally by
 its `infinite-local-runner` on the host. The lab is this repo, in containers.
+The lab knows no platform by name: the runner **registers itself** with the
+console as a plugin (docs/plugins.md) and **follows the lab's clock**.
 Paths below: `~/gh/fintechlab-simple` (this repo) and
 `~/infinite/buddy/infinite-local-runner` (the runner) — adjust to your
 checkout.
@@ -21,7 +23,8 @@ checkout.
 | b4b | 8086 | Oversight API (RS512 JWT) |
 | aci / verify / verification | 8087 / 8088 / 8089 | |
 | bank / settlement / receiver | 8081 / 8083 / 8443 | scaffolding |
-| **runner** control API (host) | 3109 | `/status`, `/sim/files`, `/sim/run`, `/sim/clock`, `/sim/fund-sga` |
+| **clock** | 8096 | the lab's business clock: `GET/POST /clock`, `/clock/holds` |
+| **runner** control API (host) | 3109 | `/status`, `/sim/files`, `/sim/run`, `/sim/sweep`, `/sim/clock` (read-only), `/sim/fund-sga` |
 | buddy `apps/banking-circle` (host) | 3114 | webhook receiver; internal API under `/api/v1/internal/...` |
 
 The console's service cards list every route each service serves (Vendors →
@@ -50,7 +53,9 @@ make start    # restart from the images already built
 - **After the lab restarts, restart the runner.** A fresh banking-circle has
   no subscriptions; buddy's `apps/banking-circle` subscribes on boot, so it
   needs the restart to get a new subscription (its id changes every time —
-  read it from `GET :8090/api/banking-circle/subscriptions`).
+  read it from `GET :8090/api/banking-circle/subscriptions`). The runner's
+  card and clock need nothing: it re-registers within ten seconds of a
+  console restart, and keeps the last offset while the clock is away.
 
 Runner, from `~/infinite/buddy/infinite-local-runner`:
 
@@ -58,12 +63,20 @@ Runner, from `~/infinite/buddy/infinite-local-runner`:
 # start (long-running: background it, output to a file). apps/banking-circle
 # reads the lab's mTLS certificate from FINTECH_SIM_LAB, default
 # ~/gh/fintechlab-simple/keys; export it only if the lab's LAB_KEYS_DIR differs.
+# FINTECH_SIM_LAB_CONSOLE_URL / FINTECH_SIM_LAB_CLOCK_URL default to this host.
 node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
 # stop: SIGINT the up.ts process, it takes its children with it
 kill -INT "$(pgrep -f '^node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts$')"
 # ready when every process reports up
 curl -s localhost:3109/status | python3 -c "import json,sys; d=json.load(sys.stdin); print([(p['name'],p['state']) for p in d['processes']])"
+# registered, and following the lab clock
+grep -E '🧩|⏰ following' up.log
+curl -s localhost:8090/api/plugins | python3 -c "import json,sys; print([(p['id'],p['plugin']['state']) for p in json.load(sys.stdin)['plugins']])"
 ```
+
+Kill it with `kill -INT <pid>`, not `pkill -f up.ts`: that pattern also
+matches any shell whose command line mentions `up.ts` — including the one
+running the `pkill`.
 
 ## Keys and connecting the platform
 
@@ -99,24 +112,32 @@ stops it and keeps the volumes.
 
 ## The clock
 
-One clock for the whole stack: the runner's. Every vendor follows it
-(`RUNNER_CLOCK_URL` → `GET :3109/sim/clock`, polled every second), so
-bookings, files, report and balance dates all move with the platform.
+One clock for the whole lab: the `clock` service (`:8096`). Every vendor
+follows it (`LAB_CLOCK_URL` → `GET clock:8096/clock`, polled every second),
+and so does the runner, which writes the offset into the file its
+processes' clock shim watches. Bookings, files, report and balance dates
+all move together.
 
 ```sh
-curl -s localhost:3109/sim/clock                                    # now, offset, business day
-curl -s -X POST localhost:3109/sim/clock -d '{"advance":"1h"}'      # also "10m", "-1d"
-curl -s -X POST localhost:3109/sim/clock -d '{"at":"2026-09-28T07:45:00Z"}'
-curl -s -X POST localhost:3109/sim/clock -d '{"mode":"auto-business-day"}'
-curl -s -X POST localhost:3109/sim/clock -d '{"mode":"real"}'       # always put it back
+curl -s localhost:8096/clock                                   # now, offset, calendars, holds
+curl -s -X POST localhost:8096/clock -d '{"advance":"1h"}'     # also "10m", "-1d"
+curl -s -X POST localhost:8096/clock -d '{"at":"2026-09-28T07:45:00Z"}'
+curl -s -X POST localhost:8096/clock -d '{"mode":"auto-business-day"}'   # where the lab starts
+curl -s -X POST localhost:8096/clock -d '{"mode":"real"}'
 ```
 
-- A vendor logs `runnerclock: now … (1h0m0s from real)` when it follows a
-  move: `podman logs fintechlab-simple_banking-circle_1 | grep runnerclock`.
+`POST localhost:8090/api/clock` is the same through the console (it also
+refuses while a platform registered on the wall clock is live).
+
+- A vendor logs `labclock: now … (1h0m0s from real)` when it follows a
+  move: `podman logs fintechlab-simple_banking-circle_1 | grep labclock`.
+  The runner logs `⏰ clock-shim: now … — lab clock: pinned …` per process.
 - Moving past Worldline's 08:30 / 15:30 slot delivers that slot's file
   within ~5 s. A move undone within 5 s can go unnoticed by the scheduler.
-- A move is refused while a settlement run is in flight.
+- A run in flight **holds** the clock: a move is a `409` naming the run
+  until it finishes (`holds` in `GET /clock`; a hold lapses after 15 min).
 - Elapsed time (tokens, retries, delivery windows) stays on the real clock.
+- The clock is in memory: `make up` puts the lab back on `CLOCK_START`.
 
 ## Run a settlement
 
@@ -126,8 +147,8 @@ curl -s -X POST localhost:3109/sim/run
 curl -s localhost:3109/status | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('running_now'), d['last_run']['root'], d['last_run'].get('error'))"
 ```
 
-From the console: Platform → **Local runner** → the **settlement files**
-panel (below the clock). It is the runner's `GET /sim/files`, one row per
+From the console: Platform → **Local runner** (the runner's own card) → the
+**settlement files** table. It is the runner's `GET /sim/files`, one row per
 `worldline-reconciliation-sample*.csv` in buddy's `apps/settle-ingest/local`:
 
 - **File, Currency, MIDs, Total** — read from the file itself; a file dropped
@@ -137,7 +158,7 @@ panel (below the clock). It is the runner's `GET /sim/files`, one row per
   another file in the same currency is running, red `MIDs … not seeded` when
   the settle DB has no master account for them.
 - **Last run** — root (first 8), payouts and total, and when it finished *on
-  the platform's clock* (e.g. `Fri 25 Sept, 13:00 UTC`).
+  the lab clock* (e.g. `Fri 25 Sept, 13:00 UTC`).
 - **Run** on a row is one `POST /sim/run {"files":[name]}`; **Run all N
   together** is one call with the first free, seeded file of each currency.
   A busy or unseeded row has no *Run*; an unseeded one gets a note with the
@@ -172,7 +193,7 @@ it:
 
 ```sh
 cd ~/infinite/buddy && pnpm exec tsx infinite-local-runner/seeders/seed-gbp.ts   # idempotent
-curl -s -X POST localhost:3109/sim/clock -d '{"at":"2026-09-25T09:00:00Z"}'     # a business morning
+curl -s -X POST localhost:8096/clock -d '{"at":"2026-09-25T09:00:00Z"}'         # a business morning
 curl -s localhost:3109/sim/files | python3 -c "
 import json,sys
 for f in json.load(sys.stdin)['files']: print(f['name'], f['currency'], f['mids'], 'seeded' if f['seeded'] else 'NOT SEEDED')"
@@ -201,22 +222,26 @@ all either way.
 
 ## Run the BC payment reconciliation sweep
 
-It picks up sweep stages at least an hour old **by the runner's clock**, so
+It picks up sweep stages at least an hour old **by the lab clock**, so
 move the clock, trigger, and move it back. The trigger is one call (the
-console's *Run reconciliation sweep* on the Local runner card); it answers
+console's *Run reconciliation sweep* on the Local runner card, a button the
+runner declares); it answers
 `202` and the tick takes ~20 s, so read the outcome from the runner's
 `sweeps` log rather than the response:
 
 ```sh
-curl -s -X POST localhost:3109/sim/clock -d '{"advance":"1h"}'
+curl -s -X POST localhost:8096/clock -d '{"advance":"1h"}'
 curl -s -X POST localhost:3109/sim/sweep                                  # 409 if one is running
 sleep 25; curl -s localhost:3109/sim/activity | python3 -c "
 import json,sys
 for l in json.load(sys.stdin)['logs']:
     if l['name']=='sweeps':
         for e in l['events'][:3]: print(e['status'], e['summary'], e.get('detail'))"
-curl -s -X POST localhost:3109/sim/clock -d '{"mode":"real"}'
+curl -s -X POST localhost:8096/clock -d '{"mode":"auto-business-day"}'
 ```
+
+A sweep run seconds after the settlement can leave one payout open (the
+bank had not processed it yet); the next tick resolves it.
 
 The same tick without the runner's HTTP API, printing the handler's own log:
 `node -r ./src/clock-shim.cjs -r @swc-node/register src/trigger-bc-recon.ts`
@@ -295,25 +320,28 @@ for s in json.load(sys.stdin)['steps']:
     if s['id'] == 'recon': print(s['count'], s.get('last_at'), s.get('last_summary'))"
 ```
 
-The runner's side, through the console — the files panel and its logs:
+The runner's side, through the console — its card is a plugin, so every
+call is under `/api/plugins/infinite-local-runner`:
 
 ```sh
-curl -s localhost:8090/api/runner/files | python3 -c "
+curl -s localhost:8090/api/plugins/infinite-local-runner/files | python3 -c "
 import json,sys
 for f in json.load(sys.stdin)['files']:
     r=f['last_run'] or {}
     print(f['name'], f['currency'], f['seeded'], 'busy' if f['in_flight'] else 'free',
           r.get('root'), (r.get('payouts') or {}).get('count'), r.get('finished_at'))"
-curl -s -X POST localhost:8090/api/actions/runner-settle -d '{"files":["worldline-reconciliation-sample-gbp.csv"]}'
-curl -s localhost:8090/api/services/local-runner/activity | python3 -c "
+curl -s -X POST localhost:8090/api/plugins/infinite-local-runner/run -d '{"files":["worldline-reconciliation-sample-gbp.csv"]}'
+curl -s -X POST localhost:8090/api/plugins/infinite-local-runner/actions/sweep -d '{}'
+curl -s localhost:8090/api/services/infinite-local-runner/activity | python3 -c "
 import json,sys
 for l in json.load(sys.stdin)['logs']:
     print(l['name'], l.get('labels'))
     for e in l['events'][:3]: print('   ', e['at'], e['status'], e['summary'])"
 ```
 
-The action passes the body to `POST :3109/sim/run` untouched, and the
-runner's refusals come back as they are (`400` for an unknown file, `409`
+The console passes the body to the path the runner declared
+(`POST :3109/sim/run`, `/sim/sweep`) untouched, and the runner's refusals
+come back as they are (`400` for an unknown file, `409`
 for a busy currency). A log's `labels` is what its amber and red mean; the
 console's pills use them.
 
@@ -334,7 +362,7 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
       .map((d) => `${process.env.HOME}/.cache/ms-playwright/${d}/chrome-headless-shell-linux64/chrome-headless-shell`)[0] });
   const p = await b.newPage({ viewport: { width: 1500, height: 1100 } });
   await p.goto('http://127.0.0.1:8090/#platform');          // a fresh page per view: hash-only navigation does not re-route
-  await p.click('[data-card="local-runner"]');              // cards open on click; open state is not in the URL
+  await p.click('[data-card="infinite-local-runner"]');     // cards open on click; open state is not in the URL
   await p.waitForTimeout(1500);
   await (await p.$('.card.is-open')).screenshot({ path: 'runner.png' });
   await b.close();
@@ -343,8 +371,9 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
 
 Inside the runner card: the settlement files table is
 `table:has(th:text("Last run"))`, its buttons
-`button:has-text("Run all 2 together")` and `[data-action="runner-run"]`,
-and the runs log opens with `[data-card="local-runner:runs"]`. Wait ~10 s
+`button:has-text("Run all 2 together")` and `[data-action="plugin-run"]`,
+and the runs log opens with `[data-card="infinite-local-runner:runs"]`.
+Switch views with `.nav-item[data-view="flow"]` clicks. Wait ~10 s
 after a click before expecting a stage name: the upload stage takes that
 long to appear, and the panel refreshes every few seconds.
 
@@ -362,12 +391,15 @@ long to appear, and the panel refreshes every few seconds.
   Only roots from the current lab session say anything about the sweep.
 - **No *intraday reconciliation* arrow and an empty *Reconciliation reads*
   panel right after a run:** the sweep only takes stages an hour old by the
-  runner's clock. Advance the clock an hour and trigger it. The panel is
+  lab clock. Advance the clock an hour and trigger it. The panel is
   also emptied by a lab restart (activity logs are in memory).
 - **The files panel says `Fri 25 Sept, 13:00 UTC` and the runs log says
-  `44s ago` about the same run:** both are right. *Last run* is the
-  platform's clock (the one the run happened on); every activity log is
-  stamped with the wall clock, the runner's included, so "ago" is real.
+  `44s ago` about the same run:** both are right. *Last run* is the lab
+  clock (the one the run happened on); every activity log is stamped with
+  the wall clock, the runner's included, so "ago" is real.
+- **The runner's card is grey, *stopped*:** it unregistered on shutdown.
+  Start it again and the card is live within seconds. *Lapsed* means it
+  stopped renewing without saying goodbye (killed, or cannot reach :8090).
 - **A file row has no *Run*:** its currency has a run in flight (one per
   currency), or its MIDs are not seeded — the row says which.
 - **Every run in *Settlement runs* is amber `with failed stages`:** the two

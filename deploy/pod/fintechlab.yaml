@@ -36,6 +36,7 @@ spec:
   hostAliases:
     - ip: 127.0.0.1
       hostnames:
+        - clock
         - bank
         - notifier
         - payment-api
@@ -84,14 +85,30 @@ spec:
         - name: console-data
           mountPath: /console-data
   containers:
+    - name: clock
+      image: localhost/fintechlab/clock:v1
+      ports:
+        - containerPort: 8096
+          hostPort: 8096
+      env:
+        - name: LISTEN
+          value: ":8096"
+        - name: CLOCK_START
+          value: "auto-business-day"
+        - name: CLOCK_CALENDARS
+          value: "GB=Europe/London,SE=Europe/Stockholm"
+        - name: CLOCK_HOLIDAYS_GB
+          value: "2026-01-01,2026-04-03,2026-04-06,2026-05-04,2026-05-25,2026-08-31,2026-12-25,2026-12-28,2027-01-01,2027-03-26,2027-03-29,2027-05-03,2027-05-31,2027-08-30,2027-12-27,2027-12-28"
+        - name: CLOCK_HOLIDAYS_SE
+          value: "2026-01-01,2026-01-06,2026-04-03,2026-04-06,2026-05-01,2026-05-14,2026-06-19,2026-12-24,2026-12-25,2026-12-31,2027-01-01,2027-01-06,2027-03-26,2027-03-29,2027-05-06,2027-06-25,2027-12-24,2027-12-31"
     - name: bank
       image: localhost/fintechlab/bank:v1
       ports:
         - containerPort: 8081
           hostPort: 8081
       env:
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8081"
     - name: notifier
@@ -154,8 +171,8 @@ spec:
         - containerPort: 8083
           hostPort: 8083
       env:
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8083"
         - name: BANK_URL
@@ -224,8 +241,8 @@ spec:
         - containerPort: 2222
           hostPort: 2222
       env:
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8084"
         - name: SFTP_BASE_DIR
@@ -287,8 +304,8 @@ spec:
           value: ":8095"
         - name: PROCESSING_DELAY
           value: "2s"
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: WEBHOOK_URL
           value: "https://receiver:8443/raw-events"
         - name: WEBHOOK_ALLOWLIST
@@ -321,8 +338,8 @@ spec:
         - containerPort: 8086
           hostPort: 8086
       env:
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8086"
         - name: B4B_JWT_KEYS_DIR
@@ -354,8 +371,8 @@ spec:
         - containerPort: 8087
           hostPort: 8087
       env:
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8087"
         - name: ACI_WEBHOOK_SECRET
@@ -382,8 +399,8 @@ spec:
         - containerPort: 8088
           hostPort: 8088
       env:
-        - name: RUNNER_CLOCK_URL
-          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LAB_CLOCK_URL
+          value: "http://clock:8096/clock"
         - name: LISTEN
           value: ":8088"
         - name: VERIFICATION_INTERNAL_API_KEY
@@ -428,12 +445,14 @@ spec:
           value: "http://bank:8081"
         - name: CONSOLE_URL_NOTIFIER
           value: "http://notifier:8082"
+        - name: CONSOLE_URL_CLOCK
+          value: "http://clock:8096"
         - name: CONSOLE_BROWSE_HOST
           value: "127.0.0.1"
         - name: CONSOLE_PROBE_INTERVAL
           value: "5s"
-        - name: CONSOLE_URL_LOCAL_RUNNER
-          value: "http://host.containers.internal:3109"
+        - name: CONSOLE_BC_INTERNAL_URL
+          value: "http://banking-circle:8095"
         - name: CONSOLE_STATE_FILE
           value: "/console-data/registry.json"
         - name: CONSOLE_BC_DELIVERY_CONFIG

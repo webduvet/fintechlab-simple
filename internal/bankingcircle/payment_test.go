@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 func TestEngineCreateHappyPath(t *testing.T) {
@@ -469,8 +469,8 @@ func TestEngineReturnIsANewIncomingPayment(t *testing.T) {
 // payment is stamped — and so dated on the reports — on the platform's
 // day, not the wall clock's.
 func TestBookingsFollowTheRunnersClock(t *testing.T) {
-	runnerclock.Set(72 * time.Hour)
-	defer runnerclock.Set(0)
+	labclock.Set(72 * time.Hour)
+	defer labclock.Set(0)
 
 	ledger := NewLedger()
 	ledger.mustSeed("bc_acc_test_funded", "VBTESTFUNDED0000011", "Test Funded", "EUR", 50_000_000)
@@ -487,7 +487,7 @@ func TestBookingsFollowTheRunnersClock(t *testing.T) {
 	if d := created.Sub(time.Now()); d < 72*time.Hour-2*time.Second || d > 72*time.Hour+2*time.Second {
 		t.Fatalf("createdAt %s is %s from the wall clock, want the runner's +72h", p.CreatedAt, d)
 	}
-	if got, want := BusinessDate(p.CreatedAt), BusinessDate(runnerclock.Now().Format(time.RFC3339)); got != want {
+	if got, want := BusinessDate(p.CreatedAt), BusinessDate(labclock.Now().Format(time.RFC3339)); got != want {
 		t.Errorf("business date %s, want the runner's %s", got, want)
 	}
 }

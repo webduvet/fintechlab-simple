@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 type account struct {
@@ -160,7 +160,7 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 	s.seq++
 	s.entries = append(s.entries, entry{
 		ID: fmt.Sprintf("ent_%d", s.seq), AccountID: a.ID, Amount: money.Format(cents),
-		Currency: ccy, Ref: req.Reference, At: runnerclock.Now().Format(time.RFC3339),
+		Currency: ccy, Ref: req.Reference, At: labclock.Now().Format(time.RFC3339),
 	})
 	httputilx.WriteJSON(w, 200, map[string]any{
 		"account": a, "opened": !existed, "credited": money.Format(cents),
@@ -169,7 +169,7 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	addr := env("LISTEN", ":8081")
-	runnerclock.FollowEnv(context.Background(), "bank")
+	labclock.FollowEnv(context.Background(), "bank")
 	s := newStore()
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -313,7 +313,7 @@ func (s *store) transfer(w http.ResponseWriter, r *http.Request) {
 	to.cents += cents
 	from.Balance = money.Format(from.cents)
 	to.Balance = money.Format(to.cents)
-	now := runnerclock.Now().Format(time.RFC3339)
+	now := labclock.Now().Format(time.RFC3339)
 	debit := entry{ID: "le_" + shortID(), AccountID: from.ID, PaymentID: req.PaymentID, Amount: money.Format(-cents), Currency: ccy, Ref: req.Reference, At: now}
 	credit := entry{ID: "le_" + shortID(), AccountID: to.ID, PaymentID: req.PaymentID, Amount: money.Format(cents), Currency: ccy, Ref: req.Reference, At: now}
 	s.entries = append(s.entries, debit, credit)

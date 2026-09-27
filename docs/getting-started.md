@@ -17,7 +17,7 @@ that look broken and are not.
 - A buddy checkout with the runner set up once: from
   `infinite-local-runner/`, `podman compose up -d && ./setup.sh`
   (its README, *Quick start*).
-- The ports free: 8080–8095, 8443 and 2222 for the lab, 3109 and 3114 for
+- The ports free: 8080–8096, 8443 and 2222 for the lab, 3109 and 3114 for
   the runner.
 
 ## 1. Start the lab
@@ -49,7 +49,10 @@ default. If the lab is checked out elsewhere or you set `LAB_KEYS_DIR`,
 export `FINTECH_SIM_LAB` to the same path first; a wrong one shows up as
 Banking Circle refusing the platform's TLS handshake.
 
-In the console, **Platform → Local runner** turns green, and the **Vendors →
+The runner **registers its own card** with the console and **follows the
+lab's clock** — it logs `🧩 registered with the lab console` and `⏰
+following the lab clock`. In the console, **Platform → Local runner**
+appears at the top, green and *registered*, and the **Vendors →
 Banking Circle** card lists a subscription to
 `host.containers.internal:3114`: the platform registered for webhooks.
 
@@ -58,12 +61,15 @@ subscriptions in memory, and the platform only subscribes when it starts.
 
 ## 3. Run a settlement
 
-Everything happens on **Platform → Local runner**.
+Everything happens on the **Platform** view: the runner's card at the top,
+the **Lab clock** card under it.
 
-1. **The clock.** Settlement only leaves the bank on a business day. If the
-   clock note is amber (*not a business day*), set a weekday morning — e.g.
-   *Date* `2026-09-25`, *Time* `09:00`, **Set clock**.
-2. **Run.** In *settlement files*, press **Run** on
+1. **The clock.** Settlement only leaves the bank on a business day. On the
+   Lab clock card, set a weekday morning — e.g. *Date* `2026-09-25`, *Time*
+   `09:00`, **Set clock**. The lab starts on the most recent business day,
+   so this is only needed to pick a particular one — and it gives the sweep
+   below an hour of room before Stockholm's day ends.
+2. **Run.** On the Local runner card, in *settlement files*, press **Run** on
    `worldline-reconciliation-sample.csv` (EUR). The row turns amber with the
    stage it is on; about forty seconds later it shows the root id and the
    payouts.
@@ -77,12 +83,16 @@ which payment it is about. The sweep is what resolves them.
 
 ## 4. Reconcile
 
-1. On the clock, press **+1 hour** — a settlement is only swept an hour
-   after it ran, by the platform's clock.
-2. Press **Run reconciliation sweep**. About twenty seconds later the
-   **Reconciliation sweeps** panel on the same card shows one row, e.g.
+1. On the Lab clock card, press **+1 hour** — a settlement is only swept an
+   hour after it ran, by the lab clock. (While a run is in flight the clock
+   is held and refuses to move.)
+2. On the Local runner card, press **Run reconciliation sweep**. About
+   twenty seconds later its **Reconciliation sweeps** panel shows one row, e.g.
    *1 root(s) at 2026-09-25 10:00 UTC: 6 payout(s) resolved*.
-3. Press **Now** on the clock to put the platform back on real time.
+   If a payout is still open, sweep once more: a sweep straight after a run
+   can beat the bank to the last payout.
+3. Press **Nearest business day** on the clock to put the lab back where it
+   started (or **Now** for the real clock).
 
 On **Vendors → Banking Circle**, *Reconciliation reads* shows the intraday
 report the sweep read, and the diagram's bottom arrow lights.
@@ -110,7 +120,9 @@ platform's own fee), each confirmed by the bank.
 - **Two currencies at once:** seed the GBP merchant, then **Run all 2
   together** ([agent.runbooks.md](../agent.runbooks.md)).
 - **A platform that does not read the lab's disk:** **Connect your
-  platform** on the Local runner card downloads one `.env` with every
+  platform** on the Configuration view downloads one `.env` with every
   address, credential and key inlined.
 - **New keys:** `make keys-regenerate`, then restart the runner.
 - **The lab on another machine:** [deploy-pod.md](deploy-pod.md).
+- **Your own platform instead of buddy's runner:** register a card and
+  follow the clock the same way — [plugins.md](plugins.md).

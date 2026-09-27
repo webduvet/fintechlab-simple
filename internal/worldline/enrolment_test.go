@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 const sampleBatch = `<?xml version="1.0" encoding="ISO-8859-1"?>
@@ -171,15 +171,15 @@ func TestBatchWithNoSubmerchantsIsRefused(t *testing.T) {
 // TestReceiptIsTimedOnTheRunnersClock: a receipt built without an explicit
 // time is timed on the platform's clock.
 func TestReceiptIsTimedOnTheRunnersClock(t *testing.T) {
-	runnerclock.Set(90 * time.Minute)
-	defer runnerclock.Set(0)
+	labclock.Set(90 * time.Minute)
+	defer labclock.Set(0)
 	e, err := ParseEnrolment([]byte(sampleBatch))
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := runnerclock.Now().Format("150405")
+	before := labclock.Now().Format("150405")
 	r := BuildReceipt(e, ReceiptOptions{FileID: 1, SequenceDate: "20260918"})
-	after := runnerclock.Now().Format("150405")
+	after := labclock.Now().Format("150405")
 	if r.Summary.FileTime < before || r.Summary.FileTime > after {
 		t.Errorf("filetime %s, want the runner's %s–%s", r.Summary.FileTime, before, after)
 	}

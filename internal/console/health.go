@@ -89,8 +89,10 @@ func (m *Monitor) Run(ctx context.Context) {
 // ProbeAll probes every service concurrently and returns once all are done.
 func (m *Monitor) ProbeAll(ctx context.Context) {
 	var wg sync.WaitGroup
-	for _, s := range m.cat.Services {
-		if s.HealthPath == "" {
+	for _, s := range m.cat.All() {
+		// A plugin that unregistered itself has said it is gone; probing
+		// it would only paint its card red for something nobody is running.
+		if s.HealthPath == "" || (s.Plugin != nil && s.Plugin.State == PluginStopped) {
 			continue
 		}
 		wg.Add(1)

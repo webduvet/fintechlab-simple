@@ -9,6 +9,7 @@ const state = {
   open: new Set(),      // "view:id" of expanded cards, so a poll does not collapse them
   data: {},
   activity: {},         // service id -> {logs} | {error}, fetched only while a card is open
+  files: {},            // plugin id -> its settlement files, likewise
   timer: null,
 };
 
@@ -28,7 +29,7 @@ const VIEWS = {
   },
   platform: {
     title: 'Platform',
-    sub: 'Your own stack — the local runner that actually runs the settle path, and the stand-ins that exist so a hop can be proved connected.',
+    sub: 'Your own stack — the platform under test, which registers its own card here, then the lab clock and the stand-ins that exist so a hop can be proved connected.',
     kind: 'platform',
   },
   verification: {
@@ -46,7 +47,7 @@ const VIEWS = {
   },
   config: {
     title: 'Configuration',
-    sub: 'The knobs that change what this lab does, and the two config files behind the timings.',
+    sub: 'How a platform connects to this lab, the knobs that change what the lab does, and the two config files behind the timings.',
   },
 };
 
@@ -165,10 +166,10 @@ async function load() {
     if (state.view === 'flow') {
       state.data.flow = await api('GET', '/api/flow');
       flowObserve(state.data.flow);
-      // The platform's clock heads the diagram. A runner that is not up is
-      // a note there, not a broken page.
+      // The lab clock heads the diagram. A clock that is not up is a note
+      // there, not a broken page.
       try {
-        state.clock = await api('GET', '/api/runner/clock');
+        state.clock = await api('GET', '/api/clock');
       } catch (err) {
         state.clock = { error: err.message };
       }
@@ -179,7 +180,14 @@ async function load() {
     }
     if (state.view === 'banks') state.data.banks = await api('GET', '/api/banks');
     if (state.view === 'merchants') state.data.merchants = await api('GET', '/api/merchants');
-    if (state.view === 'config') state.data.config = await api('GET', '/api/config');
+    if (state.view === 'config') {
+      state.data.config = await api('GET', '/api/config');
+      try {
+        state.connect = await api('GET', '/api/connect');
+      } catch (err) {
+        state.connect = { error: err.message };
+      }
+    }
     // The services badge is wanted on every view, so it is refreshed even
     // when the Services view is not the one on screen.
     // The badges are wanted on every view, so the overview is refreshed even
@@ -193,23 +201,23 @@ async function load() {
   renderView();
 }
 
-/* The settlement files the runner can run, one row each.
-   Every Worldline file beside settle-ingest's sample is a run you can start:
-   on its own, or all at once — which is how two currencies arrive on a real
-   morning, and the case single runs never exercise. Both are one POST
-   /sim/run; the runner starts the files together and owns the rule that a
-   currency runs once at a time. A file whose merchants are not seeded
-   settles nothing, so it gets the command that seeds them instead of a
-   button. */
+/* The settlement files a registered platform can run, one row each
+   (design-system.md, Plugin card). Every file is a run you can start: on
+   its own, or all at once — which is how two currencies arrive on a real
+   morning, and the case single runs never exercise. Both are one POST to
+   the plugin's run_path; the platform starts the files together and owns
+   the rule that a currency runs once at a time. A file whose merchants are
+   not seeded settles nothing, so it gets the command that seeds them
+   instead of a button. */
 function filesPanel(s) {
-  if (s.id !== 'local-runner' || !(s.status && s.status.state === 'up')) return '';
-  const d = state.files;
+  if (!s.plugin || !s.plugin.settlement || !isUp(s)) return '';
+  const d = state.files[s.id];
   if (!d) return '';
   if (d.error) return `<div class="note bad">Settlement files unavailable — ${esc(d.error)}</div>`;
   const files = d.files || [];
   if (!files.length) {
     return `<div class="note warn">No settlement files in <span class="mono">${esc(d.dir || '')}</span> —
-      the runner offers every <span class="mono">worldline-reconciliation-sample*.csv</span> there.</div>`;
+      ${esc(s.name)} offers nothing to run.</div>`;
   }
 
   // One run per currency at a time, so "all together" is the first free,
@@ -242,7 +250,7 @@ function filesPanel(s) {
           `${r.finished_at ? ` · ${esc(platformTime(r.finished_at))}` : ''}`;
     }
     const run = runnable(f)
-      ? `<button class="btn small" data-action="runner-run" data-files="${esc(f.name)}">Run</button>`
+      ? `<button class="btn small" data-action="plugin-run" data-id="${esc(s.id)}" data-files="${esc(f.name)}">Run</button>`
       : '';
     return `<tr>
       <td class="mono">${esc(f.name)}</td>
@@ -259,7 +267,7 @@ function filesPanel(s) {
   const seedNote = unseeded.length
     ? `<div class="note warn">${unseeded.map((f) => `<span class="mono">${esc(f.name)}</span> pays MIDs
         ${esc(midList(f.missing_mids))}, which have no merchant yet${f.seed_command
-          ? ` — seed them with <span class="mono">${esc(f.seed_command)}</span> from the buddy repo root`
+          ? ` — seed them with <span class="mono">${esc(f.seed_command)}</span> in the platform's repo`
           : ''}.`).join('<br>')}</div>`
     : '';
   const unknown = d.seeded_error
@@ -267,7 +275,7 @@ function filesPanel(s) {
     : '';
 
   return `<div class="note">Settlement files in <span class="mono">${esc(d.dir || '')}</span>. Run one, or
-      all of them at once — one run per currency at a time, and the clock above decides the day.</div>
+      all of them at once — one run per currency at a time, and the lab clock decides the day.</div>
     <div class="table-scroll"><table>
       <thead><tr><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th>
         <th>State</th><th>Last run</th><th class="actions"></th></tr></thead>
@@ -275,14 +283,14 @@ function filesPanel(s) {
     </table></div>
     ${seedNote}${unknown}
     ${together.length > 1 ? `<div class="form">
-      <button class="btn small" data-action="runner-run"
+      <button class="ghost small" data-action="plugin-run" data-id="${esc(s.id)}"
         data-files="${esc(together.map((f) => f.name).join('|'))}">Run all ${together.length} together</button>
     </div>` : ''}`;
 }
 
-/* A time the runner stamped, as the runner's clock read it. Not "ago": the
-   runner stamps with the platform's shifted clock, so measuring it against
-   this browser's clock would say "1d ago" of a run that just finished. */
+/* A time stamped on the lab clock. Not "ago": a platform following it
+   stamps with the shifted clock, so measuring it against this browser's
+   clock would say "1d ago" of a run that just finished. */
 function platformTime(iso) {
   const d = new Date(iso);
   if (!iso || Number.isNaN(d.getTime())) return '—';
@@ -305,33 +313,37 @@ function midList(mids) {
    "subscribed, pointing at the wrong host" both show up downstream as
    silence. The card names the endpoint, the events behind it, and offers a
    probe, so the two can be told apart in one look. */
-/* The simulated clock.
+/* The lab clock.
    Settlement only runs on a business day, so "what happens on a Sunday" is a
-   real test and so is "…and then on Monday, with the same money". Every
-   supervised process follows one shared offset, which is what makes this two
-   buttons rather than a restart of four processes with a different env. */
+   real test and so is "…and then on Monday, with the same money". The clock
+   service owns one offset; every vendor follows it, and so does a platform
+   that registered to — which is what makes this two buttons rather than a
+   restart of everything with a different env. */
 function clockPanel(s) {
-  if (s.id !== 'local-runner') return '';
+  if (s.id !== 'clock') return '';
   const c = state.clock;
   if (!c) return '';
   if (c.error) return `<div class="note bad">Clock unavailable — ${esc(c.error)}</div>`;
 
   const shifted = Math.abs(c.offset_hours) >= 0.05;
   const when = (c.now || '').replace('T', ' ').slice(0, 16);
+  const holds = c.holds || [];
   // What you are typing survives the five-second re-render; until you type,
   // the fields show the clock as it stands.
   const pick = state.clockPick || { date: (c.now || '').slice(0, 10), time: (c.now || '').slice(11, 16) };
   return `<div class="note${c.business_day ? '' : ' warn'}">
-      Simulated clock <span class="mono">${esc(when)} UTC</span> —
+      Lab clock <span class="mono">${esc(when)} UTC</span> —
       <span class="mono">${esc(zoneTime(c.now, 'Europe/Paris'))}</span> in Paris,
       <span class="mono">${esc(zoneTime(c.now, 'Europe/Stockholm'))}</span> in Stockholm,
       <span class="mono">${esc(zoneTime(c.now, 'Europe/London'))}</span> in London.
       ${c.business_day
-        ? 'A business day, so settlement will run.'
-        : '<b>Not a business day</b>: the balance check will skip and settlement will not leave the safeguarding account.'}
-      ${shifted ? ` Shifted ${esc(String(c.offset_hours))}h from the real clock${c.pinned ? ', pinned' : ''}.` : ''}
-      Every vendor in the lab follows this clock.
+        ? 'A business day on every calendar, so settlement will run.'
+        : `<b>Not a business day</b> on ${esc(offCalendars(c))}: the balance check will skip and settlement will not leave the safeguarding account.`}
+      ${shifted ? ` Shifted ${esc(String(c.offset_hours))}h from the real clock (${esc(c.mode)} — ${esc(c.reason || '')}).` : ''}
+      Every vendor follows this clock, and so does a platform registered to follow it.
     </div>
+    ${holds.length ? `<div class="note warn">${holds.map((h) => `<b>Held</b> by <span class="mono">${esc(h.holder)}</span> —
+      ${esc(h.reason)}, until ${esc(platformTime(h.until))}.`).join('<br>')} Moves are refused until it is released.</div>` : ''}
     <div class="form">
       <button class="ghost small" data-action="clock-real">Now</button>
       <button class="ghost small" data-action="clock-advance" data-spec="10m">+10 min</button>
@@ -350,6 +362,12 @@ function clockPanel(s) {
       <button class="ghost small" data-action="clock-set">Set clock</button>
       <span class="hint" data-clock-hint>${esc(pickHint(pick))}</span>
     </div>`;
+}
+
+/* The calendars a non-business day fails on, as "GB (Sat), SE (Sat)". */
+function offCalendars(c) {
+  const off = (c.calendars || []).filter((k) => !k.business_day);
+  return off.map((k) => `${k.code} (${k.weekday} ${k.date})`).join(', ') || 'a calendar';
 }
 
 /* HH:MM, weekday, in a timezone — for saying what a UTC instant is where
@@ -381,13 +399,13 @@ function nextWeekday(day) {
 }
 
 async function moveClock(body) {
-  const r = await api('POST', '/api/runner/clock', body);
-  const a = r.applied || r;
+  const c = await api('POST', '/api/clock', body);
+  state.clock = c;
   toast(
-    a.business_day ? 'Clock moved — a business day' : 'Clock moved — not a business day',
-    `${a.now}\n${a.stockholm} in Stockholm, ${a.london} in London.\n` +
-      (a.business_day ? 'Settlement will run.' : 'The balance check will skip and settlement will not leave the bank.'),
-    a.business_day ? 'good' : ''
+    c.business_day ? 'Clock moved — a business day' : 'Clock moved — not a business day',
+    `${c.now}\n${(c.calendars || []).map((k) => `${k.weekday} ${k.date} on ${k.code}`).join(', ')}.\n` +
+      (c.business_day ? 'Settlement will run.' : 'The balance check will skip and settlement will not leave the bank.'),
+    c.business_day ? 'good' : ''
   );
 }
 
@@ -531,7 +549,7 @@ function payoutsPanel(s) {
       </table></div>
       ${d.total > payouts.length ? `<div class="log-foot">Showing the newest ${payouts.length} of ${d.total}.</div>` : ''}`
       : `<div class="empty">No payouts yet. A settlement run sends them here through B4B —
-          start one from the local runner card.</div>`}
+          start one from the platform's card on the Platform view.</div>`}
     </div>`;
   }
 
@@ -562,18 +580,27 @@ async function loadActivity() {
   // Banking Circle's card carries one more thing: who is subscribed to its
   // notifications. It is fetched on the same condition — the card is open —
   // for the same reason.
-  if (watched.some((s) => s.id === 'local-runner')) {
+  if (watched.some((s) => s.id === 'clock')) {
     try {
-      state.clock = await api('GET', '/api/runner/clock');
+      state.clock = await api('GET', '/api/clock');
     } catch (err) {
       state.clock = { error: err.message };
     }
-    try {
-      state.files = await api('GET', '/api/runner/files');
-    } catch (err) {
-      state.files = { error: err.message };
-    }
   }
+  // A platform's settlement files, while its card is open and it is up.
+  const settling = ov.services.filter(
+    (s) => s.plugin && s.plugin.settlement && isUp(s) && s.kind === VIEWS[state.view].kind && isOpen(s.id)
+  );
+  for (const id of Object.keys(state.files)) {
+    if (!settling.some((s) => s.id === id)) delete state.files[id];
+  }
+  await Promise.all(settling.map(async (s) => {
+    try {
+      state.files[s.id] = await api('GET', `/api/plugins/${encodeURIComponent(s.id)}/files`);
+    } catch (err) {
+      state.files[s.id] = { error: err.message };
+    }
+  }));
   if (watched.some((s) => s.id === 'banking-circle')) {
     try {
       state.subs = await api('GET', '/api/banking-circle/subscriptions');
@@ -587,7 +614,7 @@ async function loadActivity() {
     }
   }
   // What a platform needs to connect: read while any card here is open,
-  // since every vendor card and the runner's carry a panel for it.
+  // since every vendor card carries a panel for it.
   if (ov.services.some((s) => s.kind === VIEWS[state.view].kind && isOpen(s.id))) {
     try {
       state.connect = await api('GET', '/api/connect');
@@ -611,11 +638,10 @@ async function loadActivity() {
 /* Connect your platform.
    What a platform under test needs to reach this vendor: an .env in its own
    variable names, and the keys it has to hold. Every vendor card carries its
-   own; the runner's card — the platform's — carries all of them at once.
+   own; the Configuration view carries all of them at once.
    Downloads are links, not actions (design-system.md, Download): the server
    names the file, and curl -OJ on the same URL saves the same thing. */
 function connectPanel(s) {
-  if (s.id === 'local-runner') return connectAllPanel();
   const c = state.connect;
   const kit = c && !c.error && (c.kits || []).find((k) => k.service === s.id);
   if (!kit) return '';
@@ -659,12 +685,15 @@ function connectPanel(s) {
   </div>`;
 }
 
+/* Every vendor's connection kit at once, for pointing a platform at the
+   whole lab. It is the lab's, not any platform's — whichever platform
+   registers needs the same file — so it lives on the Configuration view. */
 function connectAllPanel() {
   const c = state.connect;
   if (!c) return '';
   if (c.error) return `<div class="note bad">Connection settings unavailable — ${esc(c.error)}</div>`;
   const kits = c.kits || [];
-  const id = 'local-runner:connect';
+  const id = 'connect';
   const open = isOpen(id);
   const missing = kits.reduce((n, k) => n + (k.files || []).filter((f) => !f.present).length, 0);
   const pills = [`<span class="pill">${kits.length} vendors</span>`]
@@ -696,12 +725,12 @@ function connectAllPanel() {
       </div>
     </div>` : '';
 
-  return `<div class="card log ${open ? 'is-open' : ''}">
+  return `<div class="card ${open ? 'is-open' : ''}">
     <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
       <span class="chev">▸</span>
       <div class="card-title">
-        <span class="name">Connect your platform ${pills}</span>
-        <span class="desc">Every vendor's .env in one file, for pointing the platform at this lab.</span>
+        <span class="name">All vendors, one .env ${pills}</span>
+        <span class="desc">Every vendor's .env in one file, for pointing a platform at this lab.</span>
       </div>
     </div>
     ${body}
@@ -726,7 +755,7 @@ function logPanel(s, log) {
   const failed = events.filter((e) => e.status === 'bad').length;
   const refused = events.filter((e) => e.status === 'warn').length;
   // A vendor's amber is a request it refused. A log that means something
-  // else by it — the runner's is a run with failed stages — says so in
+  // else by it — a platform's is a run with failed stages — says so in
   // `labels`, and the count says that instead.
   const labels = log.labels || {};
 
@@ -745,7 +774,7 @@ function logPanel(s, log) {
       ${log.note ? `<div class="note">${esc(log.note)}</div>` : ''}
       ${events.length ? `<div class="log-rows">${events.map(logRow).join('')}</div>
         ${log.total > events.length ? `<div class="log-foot">Showing the last ${events.length} of ${log.total}. Older calls have scrolled out of the service's buffer.</div>` : ''}`
-      : `<div class="empty">${esc(emptyLogHint(s.id, log.name))}</div>`}
+      : `<div class="empty">${esc(emptyLogHint(s, log.name))}</div>`}
     </div>` : '';
 
   return `<div class="card log ${open ? 'is-open' : ''}">
@@ -782,13 +811,18 @@ const EMPTY_HINTS = {
   'banking-circle:payments': 'Nothing yet. B4B posts here once a payout clears its gates, and funding the safeguarding account shows up here too.',
   'banking-circle:notifications': 'Nothing yet. Notification batches appear here as they are posted to a subscription endpoint.',
   'banking-circle:reports': 'Nothing yet. The platform\'s reconciliation sweep reads the intraday report here about an hour after a settlement — move the platform clock forward an hour and trigger it to see one.',
-  'local-runner:sweeps': 'No sweep yet. A payout stays IN_PROGRESS until one resolves it — and a root is only swept an hour after its settlement by the platform clock, so advance the clock an hour, then Run reconciliation sweep.',
+  'clock:changes': 'Nothing yet. Every move of the clock lands here, and every hold a platform takes on it while a run is in flight.',
   'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
 };
 
-function emptyLogHint(serviceID, logName) {
-  return EMPTY_HINTS[`${serviceID}:${logName}`] || 'Nothing yet.';
+/* A plugin names its own empty states: only the platform knows what would
+   fill its logs. */
+function emptyLogHint(s, logName) {
+  const own = s.plugin && s.plugin.empty_hints && s.plugin.empty_hints[logName];
+  return own || EMPTY_HINTS[`${s.id}:${logName}`] || 'Nothing yet.';
 }
+
+function isUp(s) { return !!(s.status && s.status.state === 'up'); }
 
 function clock(iso) {
   if (!iso) return '';
@@ -959,24 +993,25 @@ const FLOW_TOP = 10;
 const FLOW_ROW = 52;
 const FLOW_FIRST_ROW = 124;
 
-/* The platform's clock, above the diagram: in UTC and where its calendars
-   live, shifted or not, business day or not. */
+/* The lab clock, above the diagram: in UTC and where its calendars live,
+   shifted or not, business day or not. */
 function flowClock() {
   const c = state.clock;
   if (!c) return '';
   if (c.error) {
-    return `<div class="note">Platform clock unavailable — ${esc(c.error)}. The vendors keep the
+    return `<div class="note">Lab clock unavailable — ${esc(c.error)}. The vendors keep the
       last time they were given, or the real clock if they never had one.</div>`;
   }
   const shifted = Math.abs(c.offset_hours) >= 0.05;
   const when = (c.now || '').replace('T', ' ').slice(0, 16);
   return `<div class="note${c.business_day ? '' : ' warn'}">
-      Platform clock <span class="mono">${esc(when)} UTC</span> —
+      Lab clock <span class="mono">${esc(when)} UTC</span> —
       <span class="mono">${esc(zoneTime(c.now, 'Europe/Paris'))}</span> Paris,
       <span class="mono">${esc(zoneTime(c.now, 'Europe/Stockholm'))}</span> Stockholm,
       <span class="mono">${esc(zoneTime(c.now, 'Europe/London'))}</span> London.
       ${shifted ? `Shifted ${esc(String(c.offset_hours))}h from the real clock.` : 'On the real clock.'}
-      ${c.business_day ? 'A business day.' : '<b>Not a business day</b>: settlement will not leave the bank.'}
+      ${c.business_day ? 'A business day.' : `<b>Not a business day</b> on ${esc(offCalendars(c))}: settlement will not leave the bank.`}
+      ${(c.holds || []).length ? `Held by <span class="mono">${esc(c.holds[0].holder)}</span>.` : ''}
       <a href="#platform">Move it</a>.
     </div>`;
 }
@@ -1085,8 +1120,9 @@ function renderFlow() {
   const banner = run
     ? `<div class="note${live ? '' : ' flow-note-done'}">${live ? 'Running now' : 'Last run'} —
         <span class="mono">${esc(run.id || run.root || '')}</span>${run.error ? ' — ' + esc(run.error) : ''}</div>`
-    : `<div class="note">No run yet. Start one from
-        <a href="#platform">Platform → Local runner → Run</a>, and this diagram lights up as it goes.</div>`;
+    : `<div class="note">No run yet. Start one from the platform's card on
+        <a href="#platform">Platform</a> — a platform under test registers it there — and this
+        diagram lights up as it goes.</div>`;
 
   const unreachable = Object.entries(d.errors || {})
     .map(([id, msg]) => `<div class="note bad">${esc(id)} could not be read — ${esc(msg)}</div>`).join('');
@@ -1139,10 +1175,13 @@ function flowReport(d) {
 
 /* --- services ---------------------------------------------------------- */
 
-/* Some cards earn the top of their list. The local runner is the thing
-   being tested and the thing with the buttons; below it the stand-ins are
-   reference material. */
-const FIRST = { platform: 'local-runner' };
+/* Some cards earn the top of their list. A registered platform is the
+   thing being tested and the thing with the buttons, then the lab clock
+   that decides its day; below them the stand-ins are reference material. */
+function cardRank(s) {
+  if (s.plugin) return 0;
+  return s.id === 'clock' ? 1 : 2;
+}
 
 function renderServices() {
   const ov = state.data.overview;
@@ -1166,11 +1205,16 @@ function renderServices() {
 
   if (!group.length) return html + `<div class="empty">Nothing in this section yet.</div>`;
 
-  const first = FIRST[state.view];
-  const ordered = first
-    ? [...group.filter((s) => s.id === first), ...group.filter((s) => s.id !== first)]
-    : group;
-  return html + ordered.map(serviceCard).join('');
+  const ordered = group.map((s, i) => [s, i])
+    .sort((a, b) => cardRank(a[0]) - cardRank(b[0]) || a[1] - b[1])
+    .map(([s]) => s);
+  // The one thing the Platform view is for, said where it would be.
+  const noPlatform = kind === 'platform' && !group.some((s) => s.plugin)
+    ? `<div class="note">No platform has registered. A platform under test puts its own card here by
+        posting a descriptor to <span class="mono">/api/plugins</span> and renewing it — see
+        <span class="mono">docs/plugins.md</span>. It then heads this list, with its buttons.</div>`
+    : '';
+  return html + noPlatform + ordered.map(serviceCard).join('');
 }
 
 function serviceCard(s) {
@@ -1189,8 +1233,9 @@ function serviceCard(s) {
         <dt>Transport</dt><dd>${esc(s.transport)}</dd>
         <dt>Auth</dt><dd>${esc(s.auth)}</dd>
         <dt>State</dt><dd>${esc(stateLabel)}${st.detail ? ' — ' + esc(st.detail) : ''}${st.since ? ` (for ${ago(st.since)})` : ''}</dd>
-        <dt>Swap for the real thing</dt><dd style="font-family:var(--sans)">${esc(s.swap_for)}</dd>
+        ${s.swap_for ? `<dt>Swap for the real thing</dt><dd style="font-family:var(--sans)">${esc(s.swap_for)}</dd>` : ''}
         ${s.docs ? `<dt>Design doc</dt><dd>${esc(s.docs)}</dd>` : ''}
+        ${s.plugin ? pluginRows(s.plugin) : ''}
       </dl>
       ${clockPanel(s)}
       ${filesPanel(s)}
@@ -1218,7 +1263,8 @@ function serviceCard(s) {
       <span class="chev">▸</span>
       <i class="dot ${esc(st.state || 'unknown')}"></i>
       <div class="card-title">
-        <span class="name">${esc(s.name)} <span class="pill ${esc(s.kind)}">${esc(s.kind)}</span></span>
+        <span class="name">${esc(s.name)} <span class="pill ${esc(s.kind)}">${esc(s.kind)}</span>${
+          s.plugin ? ` <span class="pill${s.plugin.state === 'live' ? '' : ' warn'}">${s.plugin.state === 'live' ? 'registered' : esc(s.plugin.state)}</span>` : ''}</span>
         <span class="desc">${esc(s.summary)}</span>
       </div>
       <div class="card-meta">${spark(st.history)}<span>${esc(latency)}</span></div>
@@ -1234,25 +1280,34 @@ function serviceCard(s) {
    row, not inside it: .form is a flex row of fields and a note dropped in
    between two buttons gets squeezed to nothing. */
 function serviceNote(s) {
-  if (s.id === 'local-runner' && !(s.status && s.status.state === 'up')) {
-    return `<div class="note warn">Not running, so there is nothing to drive. Start it with
-      <span class="mono">pnpm nx up infinite-local-runner</span> — one command brings up the
-      orchestrator, the workers and gateway together, and this card then runs settlements
-      against them.</div>`;
+  if (s.plugin && !isUp(s)) {
+    return `<div class="note warn">Not running, so there is nothing to drive.
+      ${s.plugin.start_hint ? esc(s.plugin.start_hint) : 'Start it, and it registers this card again.'}</div>`;
   }
   return '';
 }
 
+/* How a plugin's registration stands, and whether it moves with the lab. */
+function pluginRows(p) {
+  const when = p.state === 'live'
+    ? `live — renewed ${ago(p.last_seen)} ago, every ${Math.round(p.ttl_seconds / 3)}s`
+    : `${p.state} — last heard ${ago(p.last_seen)} ago`;
+  return `<dt>Registered</dt><dd>${esc(when)}</dd>
+    <dt>Clock</dt><dd style="font-family:var(--sans)">${p.clock === 'wall'
+      ? 'the wall clock — it cannot follow the lab, so the lab clock is not moved while it is registered'
+      : 'follows the lab clock'}</dd>`;
+}
+
 function serviceExtras(s) {
-  if (s.id === 'local-runner') {
-    // Offered only when the runner is actually up. A run button on a
-    // process that is not listening would fail in a way that reads as the
-    // lab being broken rather than the platform not being started.
-    if (s.status && s.status.state === 'up') {
-      return `<button class="ghost small" data-action="runner-sweep">Run reconciliation sweep</button>
-              <button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
-    }
-    return '';
+  if (s.plugin) {
+    // Offered only while the platform is up (design-system.md, Plugin card).
+    if (!isUp(s)) return '';
+    return (s.plugin.actions || []).map((act) =>
+      `<button class="${act.primary ? 'btn' : 'ghost'} small" data-action="plugin-action"
+        data-id="${esc(s.id)}" data-act="${esc(act.id)}">${esc(act.label)}</button>`).join('');
+  }
+  if (s.id === 'banking-circle') {
+    return `<button class="ghost small" data-action="fund-sga">Fund safeguarding accounts</button>`;
   }
   if (s.id === 'worldline') {
     return `<button class="btn small" data-action="cycle" data-slot="morning">Run morning cycle (ER)</button>
@@ -1458,6 +1513,9 @@ function renderConfig() {
   if (!d) return `<div class="empty">${esc(state.error || 'Loading…')}</div>`;
   let html = '';
 
+  html += `<div class="section-title">Connect your platform <small>every vendor's addresses, credentials and keys</small></div>`;
+  html += connectAllPanel();
+
   const bc = d.banking_circle;
   html += `<div class="section-title">Banking Circle notification delivery <small>${esc(d.banking_circle_source || d.banking_circle_path || '')}</small></div>`;
   if (d.banking_circle_error) {
@@ -1544,12 +1602,13 @@ const ACTIONS = {
     toast('Pulled from Worldline', r, 'good');
   },
 
-  /* The runner answers 202 and keeps going: a settlement run takes the best
-     part of a minute, and a button that sat spinning through it would hide
-     the thing worth watching, which is the stages arriving in the panels. */
-  'runner-run': async (d) => {
+  /* The platform answers 202 and keeps going: a settlement run takes the
+     best part of a minute, and a button that sat spinning through it would
+     hide the thing worth watching, which is the stages arriving in the
+     panels. */
+  'plugin-run': async (d) => {
     const files = d.files.split('|');
-    const r = await api('POST', '/api/actions/runner-settle', { files });
+    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/run`, { files });
     const runs = r.runs || [r];
     toast(runs.length > 1 ? `${runs.length} settlement runs started` : 'Settlement run started',
       `${runs.map((x) => `${x.currency} ${x.run}`).join('\n')}\nWatch the panels below — this takes about a minute.`, 'good');
@@ -1558,7 +1617,7 @@ const ACTIONS = {
   /* The probe is the vendor's own clienttest, and the answer is whatever the
      endpoint did with it — reported from Banking Circle's notification log
      rather than from the 200 that only means "queued". */
-  /* Each of these is one POST the runner owns the meaning of. The toast
+  /* Each of these is one POST the clock service owns the meaning of. The toast
      reports the day it landed on, because "it worked" is not the answer —
      "you are now on Sunday, and settlement will skip" is. */
   'clock-sunday': async () => {
@@ -1614,16 +1673,27 @@ const ACTIONS = {
     toast('Payout reversed', `${r.id} is now ${r.state}.\nThe reversal is booked back to the safeguarding account.`, 'good');
   },
 
-  // Starts the tick and returns: its outcome arrives in the Reconciliation
-  // sweeps panel on this card about twenty seconds later.
-  'runner-sweep': async () => {
-    const r = await api('POST', '/api/actions/runner-sweep', {});
-    toast('Reconciliation sweep started', r.note || r, 'good');
+  /* A button a platform declared: one call to the path it declared, the
+     toast in the platform's own words. */
+  'plugin-action': async (d) => {
+    const s = ((state.data.overview || {}).services || []).find((x) => x.id === d.id);
+    const act = s && s.plugin && (s.plugin.actions || []).find((a) => a.id === d.act);
+    if (!act) throw new Error(`${d.id} no longer declares ${d.act}`);
+    if (act.confirm && !confirm(act.confirm)) return;
+    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, {});
+    toast(act.label, (r && (r.note || r.output)) || act.note || r, 'good');
   },
 
-  'runner-fund-sga': async () => {
-    const r = await api('POST', '/api/actions/runner-fund-sga');
-    toast('Safeguarding accounts funded', r.output || r, 'good');
+  /* Worldline's wire into the safeguarding accounts, for a run that did not
+     come through a morning cycle. An account already holding money is left
+     alone, and the toast says which. */
+  'fund-sga': async () => {
+    const r = await api('POST', '/api/actions/fund-sga');
+    const rows = r.results || [];
+    const bad = rows.filter((x) => x.error);
+    toast(bad.length ? 'Safeguarding funded in part' : 'Safeguarding accounts',
+      rows.map((x) => `${x.currency}: ${x.error ? x.error : x.funded ? `funded ${x.funded}` : x.skipped}`).join('\n'),
+      bad.length ? 'bad' : 'good');
   },
 
   'open-account': async (d, btn) => {

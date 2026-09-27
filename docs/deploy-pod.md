@@ -51,8 +51,8 @@ the file in the repo stays one you can play as it is.
 
 ## Connecting the platform
 
-Open the console (`http://<host>:8090`), then **Platform → Local runner →
-Connect your platform**. It downloads one `.env` for every vendor —
+Open the console (`http://<host>:8090`), then **Configuration → Connect
+your platform**. It downloads one `.env` for every vendor —
 addresses, lab credentials, and the keys inlined in the platform's own
 variable names — or one vendor's from that vendor's own card, where its key
 and certificate files are also offered one by one. Addresses in the file
@@ -125,11 +125,15 @@ stops working: download its `.env` again.
 - **Links.** The console's "open in a browser" links use
   `CONSOLE_BROWSE_HOST` (127.0.0.1 in the manifest). The `.env` downloads do
   not: they follow the host you opened the console on.
-- **The platform's clock and runner.** Every vendor follows
-  `RUNNER_CLOCK_URL`, and the console drives the runner, at
-  `host.containers.internal:3109` — the pod's own host. With the platform on
-  another machine, point both at it, or leave them: a clock that cannot be
-  read keeps the real one, and the runner's card shows it as down.
+- **The clock and the platform's card.** The lab owns its clock (the
+  `clock` container, `:8096`); the platform follows it from wherever it
+  runs, outbound, so a laptop against a remote lab needs nothing extra. The
+  platform registers its own card by calling `:8090` ([plugins.md](plugins.md));
+  the card's live parts — health, logs, buttons — need the console to reach
+  the platform's `base_url`, which from a remote pod means a tunnel to it
+  (cloudflared, ngrok, pinggy). A platform deployed where its clock cannot
+  move registers with `"clock": "wall"`, and the console then keeps the lab
+  on the real time.
 - **No authentication.** Anyone who can reach `:8090` can drive the lab and
   download its keys. Every one of them is fake, which is the only reason
   that is acceptable — keep it on a network you trust.

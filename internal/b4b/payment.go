@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 // PaymentState is the B4B payout lifecycle state, exact wire strings per
@@ -136,7 +136,7 @@ func NewEngine(delay time.Duration, onTransition func(*Payment)) *Engine {
 // (or B4BFailed, if p.ForceFail) -- the caller is never blocked waiting on
 // lifecycle progression.
 func (e *Engine) Submit(p *Payment) {
-	ts := runnerclock.Now().Format(time.RFC3339)
+	ts := labclock.Now().Format(time.RFC3339)
 	e.mu.Lock()
 	p.State = StateAccepted
 	p.CreatedAt = ts
@@ -160,7 +160,7 @@ func (e *Engine) process(p *Payment) {
 		e.sleep()
 		e.mu.Lock()
 		p.State = st
-		p.UpdatedAt = runnerclock.Now().Format(time.RFC3339)
+		p.UpdatedAt = labclock.Now().Format(time.RFC3339)
 		cp := *p
 		e.mu.Unlock()
 		e.notify(cp)
@@ -173,7 +173,7 @@ func (e *Engine) process(p *Payment) {
 	} else {
 		p.State = StateTMApproved
 	}
-	p.UpdatedAt = runnerclock.Now().Format(time.RFC3339)
+	p.UpdatedAt = labclock.Now().Format(time.RFC3339)
 	cp := *p
 	e.mu.Unlock()
 	e.notify(cp)

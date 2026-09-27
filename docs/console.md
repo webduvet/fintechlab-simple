@@ -51,15 +51,17 @@ it, and nothing of yours did. A batch whose endpoint cannot be read is
 counted on the lab's side — the confirmations arrow claims your listener was
 called, and that claim is never a guess.
 
-The platform's clock heads the diagram — UTC, Paris, Stockholm and London,
-shifted or not, business day or not (amber when it is not) — with a link to
-move it. And the platform is drawn as what it is, the system under test:
+The lab clock heads the diagram — UTC, Paris, Stockholm and London,
+shifted or not, business day or not (amber when it is not, naming the
+calendar), held or not — with a link to move it. The platform is whichever
+registered plugin settles ([plugins.md](plugins.md)); with none registered
+the diagram still draws the vendors' side. And it is drawn as what it is, the system under test:
 a wider box with a thicker border and a purple wash, and a solid purple
 lifeline where the vendors' are dashed grey.
 
 **The bottom arrow is the reconciliation sweep**: *intraday reconciliation*,
 from Banking Circle to the platform, lights when the platform reads the
-intraday report — about an hour after a run, or when the platform clock is
+intraday report — about an hour after a run, or when the lab clock is
 moved forward and the sweep triggered. It counts intraday report reads only;
 the status fallback and the rejection report are in the Banking Circle
 card's *Reconciliation reads* panel. A refused read shows amber.
@@ -92,7 +94,7 @@ deliberately absent — they are computed inside the platform's own workers
 and never leave them, and the panel says so rather than inventing a figure.
 
 The data is `GET /api/flow`, which reads the vendors' activity rings and the
-runner's stage chain and puts them in the shape a sequence needs. The server
+platform's stage chain (its plugin's `status_path`) and puts them in the shape a sequence needs. The server
 counts; the browser remembers what the count was a second ago and lights
 what changed.
 
@@ -105,9 +107,10 @@ sections under a nav item called *Standalone*, a name left over from an
 architecture this tree no longer has.
 
 - **Vendors** — the third parties the lab simulates. The deliverable.
-- **Platform** — your own stack: the local runner that actually runs the
-  settle path, listed first because it is the thing under test, then the
-  stand-ins that exist so a hop can be proved connected.
+- **Platform** — your own stack: the platform under test, which registers
+  its own card here and is listed first because it is the thing under test,
+  then the lab clock, then the stand-ins that exist so a hop can be proved
+  connected.
 - **Verification** — the checks a merchant passes before any money exists.
   Their own view rather than filed under vendors, because they are what an
   operator goes and flips an outcome on.
@@ -169,63 +172,87 @@ Three cards offer actions, because they are the ones that drive the money:
   instead of waiting for 08:00.
 - **Settlement** — pull from Worldline now, instead of waiting out
   `WORLDLINE_PULL_INTERVAL`.
-- **Local runner** — run settlement files through the real platform, one
-  or all at once, and watch the vendor panels above it fill as it goes.
+- **Banking Circle** — *Fund safeguarding accounts*: credit each empty
+  safeguarding account 1,000,000 through the bank's internal bridge
+  (`CONSOLE_BC_INTERNAL_URL`), the wire Worldline makes on its morning slot.
+  An account already holding money is left alone, and the toast says which.
 
-### Local runner: the platform under test
+And a registered platform brings its own.
 
-The card is a client of
-infinite-local-runner's control API (`~/infinite/buddy/infinite-local-runner`) — the harness that runs the platform's settle path locally. It shows
-which of the three processes (orchestrator, workers, gateway) are up, keeps
-its runs as an activity panel, and lists the **settlement files** it can
-run (`GET /sim/files`): every `worldline-reconciliation-sample*.csv` in
-buddy's `apps/settle-ingest/local`, one row each, with its currency, the
-MIDs it pays, its total, and its last run (root, payouts, when).
+### The platform under test: a plugin
 
-- **Run** on a row — one `POST /sim/run {"files":[name]}`. The runner uploads
-  the file under a name not used before, triggers the pipeline, waits for the
-  balance check, funds the safeguarding accounts, ticks the check and follows
-  the stages to the end. It answers `202` at once: the run takes about forty
+The console knows no platform by name. A platform **registers its own
+card** — `POST /api/plugins` with a descriptor, renewed every ten seconds —
+and the console draws it at the top of the Platform view with the same
+components as every other card: summary, where it is reached, its logs as
+activity panels, its endpoints, and the buttons it declared, each forwarded
+to the path it declared and nowhere else. [plugins.md](plugins.md) is the
+contract; buddy's `infinite-local-runner` is the reference plugin and
+registers on start (`pnpm nx up infinite-local-runner`).
+
+A card's **Registered** row says how that stands: *live* (renewed within
+thirty seconds), *lapsed* (stopped renewing) or *stopped* (it said goodbye
+on shutdown). A lapsed or stopped platform is grey, not red — it is not a
+lab service that is down — and shows the platform's own words on how to
+start it where its buttons were. No platform registered is a note on the
+Platform view saying how to register one.
+
+A platform that settles gets the **settlement files** table: one row per
+file it can run (its `files_path`), with currency, the MIDs it pays, its
+total, and its last run (root, payouts, when).
+
+- **Run** on a row — one `POST /api/plugins/{id}/run {"files":[name]}`,
+  forwarded to the platform's `run_path`. The runner uploads the file under
+  a name not used before, triggers the pipeline, waits for the balance
+  check, funds the safeguarding accounts, ticks the check and follows the
+  stages to the end. It answers `202` at once: the run takes about forty
   seconds, and the part worth watching is the traffic arriving in the vendor
-  panels, not a spinner.
-- **Run all N together** — still one `POST /sim/run`, with every file that
-  can run (the first free, seeded one per currency). The runner starts them
-  in the same moment, which is how two currencies arrive on a real morning
-  and the case a single run never exercises. Shown only when two or more
-  can run.
-- **Run reconciliation sweep** — one `POST /sim/sweep`: a single tick of the
-  platform's hourly BC payment reconciliation, which is what moves payouts
-  from `IN_PROGRESS` to `SUCCESS` (or `REJECTED`). A tick takes about twenty
-  seconds, so the runner answers `202` at once and the outcome appears in
-  the card's **Reconciliation sweeps** panel — per root, how many payouts
-  were open and how many it resolved; amber when some stay open. A root is
-  only swept an hour after its settlement *by the platform clock*: after a
-  run, press *+1 hour* on the clock below, sweep, then *Now*. A second
-  press while one is running is the runner's `409`.
-- **Fund safeguarding accounts** — the same top-up `POST /sim/fund-sga` a
-  human would curl.
+  panels, not a spinner. While it runs it **holds the lab clock**.
+- **Run all N together** — still one call, with every file that can run
+  (the first free, seeded one per currency). The platform starts them in
+  the same moment, which is how two currencies arrive on a real morning and
+  the case a single run never exercises.
 
-A row has no *Run* while its currency has a run in flight (the runner allows
-one per currency, and a second is a `409`): it shows *running — stage* or
-*busy* instead. A file whose MIDs have no merchant in the settle database
-would settle nothing, so it has no *Run* either: the row says which MIDs are
-missing and a note gives the seed command (the GBP merchant is
-`pnpm exec tsx infinite-local-runner/seeders/seed-gbp.ts`).
+A row has no *Run* while its currency has a run in flight (one per
+currency; a second is the platform's `409`). A file whose MIDs have no
+merchant would settle nothing, so it has no *Run* either: the row says which
+MIDs are missing and a note gives the platform's seed command.
 
-The card also carries the runner's **simulated clock**, because settlement
-only runs on a business day and that makes the calendar a test input rather
-than an obstacle. The note says what time the stack thinks it is — in UTC,
-and in Paris, Stockholm and London, where the platform's and the bank's
-calendars live — and whether settlement will run at all. The buttons —
-*Now* (back to the real clock), *+10 min*, *+30 min*, *+1 hour*, *±1 day*,
-*Nearest business day*, *Move to Sunday* — and the *Date (UTC)* / *Time
-(UTC)* fields with *Set clock* are each one `POST /sim/clock` (`advance`,
-`at` or `mode`). Every one of the runner's processes picks the change up
-within a second without restarting, and so does every vendor in the lab:
-they follow the runner's clock (`RUNNER_CLOCK_URL`), so bookings, files and
-report dates move with the platform. What you type in the picker survives
-the five-second refresh, and a hint beside it says what that UTC time is in
-Paris and Stockholm.
+buddy's runner declares one more button, **Run reconciliation sweep**
+(primary): one tick of the platform's hourly BC payment reconciliation,
+which is what moves payouts from `IN_PROGRESS` to `SUCCESS` (or
+`REJECTED`). A tick takes about twenty seconds, so the runner answers `202`
+at once and the outcome appears in its **Reconciliation sweeps** panel —
+per root, how many payouts were open and how many it resolved; amber when
+some stay open. A root is only swept an hour after its settlement *by the
+lab clock*: after a run, press *+1 hour* on the Lab clock card, sweep, then
+*Now*.
+
+### The lab clock
+
+Settlement only runs on a business day, which makes the calendar a test
+input rather than an obstacle. The **Lab clock** card (the `clock` service,
+`:8096`) says what time the lab thinks it is — in UTC, and in Paris,
+Stockholm and London, where the platform's and the bank's calendars live —
+whether it is a business day on every calendar (GB and SE, with their bank
+holidays), and whether anything holds it. The buttons — *Now* (back to the
+real clock), *+10 min*, *+30 min*, *+1 hour*, *±1 day*, *Nearest business
+day*, *Move to Sunday* — and the *Date (UTC)* / *Time (UTC)* fields with
+*Set clock* are each one `POST /api/clock`, forwarded to the clock
+service's `POST /clock` (`advance`, `at` or `mode`). Its *Clock changes*
+panel is every move and every hold.
+
+Every vendor follows it (`LAB_CLOCK_URL`), so bookings, files and report
+dates move together, within a second and without a restart; a registered
+platform with `"clock": "follows"` follows the same service — buddy's
+runner writes the offset into the file every one of its processes watches.
+The lab starts on *auto-business-day* (`CLOCK_START` in compose.yml): the
+most recent business-day instant, so a weekend evening still settles.
+
+A move is refused while a settlement run holds the clock (the clock
+service's `409`, with the holder's reason), and while a platform registered
+on the wall clock is live — that platform cannot follow, and moving the
+vendors would put them on a different day from it.
 
 Moving the clock drives scheduled vendor work too: move past Worldline's
 morning or afternoon slot (08:30 / 15:30) and that slot's file is delivered
@@ -235,15 +262,7 @@ The scenario worth knowing: move to a Sunday and run, and the balance check
 completes as `NON_BUSINESS_DAY` with **0 payouts**; advance a day and run
 again, and the same money settles — in one measured pair, 6 payouts of
 55,397.56, exactly twice the usual daily figure, because Sunday's movements
-were booked and not paid. A move is refused while a run is in flight.
-
-It is configured with `CONSOLE_URL_LOCAL_RUNNER` (compose points it at
-`host.containers.internal:3109`, since the runner is a host process and this
-console is in a container). `CONSOLE_LOCAL_RUNNER=off` drops the card: the lab
-stands alone, and a permanently red row for something nobody started is worse
-than no row at all. When the runner is configured but not running, the card
-shows no buttons — it says what to start instead, because a button that
-cannot work is a worse answer than a sentence.
+were booked and not paid.
 
 ### Connect your platform: the .env and the keys
 
@@ -253,8 +272,8 @@ platform** panel: which variables it sets, in the platform's own names
 (`BC_API_BASE_URL`, `B4B_JWT_PRIVATE_KEY`, `WORLDLINE_SFTP_HOST_KEY_FINGERPRINT`
 …), a **Download fintechlab-<vendor>.env** link, and — for Banking Circle,
 B4B and Worldline — each key or certificate file on its own row. The
-Local runner card carries the same panel for every vendor at once, with
-**Download fintechlab.env**.
+**Configuration** view carries it for every vendor at once, with
+**Download fintechlab.env** — it is the lab's, not any one platform's.
 
 - **Keys are live, the rest is compose.yml.** PEMs and base64 certificates
   are read from the lab's keys directory at the moment you click, so they
@@ -478,6 +497,8 @@ send you debugging the wrong thing for an hour:
 | `CONSOLE_PROBE_INTERVAL` | `5s` | how often to health-check |
 | `CONSOLE_BC_DELIVERY_CONFIG` | `config/banking-circle.json` | the delivery table to display |
 | `CONSOLE_KEYS_DIR` | `keys` | the lab's keys directory, for the connect-your-platform downloads |
+| `CONSOLE_BC_INTERNAL_URL` | `http://127.0.0.1:8095` | Banking Circle's internal bridge, for *Fund safeguarding accounts* |
+| `CONSOLE_URL_CLOCK` | `http://127.0.0.1:8096` | the lab clock, for the clock card and `/api/clock` |
 | `CA_FILE`, `CLIENT_CERT`, `CLIENT_KEY` | `keys/certs/…` | mTLS material for Banking Circle |
 | `B4B_JWT_PRIVATE_KEY_PATH`, `B4B_JWT_KEY_ID` | `keys/b4b-keys/private.pem`, `b4b-mock-1` | signs the bearer token for beneficiary registration |
 

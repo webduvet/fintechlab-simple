@@ -33,6 +33,8 @@ Use it to:
 are stand-ins for your side, kept only so the harness can prove each vendor
 hop is really connected — see
 [catalogue.md](catalogue.md#which-half-is-which).
+Your real platform is not in this repo at all: it registers its own card in
+the console and follows the lab's clock — see [plugins.md](plugins.md).
 
 Do **not** use it to reconstruct a vendor's private API or to store real bank data.
 

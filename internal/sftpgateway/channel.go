@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 // Inbound categories accepted by DropInbound and ListInbound.
@@ -171,7 +171,7 @@ func (c *Channel) ArchiveOutbound(merchantID, relativePath string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	now := runnerclock.Now()
+	now := labclock.Now()
 	dir := filepath.Join(c.BaseDir, "archive", fmt.Sprintf("%04d", now.Year()), fmt.Sprintf("%02d", now.Month()))
 	if err := os.MkdirAll(dir, 0o777); err != nil {
 		return "", err

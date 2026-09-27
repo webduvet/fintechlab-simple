@@ -21,7 +21,8 @@ the harness can prove each vendor hop is really connected.**
 | **receiver** | scaffolding | pointing the vendors' webhook URLs at your own listener |
 | **bank**, **payment-api**, **notifier** | scaffolding | — generic shapes, not vendor-specific |
 | **verify**, **verification** | verification | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
-| **local-runner** | platform | nothing — it *is* the platform, run locally (see [console.md](console.md)) |
+| **clock** | platform | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
+| *a registered platform* | platform (plugin) | nothing — it *is* the platform; it registers its own card ([plugins.md](plugins.md)) |
 | **ca** | supporting | a real PKI |
 | **console** | control panel | — it is a client of the others; see [console.md](console.md) |
 

@@ -13,6 +13,8 @@ package console
 import (
 	"os"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Kind is which half of the lab a service belongs to. The distinction is
@@ -62,16 +64,29 @@ type Service struct {
 	// an empty list that reads as "nothing happened".
 	Activity  string     `json:"activity_path,omitempty"`
 	Endpoints []Endpoint `json:"endpoints,omitempty"`
+	// Plugin is set on a platform that registered itself (plugins.go):
+	// its buttons, its settlement files and how its registration stands.
+	Plugin *PluginInfo `json:"plugin,omitempty"`
 }
 
-// Catalogue is the ordered list of services, vendors first.
+// Catalogue is the ordered list of the lab's own services, vendors first,
+// and the platforms that registered themselves as plugins.
 type Catalogue struct {
 	Services []Service `json:"services"`
+
+	mu      sync.RWMutex
+	plugins []*registration
+	now     func() time.Time // for tests; nil is time.Now
 }
 
-// Get returns the service with the given id.
+// Get returns the service with the given id, the lab's own or a plugin.
 func (c *Catalogue) Get(id string) (Service, bool) {
 	for _, s := range c.Services {
+		if s.ID == id {
+			return s, true
+		}
+	}
+	for _, s := range c.Plugins() {
 		if s.ID == id {
 			return s, true
 		}
@@ -250,6 +265,25 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
+			ID: "clock", Name: "Lab clock", Kind: KindPlatform,
+			Summary:    "The lab's business clock: one offset from the real time that every vendor follows, and that a registered platform follows too. Put the lab on a Sunday, then on Monday with the same money.",
+			BaseURL:    "http://127.0.0.1:8096",
+			HealthPath: "/health",
+			Activity:   "/sim/activity",
+			Ports:      []string{"8096/http"},
+			Transport:  "HTTP",
+			Auth:       "none (lab)",
+			SwapFor:    "Nothing — real vendors are on the real clock. A platform deployed where its clock cannot be moved registers with clock \"wall\", and the lab then stays on the real time too.",
+			Docs:       "docs/plugins.md",
+			Endpoints: []Endpoint{
+				{"GET", "/clock", "the clock as it stands; offset_ms is what a follower reads"},
+				{"POST", "/clock", `move it: {"at": "<RFC 3339>"}, {"advance": "1d"}, {"mode": "real"} or {"mode": "auto-business-day"}`},
+				{"POST", "/clock/holds", `{"holder", "reason", "ttl_seconds"} — refuse moves while a run is in flight`},
+				{"DELETE", "/clock/holds/{holder}", "release it"},
+				{"GET", "/sim/activity", "every move and hold"},
+			},
+		},
+		{
 			ID: "settlement", Name: "Settlement (platform stand-in)", Kind: KindPlatform,
 			Summary:    "Scaffolding for your platform: pulls Worldline's file over real SFTP+PGP, decrypts, parses, splits it per MID and pays each outlet through B4B.",
 			BaseURL:    "http://127.0.0.1:8083",
@@ -320,44 +354,12 @@ func DefaultCatalogue() *Catalogue {
 				{"GET", "/subscriptions", ""}, {"GET", "/deliveries", ""},
 			},
 		},
-		{
-			ID: "local-runner", Name: "Local runner", Kind: KindPlatform,
-			Summary:    "The platform's own settle path, run locally: the settle-processing orchestrator, the SQS workers, and gateway for B4B callbacks. Run a settlement file — or every file at once, one per currency — and the vendor panels above fill as it goes.",
-			BaseURL:    "http://127.0.0.1:3109",
-			HealthPath: "/status",
-			Activity:   "/sim/activity",
-			Ports:      []string{"3109/http"},
-			Transport:  "HTTP",
-			Auth:       "none — local control plane",
-			SwapFor:    "Nothing. This is the platform under test, not a vendor: in a real environment it is the deployed stack.",
-			Endpoints: []Endpoint{
-				{"GET", "/status", "what is up, and how the last run went"},
-				{"GET", "/sim/files", "the settlement files it can run: currency, MIDs, whether they are seeded, the last run of each"},
-				{"POST", "/sim/run", `run settlements end to end: {} the EUR file, {"currency":"GBP"}, or {"files":[…]} several at once`},
-				{"POST", "/sim/fund-sga", "top up the safeguarding accounts"},
-				{"POST", "/sim/sweep", "one tick of the BC payment reconciliation sweep; the outcome lands in its sweeps log"},
-				{"GET|POST", "/sim/clock", "the platform's clock: pin, advance, business day, real — every vendor follows it"},
-			},
-		},
 	}
 	for i := range svcs {
 		if v := os.Getenv(envKeyFor(svcs[i].ID)); v != "" {
 			svcs[i].BaseURL = v
 		}
 		svcs[i].Browse = browseURL(svcs[i])
-	}
-	// The local runner is the platform under test, not part of the lab, and
-	// most of the time there is not one. Dropping the card when it is
-	// switched off is the honest rendering: a permanently red row for
-	// something nobody asked for teaches an operator to ignore red.
-	if os.Getenv("CONSOLE_LOCAL_RUNNER") == "off" {
-		kept := svcs[:0]
-		for _, s := range svcs {
-			if s.ID != "local-runner" {
-				kept = append(kept, s)
-			}
-		}
-		svcs = kept
 	}
 	return &Catalogue{Services: svcs}
 }
