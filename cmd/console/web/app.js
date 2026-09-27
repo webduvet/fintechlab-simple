@@ -193,6 +193,112 @@ async function load() {
   renderView();
 }
 
+/* The settlement files the runner can run, one row each.
+   Every Worldline file beside settle-ingest's sample is a run you can start:
+   on its own, or all at once — which is how two currencies arrive on a real
+   morning, and the case single runs never exercise. Both are one POST
+   /sim/run; the runner starts the files together and owns the rule that a
+   currency runs once at a time. A file whose merchants are not seeded
+   settles nothing, so it gets the command that seeds them instead of a
+   button. */
+function filesPanel(s) {
+  if (s.id !== 'local-runner' || !(s.status && s.status.state === 'up')) return '';
+  const d = state.files;
+  if (!d) return '';
+  if (d.error) return `<div class="note bad">Settlement files unavailable — ${esc(d.error)}</div>`;
+  const files = d.files || [];
+  if (!files.length) {
+    return `<div class="note warn">No settlement files in <span class="mono">${esc(d.dir || '')}</span> —
+      the runner offers every <span class="mono">worldline-reconciliation-sample*.csv</span> there.</div>`;
+  }
+
+  // One run per currency at a time, so "all together" is the first free,
+  // seeded file of each currency.
+  const runnable = (f) => f.seeded !== false && !f.in_flight;
+  const together = [];
+  for (const f of files) {
+    if (runnable(f) && !together.some((t) => t.currency === f.currency)) together.push(f);
+  }
+
+  const rows = files.map((f) => {
+    const pills = [];
+    if (f.default) pills.push('<span class="pill">default</span>');
+    if (f.in_flight && f.in_flight.file === f.name) {
+      const stages = f.in_flight.stages || [];
+      const at = stages.length ? stages[stages.length - 1].stage : 'starting';
+      pills.push(`<span class="pill warn">running — ${esc(at)}</span>`);
+    } else if (f.in_flight) {
+      pills.push(`<span class="pill warn">${esc(f.currency)} busy</span>`);
+    }
+    if (f.seeded === false) pills.push(`<span class="pill bad">MIDs ${esc(midList(f.missing_mids))} not seeded</span>`);
+    const r = f.last_run;
+    let last = '—';
+    if (r) {
+      const p = r.payouts;
+      last = r.error
+        ? `<span class="pill bad">failed</span> ${esc(r.error)}`
+        : `<span class="mono">${esc((r.root || '').slice(0, 8))}</span> · ` +
+          `${p ? `${p.count} payouts ${esc(p.total)}` : 'no payouts'}` +
+          `${r.finished_at ? ` · ${esc(platformTime(r.finished_at))}` : ''}`;
+    }
+    const run = runnable(f)
+      ? `<button class="btn small" data-action="runner-run" data-files="${esc(f.name)}">Run</button>`
+      : '';
+    return `<tr>
+      <td class="mono">${esc(f.name)}</td>
+      <td class="mono">${esc(f.currency)}</td>
+      <td class="mono">${esc(midList(f.mids))}</td>
+      <td class="mono num">${esc(f.total)}</td>
+      <td><div class="pill-row">${pills.join('')}</div></td>
+      <td>${last}</td>
+      <td class="actions">${run}</td>
+    </tr>`;
+  }).join('');
+
+  const unseeded = files.filter((f) => f.seeded === false);
+  const seedNote = unseeded.length
+    ? `<div class="note warn">${unseeded.map((f) => `<span class="mono">${esc(f.name)}</span> pays MIDs
+        ${esc(midList(f.missing_mids))}, which have no merchant yet${f.seed_command
+          ? ` — seed them with <span class="mono">${esc(f.seed_command)}</span> from the buddy repo root`
+          : ''}.`).join('<br>')}</div>`
+    : '';
+  const unknown = d.seeded_error
+    ? `<div class="note warn">Could not check which merchants are seeded — ${esc(d.seeded_error)}</div>`
+    : '';
+
+  return `<div class="note">Settlement files in <span class="mono">${esc(d.dir || '')}</span>. Run one, or
+      all of them at once — one run per currency at a time, and the clock above decides the day.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th>
+        <th>State</th><th>Last run</th><th class="actions"></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${seedNote}${unknown}
+    ${together.length > 1 ? `<div class="form">
+      <button class="btn small" data-action="runner-run"
+        data-files="${esc(together.map((f) => f.name).join('|'))}">Run all ${together.length} together</button>
+    </div>` : ''}`;
+}
+
+/* A time the runner stamped, as the runner's clock read it. Not "ago": the
+   runner stamps with the platform's shifted clock, so measuring it against
+   this browser's clock would say "1d ago" of a run that just finished. */
+function platformTime(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  }).format(d) + ' UTC';
+}
+
+// "1–5" for a run of consecutive MIDs, the list otherwise.
+function midList(mids) {
+  const list = mids || [];
+  const nums = list.map(Number);
+  const consecutive = list.length > 2 && nums.every((n, i) => Number.isInteger(n) && (i === 0 || n === nums[i - 1] + 1));
+  return consecutive ? `${list[0]}–${list[list.length - 1]}` : list.join(', ');
+}
+
 /* Who Banking Circle will call, and about what.
    This is the half of the vendor that is invisible until it is wrong: a
    subscription is a URL the bank POSTs to, and "nobody subscribed" and
@@ -462,6 +568,11 @@ async function loadActivity() {
     } catch (err) {
       state.clock = { error: err.message };
     }
+    try {
+      state.files = await api('GET', '/api/runner/files');
+    } catch (err) {
+      state.files = { error: err.message };
+    }
   }
   if (watched.some((s) => s.id === 'banking-circle')) {
     try {
@@ -505,11 +616,15 @@ function logPanel(s, log) {
   const events = log.events || [];
   const failed = events.filter((e) => e.status === 'bad').length;
   const refused = events.filter((e) => e.status === 'warn').length;
+  // A vendor's amber is a request it refused. A log that means something
+  // else by it — the runner's is a run with failed stages — says so in
+  // `labels`, and the count says that instead.
+  const labels = log.labels || {};
 
   // Counts are data, so they carry status colour; the total never does.
   const pills = [`<span class="pill">${log.total} total</span>`]
-    .concat(refused ? [`<span class="pill warn">${refused} refused</span>`] : [])
-    .concat(failed ? [`<span class="pill bad">${failed} failed</span>`] : [])
+    .concat(refused ? [`<span class="pill warn">${refused} ${esc(labels.warn || 'refused')}</span>`] : [])
+    .concat(failed ? [`<span class="pill bad">${failed} ${esc(labels.bad || 'failed')}</span>`] : [])
     .join(' ');
 
   const last = log.last;
@@ -865,7 +980,7 @@ function renderFlow() {
     ? `<div class="note${live ? '' : ' flow-note-done'}">${live ? 'Running now' : 'Last run'} —
         <span class="mono">${esc(run.id || run.root || '')}</span>${run.error ? ' — ' + esc(run.error) : ''}</div>`
     : `<div class="note">No run yet. Start one from
-        <a href="#platform">Platform → Local runner → Run settlement</a>, and this diagram lights up as it goes.</div>`;
+        <a href="#platform">Platform → Local runner → Run</a>, and this diagram lights up as it goes.</div>`;
 
   const unreachable = Object.entries(d.errors || {})
     .map(([id, msg]) => `<div class="note bad">${esc(id)} could not be read — ${esc(msg)}</div>`).join('');
@@ -973,6 +1088,7 @@ function serviceCard(s) {
         ${s.docs ? `<dt>Design doc</dt><dd>${esc(s.docs)}</dd>` : ''}
       </dl>
       ${clockPanel(s)}
+      ${filesPanel(s)}
       ${subscriptionPanel(s)}
       ${payoutsPanel(s)}
       ${activityPanels(s)}
@@ -1027,8 +1143,7 @@ function serviceExtras(s) {
     // process that is not listening would fail in a way that reads as the
     // lab being broken rather than the platform not being started.
     if (s.status && s.status.state === 'up') {
-      return `<button class="btn small" data-action="runner-settle">Run settlement</button>
-              <button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
+      return `<button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
     }
     return '';
   }
@@ -1325,9 +1440,12 @@ const ACTIONS = {
   /* The runner answers 202 and keeps going: a settlement run takes the best
      part of a minute, and a button that sat spinning through it would hide
      the thing worth watching, which is the stages arriving in the panels. */
-  'runner-settle': async () => {
-    const r = await api('POST', '/api/actions/runner-settle');
-    toast('Settlement run started', `${r.run}\nWatch the panels below — this takes about a minute.`, 'good');
+  'runner-run': async (d) => {
+    const files = d.files.split('|');
+    const r = await api('POST', '/api/actions/runner-settle', { files });
+    const runs = r.runs || [r];
+    toast(runs.length > 1 ? `${runs.length} settlement runs started` : 'Settlement run started',
+      `${runs.map((x) => `${x.currency} ${x.run}`).join('\n')}\nWatch the panels below — this takes about a minute.`, 'good');
   },
 
   /* The probe is the vendor's own clienttest, and the answer is whatever the

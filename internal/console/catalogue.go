@@ -322,7 +322,7 @@ func DefaultCatalogue() *Catalogue {
 		},
 		{
 			ID: "local-runner", Name: "Local runner", Kind: KindPlatform,
-			Summary:    "The platform's own settle path, run locally: the settle-processing orchestrator, the SQS workers, and gateway for B4B callbacks. Press Run settlement and the vendor panels above fill as it goes.",
+			Summary:    "The platform's own settle path, run locally: the settle-processing orchestrator, the SQS workers, and gateway for B4B callbacks. Run a settlement file — or every file at once, one per currency — and the vendor panels above fill as it goes.",
 			BaseURL:    "http://127.0.0.1:3109",
 			HealthPath: "/status",
 			Activity:   "/sim/activity",
@@ -332,7 +332,8 @@ func DefaultCatalogue() *Catalogue {
 			SwapFor:    "Nothing. This is the platform under test, not a vendor: in a real environment it is the deployed stack.",
 			Endpoints: []Endpoint{
 				{"GET", "/status", "what is up, and how the last run went"},
-				{"POST", "/sim/run", "run a settlement end to end"},
+				{"GET", "/sim/files", "the settlement files it can run: currency, MIDs, whether they are seeded, the last run of each"},
+				{"POST", "/sim/run", `run settlements end to end: {} the EUR file, {"currency":"GBP"}, or {"files":[…]} several at once`},
 				{"POST", "/sim/fund-sga", "top up the safeguarding accounts"},
 				{"GET|POST", "/sim/clock", "the platform's clock: pin, advance, business day, real — every vendor follows it"},
 			},

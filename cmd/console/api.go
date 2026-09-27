@@ -365,15 +365,31 @@ func (a *app) settlementPull(w http.ResponseWriter, r *http.Request) {
 	a.proxyPost(w, r, a.baseURL("settlement")+"/worldline/pull")
 }
 
-// runnerSettle asks the local runner to drive one settlement end to end.
+// runnerSettle asks the local runner to drive settlements end to end — the
+// files the operator picked, {"files": […]}, forwarded verbatim; an empty
+// body is the runner's default file.
 //
 // One button rather than four terminals, but it is still exactly one POST a
 // human could make with curl: the runner owns the sequence — upload under a
 // name not used before, trigger, wait for the balance check, fund, tick,
 // follow the stages — because that sequence is the platform's, not the
-// lab's. This console only asks.
+// lab's. This console only asks. Several files are still one call: the
+// runner starts them together, which is the point of running them together.
 func (a *app) runnerSettle(w http.ResponseWriter, r *http.Request) {
-	a.proxyPost(w, r, a.baseURL("local-runner")+"/sim/run")
+	a.forwardJSON(w, r, a.baseURL("local-runner")+"/sim/run")
+}
+
+// runnerFiles is the runner's list of settlement files it can run, with
+// whether each one's merchants are seeded and how its last run went.
+func (a *app) runnerFiles(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	var out any
+	if err := a.getJSON(ctx, a.client, a.baseURL("local-runner")+"/sim/files", &out); err != nil {
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, out)
 }
 
 func (a *app) runnerFundSGA(w http.ResponseWriter, r *http.Request) {
@@ -399,6 +415,12 @@ func (a *app) runnerClock(w http.ResponseWriter, r *http.Request) {
 // mean and a console that re-interpreted them would be a second place to
 // keep that correct.
 func (a *app) setRunnerClock(w http.ResponseWriter, r *http.Request) {
+	a.forwardJSON(w, r, a.baseURL("local-runner")+"/sim/clock")
+}
+
+// forwardJSON POSTs the request's JSON body to url as it came and answers
+// with whatever url answered, status and all.
+func (a *app) forwardJSON(w http.ResponseWriter, r *http.Request, url string) {
 	ctx, cancel := reqContext(r)
 	defer cancel()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<10))
@@ -406,8 +428,7 @@ func (a *app) setRunnerClock(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		a.baseURL("local-runner")+"/sim/clock", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		httputilx.Error(w, 500, err.Error())
 		return

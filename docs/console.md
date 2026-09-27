@@ -169,8 +169,8 @@ Three cards offer actions, because they are the ones that drive the money:
   instead of waiting for 08:00.
 - **Settlement** — pull from Worldline now, instead of waiting out
   `WORLDLINE_PULL_INTERVAL`.
-- **Local runner** — run a whole settlement through the real platform, and
-  watch the vendor panels above it fill as it goes.
+- **Local runner** — run settlement files through the real platform, one
+  or all at once, and watch the vendor panels above it fill as it goes.
 
 ### Local runner: the platform under test
 
@@ -178,16 +178,31 @@ The card is a client of
 [infinite-local-runner](../../infinite/pr_ly/infinite-local-runner)'s control
 API — the harness that runs the platform's settle path locally. It shows
 which of the three processes (orchestrator, workers, gateway) are up, keeps
-its runs as an activity panel, and offers two buttons:
+its runs as an activity panel, and lists the **settlement files** it can
+run (`GET /sim/files`): every `worldline-reconciliation-sample*.csv` in
+buddy's `apps/settle-ingest/local`, one row each, with its currency, the
+MIDs it pays, its total, and its last run (root, payouts, when).
 
-- **Run settlement** — one `POST /sim/run`. The runner uploads a fixture
-  under a name not used before, triggers the pipeline, waits for the balance
-  check, funds the safeguarding accounts, ticks the check and follows the
-  stages to the end. It answers `202` at once: the run takes about forty
+- **Run** on a row — one `POST /sim/run {"files":[name]}`. The runner uploads
+  the file under a name not used before, triggers the pipeline, waits for the
+  balance check, funds the safeguarding accounts, ticks the check and follows
+  the stages to the end. It answers `202` at once: the run takes about forty
   seconds, and the part worth watching is the traffic arriving in the vendor
   panels, not a spinner.
+- **Run all N together** — still one `POST /sim/run`, with every file that
+  can run (the first free, seeded one per currency). The runner starts them
+  in the same moment, which is how two currencies arrive on a real morning
+  and the case a single run never exercises. Shown only when two or more
+  can run.
 - **Fund safeguarding accounts** — the same top-up `POST /sim/fund-sga` a
   human would curl.
+
+A row has no *Run* while its currency has a run in flight (the runner allows
+one per currency, and a second is a `409`): it shows *running — stage* or
+*busy* instead. A file whose MIDs have no merchant in the settle database
+would settle nothing, so it has no *Run* either: the row says which MIDs are
+missing and a note gives the seed command (the GBP merchant is
+`pnpm exec tsx infinite-local-runner/seeders/seed-gbp.ts`).
 
 The card also carries the runner's **simulated clock**, because settlement
 only runs on a business day and that makes the calendar a test input rather

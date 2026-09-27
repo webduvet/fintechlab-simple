@@ -514,6 +514,16 @@ Rules, and they are the whole component:
   neutral, refusals amber, failures red — and the most recent event's own
   summary as the `.desc`. An operator should be able to close every panel
   and still see, from four collapsed headers, which hop is broken.
+- **The count says what the amber is.** For a vendor, amber is a request
+  it refused, and the pill says *refused*. A log whose amber means
+  something else names it in its snapshot's `labels` (`{"warn": …,
+  "bad": …}`) and the pill uses that: the runner's runs are *with failed
+  stages*, its processes *restarted*. "1 refused" on a run that nothing
+  refused is a false statement in the one place people look first.
+- **Times are wall-clock.** Every log stamps `at` with the real time, even
+  where the platform's clock has been moved — the runner included — so
+  "2m ago" is true and events from different services sort together. The
+  business date lives in the summary or the detail, never in `at`.
 - **A good row is not coloured.** Only `.warn` and `.bad` take a left
   border and a wash (6% / 9%). Painting every accepted call green makes the
   two that are not green *harder* to find. This is the same reason

@@ -148,6 +148,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/actions/settlement-pull", a.settlementPull)
 	mux.HandleFunc("POST /api/actions/runner-settle", a.runnerSettle)
 	mux.HandleFunc("POST /api/actions/runner-fund-sga", a.runnerFundSGA)
+	mux.HandleFunc("GET /api/runner/files", a.runnerFiles)
 	mux.HandleFunc("GET /api/runner/clock", a.runnerClock)
 	mux.HandleFunc("POST /api/runner/clock", a.setRunnerClock)
 
