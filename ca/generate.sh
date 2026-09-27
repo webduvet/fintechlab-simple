@@ -1,9 +1,16 @@
 #!/bin/sh
 # Generate a local lab CA + receiver/banking-circle/pod-bank-rails server certs + client cert.
 # Idempotent: existing files are left alone unless FORCE_CERTS=1.
+#
+# CERT_EXTRA_SANS adds names to the two server certificates a client outside
+# the lab dials (receiver, banking-circle), e.g.
+#   CERT_EXTRA_SANS="DNS:lab.example.test,IP:10.0.0.5"
+# for a lab running on another machine. It only applies to certificates
+# being generated: FORCE_CERTS=1 to reissue existing ones.
 set -eu
 
-CERTS="${CERTS_DIR:-/certs}"
+CERTS="${CERTS_DIR:-/keys/certs}"
+EXTRA="${CERT_EXTRA_SANS:+,$CERT_EXTRA_SANS}"
 DAYS="${CERT_DAYS:-825}"
 mkdir -p "$CERTS"
 
@@ -28,7 +35,7 @@ if need "$CERTS/ca.pem" || need "$CERTS/ca-key.pem"; then
     -subj "/CN=fintech-sim-lab CA/O=fintech-sim-lab"
 fi
 
-SAN="subjectAltName=DNS:receiver,DNS:localhost,DNS:receiver.local,DNS:receiver.fintech-sim-lab.test,IP:127.0.0.1"
+SAN="subjectAltName=DNS:receiver,DNS:localhost,DNS:receiver.local,DNS:receiver.fintech-sim-lab.test,IP:127.0.0.1$EXTRA"
 if need "$CERTS/receiver.pem" || need "$CERTS/receiver-key.pem"; then
   echo "generating receiver server cert"
   openssl req -newkey rsa:2048 -nodes \
@@ -52,7 +59,7 @@ fi
 # Banking Circle mock is also an mTLS server (docs/ARCHITECTURE-vendor-
 # corrections.md section 3): it needs its own server cert, distinct from
 # receiver's, signed by the same lab CA.
-BC_SAN="subjectAltName=DNS:banking-circle,DNS:localhost,DNS:banking-circle.fintech-sim-lab.test,IP:127.0.0.1"
+BC_SAN="subjectAltName=DNS:banking-circle,DNS:localhost,DNS:banking-circle.fintech-sim-lab.test,IP:127.0.0.1$EXTRA"
 if need "$CERTS/banking-circle.pem" || need "$CERTS/banking-circle-key.pem"; then
   echo "generating banking-circle server cert"
   openssl req -newkey rsa:2048 -nodes \

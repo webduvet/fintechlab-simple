@@ -74,7 +74,7 @@ type app struct {
 func main() {
 	addr := env("LISTEN", ":8086")
 	runnerclock.FollowEnv(context.Background(), "b4b")
-	keysDir := env("B4B_JWT_KEYS_DIR", "/b4b-keys")
+	keysDir := env("B4B_JWT_KEYS_DIR", "/keys/b4b-keys")
 	pubKeyPath := env("B4B_JWT_PUBLIC_KEY_PATH", "")
 	kid := env("B4B_JWT_KEY_ID", "b4b-mock-1")
 	delay := envDuration("B4B_PROCESSING_DELAY", 300*time.Millisecond)

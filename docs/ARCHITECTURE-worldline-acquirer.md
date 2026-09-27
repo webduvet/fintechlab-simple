@@ -114,7 +114,7 @@ method production actually uses.
 Host-key pinning is off when `WORLDLINE_SFTP_KNOWN_HOST_PATH` is unset, and
 the code says so explicitly rather than defaulting quietly. A real
 deployment must set it; the lab writes the simulator's own public host key
-to `wlsftp-keys/host_key.pub` at startup so it can be pinned locally too.
+to `keys/wlsftp-keys/host_key.pub` at startup so it can be pinned locally too.
 
 ## Not modelled
 

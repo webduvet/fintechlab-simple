@@ -21,7 +21,7 @@ checkout.
 | b4b | 8086 | Oversight API (RS512 JWT) |
 | aci / verify / verification | 8087 / 8088 / 8089 | |
 | bank / settlement / receiver | 8081 / 8083 / 8443 | scaffolding |
-| **runner** control API (host) | 3109 | `/status`, `/sim/run`, `/sim/clock`, `/sim/fund-sga` |
+| **runner** control API (host) | 3109 | `/status`, `/sim/files`, `/sim/run`, `/sim/clock`, `/sim/fund-sga` |
 | buddy `apps/banking-circle` (host) | 3114 | webhook receiver; internal API under `/api/v1/internal/...` |
 
 The console's service cards list every route each service serves (Vendors →
@@ -40,7 +40,13 @@ make start    # restart from the images already built
   leaves b4b's bridge pointing at its old address and payouts time out. Use
   `make up` / `make start`.
 - **The console alone is safe to rebuild** (nothing calls it):
-  `podman-compose build console && podman rm -f fintechlab-simple_console_1 && podman-compose up -d --no-deps console`.
+  `podman-compose build console && podman rm -f fintechlab-simple_console_1 && podman-compose up -d --no-deps console`
+  — **but only while `compose.yml` is unchanged since the lab came up.**
+  podman-compose 1.0.6 starts the console with `--requires` on everything it
+  `depends_on`; after a compose.yml edit that single `up` recreated bank,
+  receiver, verify, banking-circle, worldline, b4b and settlement too, left
+  them `Created` rather than running, and lost Banking Circle's in-memory
+  state. After any compose.yml change, `make up`.
 - **After the lab restarts, restart the runner.** A fresh banking-circle has
   no subscriptions; buddy's `apps/banking-circle` subscribes on boot, so it
   needs the restart to get a new subscription (its id changes every time —
@@ -49,13 +55,47 @@ make start    # restart from the images already built
 Runner, from `~/infinite/buddy/infinite-local-runner`:
 
 ```sh
-# start (long-running: background it, output to a file)
+# start (long-running: background it, output to a file). apps/banking-circle
+# reads the lab's mTLS certificate from FINTECH_SIM_LAB, default
+# ~/gh/fintechlab-simple/keys; export it only if the lab's LAB_KEYS_DIR differs.
 node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
 # stop: SIGINT the up.ts process, it takes its children with it
 kill -INT "$(pgrep -f '^node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts$')"
 # ready when every process reports up
 curl -s localhost:3109/status | python3 -c "import json,sys; d=json.load(sys.stdin); print([(p['name'],p['state']) for p in d['processes']])"
 ```
+
+## Keys and connecting the platform
+
+Everything the lab generates is under `keys/` (`certs/`, `b4b-keys/`, `wlsftp-keys/`;
+`keys/README.md` says what each file is for). Containers see it at `/keys`.
+The platform does not need to read it: the console hands out an `.env` with
+the keys inlined, in buddy's variable names.
+
+```sh
+curl -OJ localhost:8090/api/connect/env                  # every vendor → fintechlab.env
+curl -OJ localhost:8090/api/connect/env/b4b              # one vendor
+curl -OJ localhost:8090/api/connect/files/banking-circle/fintechlab-ca.pem   # NODE_EXTRA_CA_CERTS
+```
+
+`LAB_KEYS_DIR` moves them: `make` generates into that path instead. buddy
+reads the same directory as `FINTECH_SIM_LAB`, whose default is this repo's
+`keys/` (`~/gh/fintechlab-simple/keys`), so it needs setting only when
+`LAB_KEYS_DIR` does (the subdirectory names are the ones its `setup.sh` and
+`init/run-banking-circle.sh` expect).
+
+`make keys-regenerate CONFIRM=yes` issues new keys and restarts the lab
+(`make pod-up REGENERATE_KEYS=true` for the pod). Every copy the platform
+holds stops working: restart the runner, and download the `.env` again.
+
+## Running it as one pod instead
+
+`make pod-images && make pod-up` runs the same lab as one podman pod from
+images (docs/deploy-pod.md), on the same ports — so `make down` first.
+Container names become `fintechlab-<service>` (e.g.
+`podman logs fintechlab-banking-circle`), and state lives in `fintechlab-*`
+volumes rather than `keys/`, `console-data/` and `b4b-data/`. `make pod-down`
+stops it and keeps the volumes.
 
 ## The clock
 
@@ -86,6 +126,27 @@ curl -s -X POST localhost:3109/sim/run
 curl -s localhost:3109/status | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('running_now'), d['last_run']['root'], d['last_run'].get('error'))"
 ```
 
+From the console: Platform → **Local runner** → the **settlement files**
+panel (below the clock). It is the runner's `GET /sim/files`, one row per
+`worldline-reconciliation-sample*.csv` in buddy's `apps/settle-ingest/local`:
+
+- **File, Currency, MIDs, Total** — read from the file itself; a file dropped
+  into that folder shows up on the next refresh, no code change.
+- **State** — `default` (what a bare `POST /sim/run` uploads), amber
+  `running — <stage>` while its run is in flight, amber `<CCY> busy` when
+  another file in the same currency is running, red `MIDs … not seeded` when
+  the settle DB has no master account for them.
+- **Last run** — root (first 8), payouts and total, and when it finished *on
+  the platform's clock* (e.g. `Fri 25 Sept, 13:00 UTC`).
+- **Run** on a row is one `POST /sim/run {"files":[name]}`; **Run all N
+  together** is one call with the first free, seeded file of each currency.
+  A busy or unseeded row has no *Run*; an unseeded one gets a note with the
+  seed command instead.
+
+Below it, the **Settlement runs** log: one row per run, rewritten as it goes.
+Amber there is *with failed stages* — normally just the two report-email
+stages, which have no mailer locally — and red a run that stopped.
+
 Read the outcome from the settle DB (the runner's Postgres container):
 
 ```sh
@@ -103,17 +164,63 @@ Expect the payouts to sit at `IN_PROGRESS` after a run: Banking Circle's
 `bcPaymentId` (the workers log `No transaction found … skipping`). The sweep
 is what resolves them.
 
+### Two currencies at once
+
+The default run is the EUR file (MIDs 1–5). The GBP file (MIDs 6–10) needs
+the GBP merchant seeded once, on top of the base seed; EUR-only runs ignore
+it:
+
+```sh
+cd ~/infinite/buddy && pnpm exec tsx infinite-local-runner/seeders/seed-gbp.ts   # idempotent
+curl -s -X POST localhost:3109/sim/clock -d '{"at":"2026-09-25T09:00:00Z"}'     # a business morning
+curl -s localhost:3109/sim/files | python3 -c "
+import json,sys
+for f in json.load(sys.stdin)['files']: print(f['name'], f['currency'], f['mids'], 'seeded' if f['seeded'] else 'NOT SEEDED')"
+curl -s -X POST localhost:3109/sim/run \
+     -d '{"files":["worldline-reconciliation-sample.csv","worldline-reconciliation-sample-gbp.csv"]}'
+# one run per currency: a second in the same currency, or a clock move, is a 409 until they finish
+curl -s localhost:3109/status | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print('in flight:', [r['currency'] for r in d['runs_now']])
+for c,r in d['last_runs'].items(): print(c, r['root'], r['payouts'])"
+```
+
+In the console that is **Run all 2 together** on the settlement files panel
+(see *Run a settlement*); both rows go amber `running — …`, then each shows
+its own root and payout count.
+
+Pick a morning, not `auto-business-day`: that can land late on a Friday, and
+the sweep's +1h then crosses 22:00 UTC, when Stockholm is already Saturday.
+
+Expect each root to pay its own merchants in its own currency, and **both**
+Infinite fee payouts (EUR and GBP) under whichever root reached
+`INFINITE_SETTLEMENT` first — buddy's internal settlement sweeps every
+currency, not the root's. Alone, an EUR run makes 6 payouts (5 merchants +
+Infinite); together it makes 5 and the GBP root 7. The sweep resolves them
+all either way.
+
 ## Run the BC payment reconciliation sweep
 
 It picks up sweep stages at least an hour old **by the runner's clock**, so
-move the clock, trigger, and move it back:
+move the clock, trigger, and move it back. The trigger is one call (the
+console's *Run reconciliation sweep* on the Local runner card); it answers
+`202` and the tick takes ~20 s, so read the outcome from the runner's
+`sweeps` log rather than the response:
 
 ```sh
 curl -s -X POST localhost:3109/sim/clock -d '{"advance":"1h"}'
-cd ~/infinite/buddy/infinite-local-runner
-node -r ./src/clock-shim.cjs -r @swc-node/register src/trigger-bc-recon.ts   # not an Nx target: run it directly
+curl -s -X POST localhost:3109/sim/sweep                                  # 409 if one is running
+sleep 25; curl -s localhost:3109/sim/activity | python3 -c "
+import json,sys
+for l in json.load(sys.stdin)['logs']:
+    if l['name']=='sweeps':
+        for e in l['events'][:3]: print(e['status'], e['summary'], e.get('detail'))"
 curl -s -X POST localhost:3109/sim/clock -d '{"mode":"real"}'
 ```
+
+The same tick without the runner's HTTP API, printing the handler's own log:
+`node -r ./src/clock-shim.cjs -r @swc-node/register src/trigger-bc-recon.ts`
+from `~/infinite/buddy/infinite-local-runner`.
 
 It logs `open=N resolved=N unresolved=0` per root. Each resolved submission
 records how in `raw_webhook_payload->>'report'`: `intraday-reconciliation`
@@ -188,6 +295,28 @@ for s in json.load(sys.stdin)['steps']:
     if s['id'] == 'recon': print(s['count'], s.get('last_at'), s.get('last_summary'))"
 ```
 
+The runner's side, through the console — the files panel and its logs:
+
+```sh
+curl -s localhost:8090/api/runner/files | python3 -c "
+import json,sys
+for f in json.load(sys.stdin)['files']:
+    r=f['last_run'] or {}
+    print(f['name'], f['currency'], f['seeded'], 'busy' if f['in_flight'] else 'free',
+          r.get('root'), (r.get('payouts') or {}).get('count'), r.get('finished_at'))"
+curl -s -X POST localhost:8090/api/actions/runner-settle -d '{"files":["worldline-reconciliation-sample-gbp.csv"]}'
+curl -s localhost:8090/api/services/local-runner/activity | python3 -c "
+import json,sys
+for l in json.load(sys.stdin)['logs']:
+    print(l['name'], l.get('labels'))
+    for e in l['events'][:3]: print('   ', e['at'], e['status'], e['summary'])"
+```
+
+The action passes the body to `POST :3109/sim/run` untouched, and the
+runner's refusals come back as they are (`400` for an unknown file, `409`
+for a busy currency). A log's `labels` is what its amber and red mean; the
+console's pills use them.
+
 Step ids, top to bottom: `pull`, `collect`, `ingest`, `fund`, `payouts`,
 `bridge`, `callbacks`, `notify`, `confirm`, `reports`, `recon`.
 
@@ -212,6 +341,13 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
 })();
 ```
 
+Inside the runner card: the settlement files table is
+`table:has(th:text("Last run"))`, its buttons
+`button:has-text("Run all 2 together")` and `[data-action="runner-run"]`,
+and the runs log opens with `[data-card="local-runner:runs"]`. Wait ~10 s
+after a click before expecting a stage name: the upload stage takes that
+long to appear, and the panel refreshes every few seconds.
+
 ## Things that look broken and are not
 
 - **Mailer `Service Unavailable` errors** in the runner log: the report
@@ -219,10 +355,23 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
 - **`IncomingPaymentProcessed` ignored** by accounts-settlement: buddy does
   not act on incoming payments (including returns) today.
 - **A subscription id you used an hour ago is gone:** the lab was restarted.
+- **The sweep logs `Banking Circle does not know paymentId=…` and closes a
+  root as `PARTIALLY_PROCESSED`:** that root's payouts were made before the
+  lab last restarted, and Banking Circle keeps payments in memory. The amber
+  `not found (404)` status reads in *Reconciliation reads* are the same thing.
+  Only roots from the current lab session say anything about the sweep.
 - **No *intraday reconciliation* arrow and an empty *Reconciliation reads*
   panel right after a run:** the sweep only takes stages an hour old by the
   runner's clock. Advance the clock an hour and trigger it. The panel is
   also emptied by a lab restart (activity logs are in memory).
+- **The files panel says `Fri 25 Sept, 13:00 UTC` and the runs log says
+  `44s ago` about the same run:** both are right. *Last run* is the
+  platform's clock (the one the run happened on); every activity log is
+  stamped with the wall clock, the runner's included, so "ago" is real.
+- **A file row has no *Run*:** its currency has a run in flight (one per
+  currency), or its MIDs are not seeded — the row says which.
+- **Every run in *Settlement runs* is amber `with failed stages`:** the two
+  report-email stages fail on the missing mailer. The payouts are unaffected.
 - **The report has no rows for a late-evening payout on today's date:** the
   bank dates bookings on its business day — CET, 19:00 cutoff, weekends to
   Monday. Ask for the next business day.

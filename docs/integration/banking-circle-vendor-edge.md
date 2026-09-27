@@ -12,13 +12,15 @@ BC_AUTH_BASE_URL=https://localhost:8085
 BC_API_BASE_URL=https://localhost:8085
 BC_API_M2M_USERNAME=sim
 BC_API_M2M_PASSWORD=sim-bc-dev-only
-BC_API_CLIENT_CERT_PEM_BASE64=$(base64 -w0 certs/client.pem)
-BC_API_CLIENT_KEY_PEM_BASE64=$(base64 -w0 certs/client-key.pem)
+BC_API_CLIENT_CERT_PEM_BASE64=$(base64 -w0 keys/certs/client.pem)
+BC_API_CLIENT_KEY_PEM_BASE64=$(base64 -w0 keys/certs/client-key.pem)
 # The lab's client key is not encrypted, so leave the passphrase unset.
 # BC_API_CLIENT_KEY_PASSPHRASE=
 ```
 
-Run `make certs` first; `certs/` is generated and gitignored.
+Run `make certs` first; `keys/certs/` is generated and gitignored. Or skip the
+`base64` step: the console's Banking Circle card → **Connect your platform**
+downloads an `.env` with these values filled in, and the CA file to go with it.
 
 ## The one thing that is not an env var
 
@@ -28,7 +30,7 @@ store and rejects it. Nothing in the client's configuration can fix that —
 it needs the CA at the process level:
 
 ```bash
-NODE_EXTRA_CA_CERTS=/path/to/certs/ca.pem
+NODE_EXTRA_CA_CERTS=/path/to/keys/certs/ca.pem
 ```
 
 Without it the failure is `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, which reads

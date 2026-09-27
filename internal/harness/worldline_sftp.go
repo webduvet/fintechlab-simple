@@ -11,7 +11,7 @@ import (
 // downloadWorldlineFile dials the acquirer's real SFTP+PGP channel,
 // downloads one file from its download/ directory, and decrypts it with
 // the PGP keypair worldline generated -- loaded, not regenerated, via the
-// shared wlsftp-keys volume (LoadOrGenerateKeypair reads an existing
+// shared keys/wlsftp-keys volume (LoadOrGenerateKeypair reads an existing
 // keypair back rather than creating a new one).
 //
 // This is the harness's own second opinion. The platform pulls the same

@@ -1,4 +1,17 @@
+# Generated keys and lab state never go into an image: a key baked into a
+# layer is a key every copy of that image shares.
+keys
 certs
+b4b-keys
+wlsftp-keys
+b4b-data
+console-data
+sftp/out
+sftp/staging
+sftp/outbound
+sftp/inbound
+sftp/archive
+dist
 .git
 docs
 **/*_test.go

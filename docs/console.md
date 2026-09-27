@@ -70,9 +70,9 @@ allowed here, and a library that re-renders from a text description cannot
 animate one arrow while the others hold still.
 
 **What the colours mean** (they are the design system's, and they are all
-data): grey is *nothing has come this way*, green *is happening now*, the
-brightest neutral *a batch is in flight*, dark green *done and fine*, amber
-*partly refused*, red *broke*. Everything at rest is grey so that the one
+data): grey is *nothing has come this way*, green *is happening now* —
+one message or a whole batch — dark green *done and fine*, amber *partly
+refused*, red *broke*. Everything at rest is grey so that the one
 thing that just moved is the one thing you see. A state is held for at
 least a second with a glow that ramps up and back down, because a hop that
 takes three milliseconds is still worth looking at.
@@ -169,25 +169,48 @@ Three cards offer actions, because they are the ones that drive the money:
   instead of waiting for 08:00.
 - **Settlement** — pull from Worldline now, instead of waiting out
   `WORLDLINE_PULL_INTERVAL`.
-- **Local runner** — run a whole settlement through the real platform, and
-  watch the vendor panels above it fill as it goes.
+- **Local runner** — run settlement files through the real platform, one
+  or all at once, and watch the vendor panels above it fill as it goes.
 
 ### Local runner: the platform under test
 
 The card is a client of
-[infinite-local-runner](../../infinite/pr_ly/infinite-local-runner)'s control
-API — the harness that runs the platform's settle path locally. It shows
+infinite-local-runner's control API (`~/infinite/buddy/infinite-local-runner`) — the harness that runs the platform's settle path locally. It shows
 which of the three processes (orchestrator, workers, gateway) are up, keeps
-its runs as an activity panel, and offers two buttons:
+its runs as an activity panel, and lists the **settlement files** it can
+run (`GET /sim/files`): every `worldline-reconciliation-sample*.csv` in
+buddy's `apps/settle-ingest/local`, one row each, with its currency, the
+MIDs it pays, its total, and its last run (root, payouts, when).
 
-- **Run settlement** — one `POST /sim/run`. The runner uploads a fixture
-  under a name not used before, triggers the pipeline, waits for the balance
-  check, funds the safeguarding accounts, ticks the check and follows the
-  stages to the end. It answers `202` at once: the run takes about forty
+- **Run** on a row — one `POST /sim/run {"files":[name]}`. The runner uploads
+  the file under a name not used before, triggers the pipeline, waits for the
+  balance check, funds the safeguarding accounts, ticks the check and follows
+  the stages to the end. It answers `202` at once: the run takes about forty
   seconds, and the part worth watching is the traffic arriving in the vendor
   panels, not a spinner.
+- **Run all N together** — still one `POST /sim/run`, with every file that
+  can run (the first free, seeded one per currency). The runner starts them
+  in the same moment, which is how two currencies arrive on a real morning
+  and the case a single run never exercises. Shown only when two or more
+  can run.
+- **Run reconciliation sweep** — one `POST /sim/sweep`: a single tick of the
+  platform's hourly BC payment reconciliation, which is what moves payouts
+  from `IN_PROGRESS` to `SUCCESS` (or `REJECTED`). A tick takes about twenty
+  seconds, so the runner answers `202` at once and the outcome appears in
+  the card's **Reconciliation sweeps** panel — per root, how many payouts
+  were open and how many it resolved; amber when some stay open. A root is
+  only swept an hour after its settlement *by the platform clock*: after a
+  run, press *+1 hour* on the clock below, sweep, then *Now*. A second
+  press while one is running is the runner's `409`.
 - **Fund safeguarding accounts** — the same top-up `POST /sim/fund-sga` a
   human would curl.
+
+A row has no *Run* while its currency has a run in flight (the runner allows
+one per currency, and a second is a `409`): it shows *running — stage* or
+*busy* instead. A file whose MIDs have no merchant in the settle database
+would settle nothing, so it has no *Run* either: the row says which MIDs are
+missing and a note gives the seed command (the GBP merchant is
+`pnpm exec tsx infinite-local-runner/seeders/seed-gbp.ts`).
 
 The card also carries the runner's **simulated clock**, because settlement
 only runs on a business day and that makes the calendar a test input rather
@@ -221,6 +244,43 @@ stands alone, and a permanently red row for something nobody started is worse
 than no row at all. When the runner is configured but not running, the card
 shows no buttons — it says what to start instead, because a button that
 cannot work is a worse answer than a sentence.
+
+### Connect your platform: the .env and the keys
+
+Pointing a platform at the lab takes a handful of variables and, for three
+vendors, key material. Each vendor card carries a nested **Connect your
+platform** panel: which variables it sets, in the platform's own names
+(`BC_API_BASE_URL`, `B4B_JWT_PRIVATE_KEY`, `WORLDLINE_SFTP_HOST_KEY_FINGERPRINT`
+…), a **Download fintechlab-<vendor>.env** link, and — for Banking Circle,
+B4B and Worldline — each key or certificate file on its own row. The
+Local runner card carries the same panel for every vendor at once, with
+**Download fintechlab.env**.
+
+- **Keys are live, the rest is compose.yml.** PEMs and base64 certificates
+  are read from the lab's keys directory at the moment you click, so they
+  are the ones it is running with; the SFTP host key's fingerprint is
+  derived from its public key. Addresses, account ids and lab credentials
+  are what compose.yml ships — the console cannot read another container's
+  environment — and a test holds the two together.
+- **The host is the one you came in on.** Open the console at
+  `lab.example.test:8090` and the file says `lab.example.test`. `?host=` on
+  any of the links picks another.
+- **Choices are commented out.** `NODE_EXTRA_CA_CERTS` is a path, not a
+  value; the AML stub replaces the platform's own verification-service. Both
+  are in the file with a note, and neither is set.
+- **A key not generated yet** is a note on its row and in the file, never a
+  blank that looks like a value.
+- Only client-side files are offered. See
+  [security/ca-and-tls.md](security/ca-and-tls.md#what-the-console-hands-out).
+
+The same thing, headless:
+
+```sh
+curl -OJ localhost:8090/api/connect/env                         # every vendor → fintechlab.env
+curl -OJ localhost:8090/api/connect/env/banking-circle          # one vendor
+curl -OJ localhost:8090/api/connect/files/banking-circle/fintechlab-ca.pem
+curl -s  localhost:8090/api/connect                             # what each kit sets and offers (no values)
+```
 
 ### Banking Circle: who is subscribed
 
@@ -417,8 +477,9 @@ send you debugging the wrong thing for an hour:
 | `CONSOLE_STATE_FILE` | `console-data/registry.json` | the merchant registry |
 | `CONSOLE_PROBE_INTERVAL` | `5s` | how often to health-check |
 | `CONSOLE_BC_DELIVERY_CONFIG` | `config/banking-circle.json` | the delivery table to display |
-| `CA_FILE`, `CLIENT_CERT`, `CLIENT_KEY` | `certs/…` | mTLS material for Banking Circle |
-| `B4B_JWT_PRIVATE_KEY_PATH`, `B4B_JWT_KEY_ID` | `b4b-keys/private.pem`, `b4b-mock-1` | signs the bearer token for beneficiary registration |
+| `CONSOLE_KEYS_DIR` | `keys` | the lab's keys directory, for the connect-your-platform downloads |
+| `CA_FILE`, `CLIENT_CERT`, `CLIENT_KEY` | `keys/certs/…` | mTLS material for Banking Circle |
+| `B4B_JWT_PRIVATE_KEY_PATH`, `B4B_JWT_KEY_ID` | `keys/b4b-keys/private.pem`, `b4b-mock-1` | signs the bearer token for beneficiary registration |
 
 Missing credentials are **not** fatal. Without the B4B key, merchants can
 still be created and the view says why they cannot be registered; without

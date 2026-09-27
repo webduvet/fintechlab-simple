@@ -62,8 +62,8 @@ type store struct {
 
 func main() {
 	addr := env("LISTEN", ":8443")
-	cert := env("TLS_CERT", "/certs/receiver.pem")
-	key := env("TLS_KEY", "/certs/receiver-key.pem")
+	cert := env("TLS_CERT", "/keys/certs/receiver.pem")
+	key := env("TLS_KEY", "/keys/certs/receiver-key.pem")
 	secret := []byte(env("HMAC_SECRET", "sim-hmac-dev-only"))
 	skew := 10 * time.Minute
 	s := &store{}

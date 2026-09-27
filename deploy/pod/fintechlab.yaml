@@ -1,0 +1,478 @@
+# The whole lab as one podman pod.
+#
+#   make pod-up                                  # from a checkout (make pod-images first)
+#   podman kube play --replace fintechlab.yaml   # anywhere the images are loaded
+#   ... --configmap regenerate-keys.yaml ...     # the same, with new keys
+#
+# docs/deploy-pod.md is the walkthrough: building, moving the images to a
+# machine with no checkout, and what persists.
+#
+# Every container shares the pod's network namespace, so the services reach
+# each other on 127.0.0.1. hostAliases gives that address the compose
+# service names, which is why every URL, allowlist and certificate SAN below
+# is exactly the one compose.yml uses: each container's environment is its
+# compose service's, verbatim (deploy/pod/manifest_test.go fails if they
+# drift). The reasons behind each variable are compose.yml's comments and
+# are not repeated here.
+#
+# What differs from compose is only where state lives. The checkout's bind
+# mounts become named volumes, created on first play and kept by
+# `podman kube down`:
+#   fintechlab-keys             /keys   the PKI and generated keypairs (keys/ in a checkout)
+#   fintechlab-sftp             /sftp   the SFT channel tree
+#   fintechlab-settlement-data  /data   settlement's state
+#   fintechlab-b4b-data         /b4b-data
+#   fintechlab-console-data     /console-data
+# and the config files a checkout mounts are baked into the images.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fintechlab
+  labels:
+    app: fintechlab
+    version: v1
+spec:
+  restartPolicy: Always
+  hostAliases:
+    - ip: 127.0.0.1
+      hostnames:
+        - bank
+        - notifier
+        - payment-api
+        - receiver
+        - settlement
+        - worldline
+        - banking-circle
+        - b4b
+        - aci
+        - verify
+        - verification
+        - console
+  initContainers:
+    # Lays out the volumes and issues the PKI (deploy/pod/init.sh). Existing
+    # keys are kept, so a redeploy never invalidates what a platform holds.
+    - name: init
+      image: localhost/fintechlab/ca:v1
+      command: ["/bin/sh", "/pod-init.sh"]
+      env:
+        # "true" throws the keys away and issues new ones. Not set here: it
+        # comes from a ConfigMap passed at play time, so the default is to
+        # keep them and asking for new ones is a flag, not an edit --
+        #   podman kube play --replace --configmap regenerate-keys.yaml fintechlab.yaml
+        # (make pod-up REGENERATE_KEYS=true does the same).
+        - name: REGENERATE_KEYS
+          valueFrom:
+            configMapKeyRef:
+              name: fintechlab-regenerate-keys
+              key: regenerate-keys
+              optional: true
+        # Extra names for the TLS certificates a client outside the pod
+        # dials, when the lab runs on another machine -- e.g.
+        # "DNS:lab.example.test,IP:10.0.0.5". Read only when a certificate
+        # is issued, so it needs a fresh fintechlab-keys volume to apply.
+        - name: CERT_EXTRA_SANS
+          value: ""
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+        - name: sftp
+          mountPath: /sftp
+        - name: settlement-data
+          mountPath: /data
+        - name: b4b-data
+          mountPath: /b4b-data
+        - name: console-data
+          mountPath: /console-data
+  containers:
+    - name: bank
+      image: localhost/fintechlab/bank:v1
+      ports:
+        - containerPort: 8081
+          hostPort: 8081
+      env:
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LISTEN
+          value: ":8081"
+    - name: notifier
+      image: localhost/fintechlab/notifier:v1
+      ports:
+        - containerPort: 8082
+          hostPort: 8082
+      env:
+        - name: LISTEN
+          value: ":8082"
+        - name: WEBHOOK_URL
+          value: "https://receiver:8443/webhooks"
+        - name: WEBHOOK_ALLOWLIST
+          value: "receiver,receiver:8443,localhost,127.0.0.1"
+        - name: HMAC_SECRET
+          value: "sim-hmac-dev-only"
+        - name: CA_FILE
+          value: "/keys/certs/ca.pem"
+        - name: RETRY_BACKOFF
+          value: "1s,2s,4s"
+        - name: MAX_ATTEMPTS
+          value: "4"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+    - name: payment-api
+      image: localhost/fintechlab/payment-api:v1
+      ports:
+        - containerPort: 8080
+          hostPort: 8080
+      env:
+        - name: LISTEN
+          value: ":8080"
+        - name: BANK_URL
+          value: "http://bank:8081"
+        - name: NOTIFIER_URL
+          value: "http://notifier:8082"
+    - name: receiver
+      image: localhost/fintechlab/receiver:v1
+      ports:
+        - containerPort: 8443
+          hostPort: 8443
+      env:
+        - name: LISTEN
+          value: ":8443"
+        - name: TLS_CERT
+          value: "/keys/certs/receiver.pem"
+        - name: TLS_KEY
+          value: "/keys/certs/receiver-key.pem"
+        - name: HMAC_SECRET
+          value: "sim-hmac-dev-only"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+    - name: settlement
+      image: localhost/fintechlab/settlement:v1
+      ports:
+        - containerPort: 8083
+          hostPort: 8083
+      env:
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LISTEN
+          value: ":8083"
+        - name: BANK_URL
+          value: "http://bank:8081"
+        - name: SFTP_OUT_DIR
+          value: "/sftp/out"
+        - name: SFTP_STAGING_DIR
+          value: "/sftp/staging"
+        - name: SFTP_OUTBOUND_DIR
+          value: "/sftp/outbound"
+        - name: SETTLEMENT_STATE_FILE
+          value: "/data/settlements.json"
+        - name: CUTOFF_TIME
+          value: "00:00"
+        - name: WORLDLINE_SETTLEMENT_IDENTIFIER
+          value: "Worldline_Settlement"
+        - name: B4B_URL
+          value: "http://b4b:8086"
+        - name: B4B_JWT_PRIVATE_KEY_PATH
+          value: "/keys/b4b-keys/private.pem"
+        - name: B4B_JWT_KEY_ID
+          value: "b4b-mock-1"
+        - name: B4B_CALLBACK_URL
+          value: "http://settlement:8083/internal/b4b-webhook"
+        - name: VERIFY_URL
+          value: "http://verify:8088"
+        - name: VERIFY_INTERNAL_API_KEY
+          value: "sim-verify-key-dev-only"
+        - name: BC_INTERNAL_URL
+          value: "http://banking-circle:8095"
+        - name: BC_SAFEGUARDING_ACCOUNT_ID_EUR
+          value: "00000000-0000-4000-8000-000000000978"
+        - name: BC_SAFEGUARDING_ACCOUNT_ID_GBP
+          value: "00000000-0000-4000-8000-000000000826"
+        - name: WORLDLINE_SFTP_HOST
+          value: "worldline"
+        - name: WORLDLINE_SFTP_PORT
+          value: "2222"
+        - name: WORLDLINE_SFTP_USER
+          value: "infinitepay"
+        - name: WORLDLINE_SFTP_PASSWORD
+          value: "sim-sftp-dev-only"
+        - name: WORLDLINE_SFTP_KNOWN_HOST_PATH
+          value: "/keys/wlsftp-keys/host_key.pub"
+        - name: WORLDLINE_PGP_PRIVATE_KEY_PATH
+          value: "/keys/wlsftp-keys/worldline_private.asc"
+        - name: WORLDLINE_PGP_PUBLIC_KEY_PATH
+          value: "/keys/wlsftp-keys/worldline_public.asc"
+        - name: WORLDLINE_PULL_INTERVAL
+          value: "10s"
+        - name: WORLDLINE_ARCHIVE_DIR
+          value: "/data/worldline"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+        - name: sftp
+          mountPath: /sftp
+        - name: settlement-data
+          mountPath: /data
+    - name: worldline
+      image: localhost/fintechlab/worldline:v1
+      ports:
+        - containerPort: 8084
+          hostPort: 8084
+        - containerPort: 2222
+          hostPort: 2222
+      env:
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LISTEN
+          value: ":8084"
+        - name: SFTP_BASE_DIR
+          value: "/sftp"
+        - name: MERCHANT_ID
+          value: "GB00SIM0000000000003"
+        - name: WORLDLINE_SFTP_PORT
+          value: "2222"
+        - name: WORLDLINE_SFTP_HOST_KEY_PATH
+          value: "/keys/wlsftp-keys/host_key"
+        - name: WORLDLINE_SFTP_HOST_KEY_PUB_PATH
+          value: "/keys/wlsftp-keys/host_key.pub"
+        - name: WORLDLINE_PGP_PUBLIC_KEY_PATH
+          value: "/keys/wlsftp-keys/worldline_public.asc"
+        - name: WORLDLINE_PGP_PRIVATE_KEY_PATH
+          value: "/keys/wlsftp-keys/worldline_private.asc"
+        - name: WORLDLINE_SFTP_PASSWORD
+          value: "sim-sftp-dev-only"
+        - name: WORLDLINE_SETTLEMENT_IDENTIFIER
+          value: "Worldline_Settlement"
+        - name: WORLDLINE_SETTLEMENT_ACCOUNT
+          value: "GB00SIM0000000000001"
+        - name: WORLDLINE_MORNING_FILE_AT
+          value: "08:00"
+        - name: WORLDLINE_MORNING_FILE_WINDOW
+          value: "2h"
+        - name: WORLDLINE_AFTERNOON_FILE_AT
+          value: "15:30"
+        - name: WORLDLINE_SETTLEMENT_DELAY
+          value: "24h"
+        - name: WORLDLINE_FILE_SOURCE
+          value: "generate"
+        - name: WORLDLINE_FIXTURE_DIR
+          value: "/wlsftp-fixtures"
+        - name: BC_INTERNAL_URL
+          value: "http://banking-circle:8095"
+        - name: BC_SAFEGUARDING_ACCOUNT_ID_EUR
+          value: "00000000-0000-4000-8000-000000000978"
+        - name: BC_SAFEGUARDING_ACCOUNT_ID_GBP
+          value: "00000000-0000-4000-8000-000000000826"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+        - name: sftp
+          mountPath: /sftp
+    - name: banking-circle
+      image: localhost/fintechlab/banking-circle:v1
+      ports:
+        - containerPort: 8085
+          hostPort: 8085
+        - containerPort: 8095
+          hostPort: 8095
+      env:
+        - name: BANK_CREDIT_URL
+          value: "http://bank:8081/internal/credit"
+        - name: LISTEN
+          value: ":8085"
+        - name: INTERNAL_LISTEN
+          value: ":8095"
+        - name: PROCESSING_DELAY
+          value: "2s"
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: WEBHOOK_URL
+          value: "https://receiver:8443/raw-events"
+        - name: WEBHOOK_ALLOWLIST
+          value: "bank,bank:8081,receiver,receiver:8443,localhost,127.0.0.1,host.containers.internal"
+        - name: BC_NOTIFICATION_KEY
+          value: "sim-bc-notification-key-32-chars"
+        - name: CA_FILE
+          value: "/keys/certs/ca.pem"
+        - name: TLS_CERT
+          value: "/keys/certs/banking-circle.pem"
+        - name: TLS_KEY
+          value: "/keys/certs/banking-circle-key.pem"
+        - name: BC_MTLS
+          value: "require"
+        - name: BC_DELIVERY_CONFIG
+          value: "/config/banking-circle.json"
+        - name: BC_TIME_SCALE
+          value: "86400"
+        - name: BC_SEED_BATCH_SIZE
+          value: "5"
+        - name: BC_SEED_SUBSCRIPTION_EMAIL
+          value: "alerts@fintechlab-simple.local"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+    - name: b4b
+      image: localhost/fintechlab/b4b:v1
+      ports:
+        - containerPort: 8086
+          hostPort: 8086
+      env:
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LISTEN
+          value: ":8086"
+        - name: B4B_JWT_KEYS_DIR
+          value: "/keys/b4b-keys"
+        - name: B4B_JWT_KEY_ID
+          value: "b4b-mock-1"
+        - name: B4B_PROCESSING_DELAY
+          value: "300ms"
+        - name: B4B_STATE_PATH
+          value: "/b4b-data/state.json"
+        - name: B4B_ENFORCE_BENEFICIARY_COMPANY
+          value: "false"
+        - name: WEBHOOK_ALLOWLIST
+          value: "settlement,settlement:8083,localhost,127.0.0.1,host.containers.internal"
+        - name: BANKING_CIRCLE_URL
+          value: "http://banking-circle:8095"
+        - name: RETRY_BACKOFF
+          value: "1s,2s,4s"
+        - name: MAX_ATTEMPTS
+          value: "4"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+        - name: b4b-data
+          mountPath: /b4b-data
+    - name: aci
+      image: localhost/fintechlab/aci:v1
+      ports:
+        - containerPort: 8087
+          hostPort: 8087
+      env:
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LISTEN
+          value: ":8087"
+        - name: ACI_WEBHOOK_SECRET
+          value: "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888"
+        - name: ACI_WEBHOOK_TARGET_URL
+          value: "https://receiver:8443/raw-events"
+        - name: ACI_WEBHOOK_BODY_MODE
+          value: "raw"
+        - name: WEBHOOK_ALLOWLIST
+          value: "receiver,receiver:8443,localhost,127.0.0.1"
+        - name: CA_FILE
+          value: "/keys/certs/ca.pem"
+        - name: RETRY_BACKOFF
+          value: "1s,2s,4s"
+        - name: MAX_ATTEMPTS
+          value: "4"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+    - name: verify
+      image: localhost/fintechlab/verify:v1
+      ports:
+        - containerPort: 8088
+          hostPort: 8088
+      env:
+        - name: RUNNER_CLOCK_URL
+          value: "http://host.containers.internal:3109/sim/clock"
+        - name: LISTEN
+          value: ":8088"
+        - name: VERIFICATION_INTERNAL_API_KEY
+          value: "sim-verify-key-dev-only"
+        - name: VERIFY_PROCESSING_DELAY
+          value: "100ms"
+    - name: verification
+      image: localhost/fintechlab/verification:v1
+      ports:
+        - containerPort: 8089
+          hostPort: 8089
+      env:
+        - name: LISTEN
+          value: ":8089"
+    - name: console
+      image: localhost/fintechlab/console:v1
+      ports:
+        - containerPort: 8090
+          hostPort: 8090
+      env:
+        - name: LISTEN
+          value: ":8090"
+        - name: CONSOLE_URL_WORLDLINE
+          value: "http://worldline:8084"
+        - name: CONSOLE_URL_B4B
+          value: "http://b4b:8086"
+        - name: CONSOLE_URL_BANKING_CIRCLE
+          value: "https://banking-circle:8085"
+        - name: CONSOLE_URL_ACI
+          value: "http://aci:8087"
+        - name: CONSOLE_URL_VERIFY
+          value: "http://verify:8088"
+        - name: CONSOLE_URL_VERIFICATION
+          value: "http://verification:8089"
+        - name: CONSOLE_URL_SETTLEMENT
+          value: "http://settlement:8083"
+        - name: CONSOLE_URL_RECEIVER
+          value: "https://receiver:8443"
+        - name: CONSOLE_URL_PAYMENT_API
+          value: "http://payment-api:8080"
+        - name: CONSOLE_URL_BANK
+          value: "http://bank:8081"
+        - name: CONSOLE_URL_NOTIFIER
+          value: "http://notifier:8082"
+        - name: CONSOLE_BROWSE_HOST
+          value: "127.0.0.1"
+        - name: CONSOLE_PROBE_INTERVAL
+          value: "5s"
+        - name: CONSOLE_URL_LOCAL_RUNNER
+          value: "http://host.containers.internal:3109"
+        - name: CONSOLE_STATE_FILE
+          value: "/console-data/registry.json"
+        - name: CONSOLE_BC_DELIVERY_CONFIG
+          value: "/config/banking-circle.json"
+        - name: CA_FILE
+          value: "/keys/certs/ca.pem"
+        - name: CLIENT_CERT
+          value: "/keys/certs/client.pem"
+        - name: CLIENT_KEY
+          value: "/keys/certs/client-key.pem"
+        - name: BC_USER
+          value: "console"
+        - name: BC_PASSWORD
+          value: "sim-bc-dev-only"
+        - name: B4B_JWT_PRIVATE_KEY_PATH
+          value: "/keys/b4b-keys/private.pem"
+        - name: B4B_JWT_KEY_ID
+          value: "b4b-mock-1"
+        - name: CONSOLE_KEYS_DIR
+          value: "/keys"
+      volumeMounts:
+        - name: keys
+          mountPath: /keys
+          readOnly: true
+        - name: console-data
+          mountPath: /console-data
+  volumes:
+    - name: keys
+      persistentVolumeClaim:
+        claimName: fintechlab-keys
+    - name: sftp
+      persistentVolumeClaim:
+        claimName: fintechlab-sftp
+    - name: settlement-data
+      persistentVolumeClaim:
+        claimName: fintechlab-settlement-data
+    - name: b4b-data
+      persistentVolumeClaim:
+        claimName: fintechlab-b4b-data
+    - name: console-data
+      persistentVolumeClaim:
+        claimName: fintechlab-console-data

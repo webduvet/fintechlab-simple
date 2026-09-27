@@ -6,7 +6,7 @@ set -eu
 API="${PAYMENT_API_URL:-http://127.0.0.1:8080}"
 RECV="${RECEIVER_URL:-https://127.0.0.1:8443}"
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-CA="${CA_FILE:-$ROOT/certs/ca.pem}"
+CA="${CA_FILE:-${LAB_KEYS_DIR:-$ROOT/keys}/certs/ca.pem}"
 KEY="demo-$(date +%s)-$$"
 
 if [ ! -f "$CA" ]; then

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -66,10 +67,14 @@ type Env struct {
 }
 
 func EnvFromOS() (*Env, error) {
+	// Where the lab generated its keys (the Makefile's LAB_KEYS_DIR), so a
+	// harness run against a lab keeping them elsewhere needs one variable,
+	// not five.
+	keys := env("LAB_KEYS_DIR", "keys")
 	client, err := NewTLSClient(
-		env("CA_FILE", "certs/ca.pem"),
-		env("CLIENT_CERT", "certs/client.pem"),
-		env("CLIENT_KEY", "certs/client-key.pem"),
+		env("CA_FILE", filepath.Join(keys, "certs/ca.pem")),
+		env("CLIENT_CERT", filepath.Join(keys, "certs/client.pem")),
+		env("CLIENT_KEY", filepath.Join(keys, "certs/client-key.pem")),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("harness: tls client: %w", err)
@@ -88,14 +93,14 @@ func EnvFromOS() (*Env, error) {
 		BankingCircleInternalURL:   env("BANKING_CIRCLE_INTERNAL_URL", "http://127.0.0.1:8095"),
 		ACIURL:                     env("ACI_URL", "http://127.0.0.1:8087"),
 		B4BURL:                     env("B4B_URL", "http://127.0.0.1:8086"),
-		B4BJWTPrivateKeyPath:       env("B4B_JWT_PRIVATE_KEY_PATH", "b4b-keys/private.pem"),
+		B4BJWTPrivateKeyPath:       env("B4B_JWT_PRIVATE_KEY_PATH", filepath.Join(keys, "b4b-keys/private.pem")),
 		B4BJWTKeyID:                env("B4B_JWT_KEY_ID", "b4b-mock-1"),
 		Client:                     client,
 		WorldlineSFTPHost:          env("WORLDLINE_SFTP_HOST", "127.0.0.1"),
 		WorldlineSFTPPort:          env("WORLDLINE_SFTP_PORT", "2222"),
 		WorldlineSFTPPassword:      env("WORLDLINE_SFTP_PASSWORD", "sim-sftp-dev-only"),
-		WorldlinePGPPublicKeyPath:  env("WORLDLINE_PGP_PUBLIC_KEY_PATH", "wlsftp-keys/worldline_public.asc"),
-		WorldlinePGPPrivateKeyPath: env("WORLDLINE_PGP_PRIVATE_KEY_PATH", "wlsftp-keys/worldline_private.asc"),
+		WorldlinePGPPublicKeyPath:  env("WORLDLINE_PGP_PUBLIC_KEY_PATH", filepath.Join(keys, "wlsftp-keys/worldline_public.asc")),
+		WorldlinePGPPrivateKeyPath: env("WORLDLINE_PGP_PRIVATE_KEY_PATH", filepath.Join(keys, "wlsftp-keys/worldline_private.asc")),
 	}, nil
 }
 

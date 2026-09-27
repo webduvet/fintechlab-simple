@@ -2,4 +2,9 @@
 FROM docker.io/library/alpine:3.20
 RUN apk add --no-cache openssl
 COPY ca/generate.sh /generate.sh
+# The pod deployment runs this image as its init container: lay out the
+# shared volumes, seed the SFT channel's onboarding config, issue the PKI.
+# Compose never calls it (docs/deploy-pod.md).
+COPY deploy/pod/init.sh /pod-init.sh
+COPY sftp/config/merchant-onboarding.json /seed/merchant-onboarding.json
 ENTRYPOINT ["/bin/sh", "/generate.sh"]

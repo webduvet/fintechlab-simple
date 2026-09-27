@@ -1,4 +1,4 @@
-/* fintech sim lab console.
+/* fintech sim lab v1 console.
    Vanilla, no framework, no bundler: the whole point of the lab is that it
    runs offline from one `make up`, and a UI that needs a package registry
    would be the first thing to break. State is small enough to re-render
@@ -191,6 +191,112 @@ async function load() {
   }
   renderBadges();
   renderView();
+}
+
+/* The settlement files the runner can run, one row each.
+   Every Worldline file beside settle-ingest's sample is a run you can start:
+   on its own, or all at once — which is how two currencies arrive on a real
+   morning, and the case single runs never exercise. Both are one POST
+   /sim/run; the runner starts the files together and owns the rule that a
+   currency runs once at a time. A file whose merchants are not seeded
+   settles nothing, so it gets the command that seeds them instead of a
+   button. */
+function filesPanel(s) {
+  if (s.id !== 'local-runner' || !(s.status && s.status.state === 'up')) return '';
+  const d = state.files;
+  if (!d) return '';
+  if (d.error) return `<div class="note bad">Settlement files unavailable — ${esc(d.error)}</div>`;
+  const files = d.files || [];
+  if (!files.length) {
+    return `<div class="note warn">No settlement files in <span class="mono">${esc(d.dir || '')}</span> —
+      the runner offers every <span class="mono">worldline-reconciliation-sample*.csv</span> there.</div>`;
+  }
+
+  // One run per currency at a time, so "all together" is the first free,
+  // seeded file of each currency.
+  const runnable = (f) => f.seeded !== false && !f.in_flight;
+  const together = [];
+  for (const f of files) {
+    if (runnable(f) && !together.some((t) => t.currency === f.currency)) together.push(f);
+  }
+
+  const rows = files.map((f) => {
+    const pills = [];
+    if (f.default) pills.push('<span class="pill">default</span>');
+    if (f.in_flight && f.in_flight.file === f.name) {
+      const stages = f.in_flight.stages || [];
+      const at = stages.length ? stages[stages.length - 1].stage : 'starting';
+      pills.push(`<span class="pill warn">running — ${esc(at)}</span>`);
+    } else if (f.in_flight) {
+      pills.push(`<span class="pill warn">${esc(f.currency)} busy</span>`);
+    }
+    if (f.seeded === false) pills.push(`<span class="pill bad">MIDs ${esc(midList(f.missing_mids))} not seeded</span>`);
+    const r = f.last_run;
+    let last = '—';
+    if (r) {
+      const p = r.payouts;
+      last = r.error
+        ? `<span class="pill bad">failed</span> ${esc(r.error)}`
+        : `<span class="mono">${esc((r.root || '').slice(0, 8))}</span> · ` +
+          `${p ? `${p.count} payouts ${esc(p.total)}` : 'no payouts'}` +
+          `${r.finished_at ? ` · ${esc(platformTime(r.finished_at))}` : ''}`;
+    }
+    const run = runnable(f)
+      ? `<button class="btn small" data-action="runner-run" data-files="${esc(f.name)}">Run</button>`
+      : '';
+    return `<tr>
+      <td class="mono">${esc(f.name)}</td>
+      <td class="mono">${esc(f.currency)}</td>
+      <td class="mono">${esc(midList(f.mids))}</td>
+      <td class="mono num">${esc(f.total)}</td>
+      <td><div class="pill-row">${pills.join('')}</div></td>
+      <td>${last}</td>
+      <td class="actions">${run}</td>
+    </tr>`;
+  }).join('');
+
+  const unseeded = files.filter((f) => f.seeded === false);
+  const seedNote = unseeded.length
+    ? `<div class="note warn">${unseeded.map((f) => `<span class="mono">${esc(f.name)}</span> pays MIDs
+        ${esc(midList(f.missing_mids))}, which have no merchant yet${f.seed_command
+          ? ` — seed them with <span class="mono">${esc(f.seed_command)}</span> from the buddy repo root`
+          : ''}.`).join('<br>')}</div>`
+    : '';
+  const unknown = d.seeded_error
+    ? `<div class="note warn">Could not check which merchants are seeded — ${esc(d.seeded_error)}</div>`
+    : '';
+
+  return `<div class="note">Settlement files in <span class="mono">${esc(d.dir || '')}</span>. Run one, or
+      all of them at once — one run per currency at a time, and the clock above decides the day.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th>
+        <th>State</th><th>Last run</th><th class="actions"></th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>
+    ${seedNote}${unknown}
+    ${together.length > 1 ? `<div class="form">
+      <button class="btn small" data-action="runner-run"
+        data-files="${esc(together.map((f) => f.name).join('|'))}">Run all ${together.length} together</button>
+    </div>` : ''}`;
+}
+
+/* A time the runner stamped, as the runner's clock read it. Not "ago": the
+   runner stamps with the platform's shifted clock, so measuring it against
+   this browser's clock would say "1d ago" of a run that just finished. */
+function platformTime(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  }).format(d) + ' UTC';
+}
+
+// "1–5" for a run of consecutive MIDs, the list otherwise.
+function midList(mids) {
+  const list = mids || [];
+  const nums = list.map(Number);
+  const consecutive = list.length > 2 && nums.every((n, i) => Number.isInteger(n) && (i === 0 || n === nums[i - 1] + 1));
+  return consecutive ? `${list[0]}–${list[list.length - 1]}` : list.join(', ');
 }
 
 /* Who Banking Circle will call, and about what.
@@ -462,6 +568,11 @@ async function loadActivity() {
     } catch (err) {
       state.clock = { error: err.message };
     }
+    try {
+      state.files = await api('GET', '/api/runner/files');
+    } catch (err) {
+      state.files = { error: err.message };
+    }
   }
   if (watched.some((s) => s.id === 'banking-circle')) {
     try {
@@ -475,6 +586,15 @@ async function loadActivity() {
       state.payouts = { error: err.message };
     }
   }
+  // What a platform needs to connect: read while any card here is open,
+  // since every vendor card and the runner's carry a panel for it.
+  if (ov.services.some((s) => s.kind === VIEWS[state.view].kind && isOpen(s.id))) {
+    try {
+      state.connect = await api('GET', '/api/connect');
+    } catch (err) {
+      state.connect = { error: err.message };
+    }
+  }
   await Promise.all(watched.map(async (s) => {
     try {
       state.activity[s.id] = await api('GET', `/api/services/${encodeURIComponent(s.id)}/activity?limit=100`);
@@ -486,6 +606,106 @@ async function loadActivity() {
       state.activity[s.id] = { error: err.message };
     }
   }));
+}
+
+/* Connect your platform.
+   What a platform under test needs to reach this vendor: an .env in its own
+   variable names, and the keys it has to hold. Every vendor card carries its
+   own; the runner's card — the platform's — carries all of them at once.
+   Downloads are links, not actions (design-system.md, Download): the server
+   names the file, and curl -OJ on the same URL saves the same thing. */
+function connectPanel(s) {
+  if (s.id === 'local-runner') return connectAllPanel();
+  const c = state.connect;
+  const kit = c && !c.error && (c.kits || []).find((k) => k.service === s.id);
+  if (!kit) return '';
+  const id = `${s.id}:connect`;
+  const open = isOpen(id);
+  const files = kit.files || [];
+  const missing = files.filter((f) => !f.present).length;
+  const pills = [`<span class="pill">${kit.vars.length} variables</span>`]
+    .concat(files.length ? [`<span class="pill">${files.length} keys</span>`] : [])
+    .concat(missing ? [`<span class="pill warn">${missing} not generated</span>`] : [])
+    .join(' ');
+  const envName = `fintechlab-${s.id}.env`;
+
+  const body = open ? `<div class="card-body">
+      ${kit.note ? `<div class="note">${esc(kit.note)}</div>` : ''}
+      <p class="hint">Sets ${kit.vars.map((v) => `<span class="mono">${esc(v.key)}</span>`).join(', ')}.
+        Addresses use <span class="mono">${esc(c.host)}</span>, the host this console was opened on.</p>
+      ${files.length ? `<div class="table-scroll"><table>
+        <thead><tr><th>File</th><th>What it is for</th><th class="actions"></th></tr></thead>
+        <tbody>${files.map((f) => `<tr>
+          <td class="mono">${esc(f.name)}</td>
+          <td>${esc(f.purpose)}</td>
+          <td class="actions">${f.present
+            ? `<a class="ghost small" href="/api/connect/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}" download>Download</a>`
+            : `<span class="hint">not generated yet — ${esc(s.name)} writes it on first start</span>`}</td>
+        </tr>`).join('')}</tbody></table></div>` : ''}
+      <div class="form">
+        <a class="ghost small" href="/api/connect/env/${encodeURIComponent(s.id)}" download>Download ${esc(envName)}</a>
+      </div>
+    </div>` : '';
+
+  return `<div class="card log ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">Connect your platform ${pills}</span>
+        <span class="desc">An .env in the platform's own variable names${files.length ? ', and the keys it has to hold' : ''}.</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
+}
+
+function connectAllPanel() {
+  const c = state.connect;
+  if (!c) return '';
+  if (c.error) return `<div class="note bad">Connection settings unavailable — ${esc(c.error)}</div>`;
+  const kits = c.kits || [];
+  const id = 'local-runner:connect';
+  const open = isOpen(id);
+  const missing = kits.reduce((n, k) => n + (k.files || []).filter((f) => !f.present).length, 0);
+  const pills = [`<span class="pill">${kits.length} vendors</span>`]
+    .concat(missing ? [`<span class="pill warn">${missing} keys not generated</span>`] : [])
+    .join(' ');
+
+  const body = open ? `<div class="card-body">
+      <div class="note">One .env for a platform that runs against the whole lab: every vendor's
+        addresses, lab credentials and keys, in the platform's own variable names. Use it as it is,
+        or copy the blocks you need into your own. Keys are the ones the lab is running with now —
+        regenerate them and download again.</div>
+      <p class="hint">Addresses use <span class="mono">${esc(c.host)}</span>, the host this console
+        was opened on. Add <span class="mono">?host=</span> to a link for another.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Vendor</th><th class="num">Variables</th><th class="num">Keys</th><th class="actions"></th></tr></thead>
+        <tbody>${kits.map((k) => {
+          const files = k.files || [];
+          const absent = files.filter((f) => !f.present).length;
+          return `<tr>
+            <td>${esc(k.title)}</td>
+            <td class="num">${k.vars.length}</td>
+            <td class="num">${files.length}${absent ? ` <span class="pill warn">${absent} not generated</span>` : ''}</td>
+            <td class="actions"><a class="ghost small" href="/api/connect/env/${encodeURIComponent(k.service)}" download>fintechlab-${esc(k.service)}.env</a></td>
+          </tr>`;
+        }).join('')}</tbody></table></div>
+      <p class="hint">Key and certificate files are on each vendor's own card, under Connect your platform.</p>
+      <div class="form">
+        <a class="ghost small" href="/api/connect/env" download>Download fintechlab.env</a>
+      </div>
+    </div>` : '';
+
+  return `<div class="card log ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">Connect your platform ${pills}</span>
+        <span class="desc">Every vendor's .env in one file, for pointing the platform at this lab.</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
 }
 
 /* One nested card per log the service keeps. Collapsed, the header is the
@@ -505,11 +725,15 @@ function logPanel(s, log) {
   const events = log.events || [];
   const failed = events.filter((e) => e.status === 'bad').length;
   const refused = events.filter((e) => e.status === 'warn').length;
+  // A vendor's amber is a request it refused. A log that means something
+  // else by it — the runner's is a run with failed stages — says so in
+  // `labels`, and the count says that instead.
+  const labels = log.labels || {};
 
   // Counts are data, so they carry status colour; the total never does.
   const pills = [`<span class="pill">${log.total} total</span>`]
-    .concat(refused ? [`<span class="pill warn">${refused} refused</span>`] : [])
-    .concat(failed ? [`<span class="pill bad">${failed} failed</span>`] : [])
+    .concat(refused ? [`<span class="pill warn">${refused} ${esc(labels.warn || 'refused')}</span>`] : [])
+    .concat(failed ? [`<span class="pill bad">${failed} ${esc(labels.bad || 'failed')}</span>`] : [])
     .join(' ');
 
   const last = log.last;
@@ -558,6 +782,7 @@ const EMPTY_HINTS = {
   'banking-circle:payments': 'Nothing yet. B4B posts here once a payout clears its gates, and funding the safeguarding account shows up here too.',
   'banking-circle:notifications': 'Nothing yet. Notification batches appear here as they are posted to a subscription endpoint.',
   'banking-circle:reports': 'Nothing yet. The platform\'s reconciliation sweep reads the intraday report here about an hour after a settlement — move the platform clock forward an hour and trigger it to see one.',
+  'local-runner:sweeps': 'No sweep yet. A payout stays IN_PROGRESS until one resolves it — and a root is only swept an hour after its settlement by the platform clock, so advance the clock an hour, then Run reconciliation sweep.',
   'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
 };
 
@@ -679,7 +904,6 @@ function flowIsLit(id) {
 /* The colour rules, in one place:
      idle      nothing has ever come this way          dark grey
      active    something arrived in the last second    green
-     busy      a batch is in flight                    bright neutral
      partial   some of a batch was refused             amber
      failed    something broke                         red
      done      finished, and it was fine               dark green
@@ -689,12 +913,9 @@ function flowIsLit(id) {
 function flowStepClass(s) {
   const lit = flowIsLit(s.id);
   if (s.count === 0) return s.failed > 0 ? 'is-failed' : 'is-idle';
-  if (lit) {
-    // A batch in flight is neither good nor bad news yet, so it gets the
-    // brightest neutral rather than a verdict it has not earned.
-    if (s.failed > 0) return 'is-failed is-lit';
-    return s.multi ? 'is-busy is-lit' : 'is-active is-lit';
-  }
+  // Moving is one colour whether it is one message or a batch: a batch is
+  // judged once it stops, which is what partial and failed below are for.
+  if (lit) return s.failed > 0 ? 'is-failed is-lit' : 'is-active is-lit';
   if (s.failed > 0) {
     // Four of five report stages landing and one failing on the mail hop is
     // a partial success, and painting it the same red as "nothing arrived"
@@ -865,7 +1086,7 @@ function renderFlow() {
     ? `<div class="note${live ? '' : ' flow-note-done'}">${live ? 'Running now' : 'Last run'} —
         <span class="mono">${esc(run.id || run.root || '')}</span>${run.error ? ' — ' + esc(run.error) : ''}</div>`
     : `<div class="note">No run yet. Start one from
-        <a href="#platform">Platform → Local runner → Run settlement</a>, and this diagram lights up as it goes.</div>`;
+        <a href="#platform">Platform → Local runner → Run</a>, and this diagram lights up as it goes.</div>`;
 
   const unreachable = Object.entries(d.errors || {})
     .map(([id, msg]) => `<div class="note bad">${esc(id)} could not be read — ${esc(msg)}</div>`).join('');
@@ -885,7 +1106,6 @@ function flowLegend() {
   const keys = [
     ['is-idle', 'not yet'],
     ['is-active', 'happening now'],
-    ['is-busy', 'batch in flight'],
     ['is-done-ok', 'done'],
     ['is-partial', 'partly refused'],
     ['is-failed', 'failed'],
@@ -973,8 +1193,10 @@ function serviceCard(s) {
         ${s.docs ? `<dt>Design doc</dt><dd>${esc(s.docs)}</dd>` : ''}
       </dl>
       ${clockPanel(s)}
+      ${filesPanel(s)}
       ${subscriptionPanel(s)}
       ${payoutsPanel(s)}
+      ${connectPanel(s)}
       ${activityPanels(s)}
       ${(s.endpoints || []).length ? `<div class="table-scroll"><table>
         <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
@@ -1027,7 +1249,7 @@ function serviceExtras(s) {
     // process that is not listening would fail in a way that reads as the
     // lab being broken rather than the platform not being started.
     if (s.status && s.status.state === 'up') {
-      return `<button class="btn small" data-action="runner-settle">Run settlement</button>
+      return `<button class="ghost small" data-action="runner-sweep">Run reconciliation sweep</button>
               <button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
     }
     return '';
@@ -1325,9 +1547,12 @@ const ACTIONS = {
   /* The runner answers 202 and keeps going: a settlement run takes the best
      part of a minute, and a button that sat spinning through it would hide
      the thing worth watching, which is the stages arriving in the panels. */
-  'runner-settle': async () => {
-    const r = await api('POST', '/api/actions/runner-settle');
-    toast('Settlement run started', `${r.run}\nWatch the panels below — this takes about a minute.`, 'good');
+  'runner-run': async (d) => {
+    const files = d.files.split('|');
+    const r = await api('POST', '/api/actions/runner-settle', { files });
+    const runs = r.runs || [r];
+    toast(runs.length > 1 ? `${runs.length} settlement runs started` : 'Settlement run started',
+      `${runs.map((x) => `${x.currency} ${x.run}`).join('\n')}\nWatch the panels below — this takes about a minute.`, 'good');
   },
 
   /* The probe is the vendor's own clienttest, and the answer is whatever the
@@ -1387,6 +1612,13 @@ const ACTIONS = {
     if (!confirm(`Reverse ${d.id}? It becomes reversed, and ${d.amount} ${d.currency} is booked back to the safeguarding account. There is no undo.`)) return;
     const r = await api('POST', `/api/banking-circle/payouts/${encodeURIComponent(d.id)}/reverse`);
     toast('Payout reversed', `${r.id} is now ${r.state}.\nThe reversal is booked back to the safeguarding account.`, 'good');
+  },
+
+  // Starts the tick and returns: its outcome arrives in the Reconciliation
+  // sweeps panel on this card about twenty seconds later.
+  'runner-sweep': async () => {
+    const r = await api('POST', '/api/actions/runner-sweep', {});
+    toast('Reconciliation sweep started', r.note || r, 'good');
   },
 
   'runner-fund-sga': async () => {

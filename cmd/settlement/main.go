@@ -39,6 +39,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
 	"github.com/webduvet/fintechlab-simple/internal/sftp"
+	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
 const maxRangeDays = 90
@@ -76,7 +77,7 @@ func main() {
 	b4bURL := strings.TrimRight(env("B4B_URL", "http://b4b:8086"), "/")
 	b4bKeyID := env("B4B_JWT_KEY_ID", "b4b-mock-1")
 	b4bCallbackURL := env("B4B_CALLBACK_URL", "http://settlement:8083/internal/b4b-webhook")
-	b4bJWTKeyPath := env("B4B_JWT_PRIVATE_KEY_PATH", "/b4b-keys/private.pem")
+	b4bJWTKeyPath := env("B4B_JWT_PRIVATE_KEY_PATH", "/keys/b4b-keys/private.pem")
 	verifyURL := strings.TrimRight(env("VERIFY_URL", "http://verify:8088"), "/")
 	verifyKey := env("VERIFY_INTERNAL_API_KEY", "sim-verify-key-dev-only")
 	// Not Banking Circle's mTLS+bearer surface -- its plain INTERNAL_LISTEN,
@@ -89,6 +90,12 @@ func main() {
 		"GBP": env("BC_SAFEGUARDING_ACCOUNT_ID_GBP", bankingcircle.SGAAccountGBP),
 	}
 
+	// b4b generates this on its first start, concurrently with this one on
+	// a fresh keys volume; wait for it rather than crash-looping until the
+	// orchestrator's restart happens to land after it.
+	if err := waitfor.Files(30*time.Second, b4bJWTKeyPath); err != nil {
+		log.Fatalf("settlement: %v", err)
+	}
 	b4bPrivateKey, err := loadRSAPrivateKey(b4bJWTKeyPath)
 	if err != nil {
 		log.Fatalf("settlement: load B4B JWT private key %s: %v", b4bJWTKeyPath, err)

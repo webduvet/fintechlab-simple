@@ -933,3 +933,88 @@ func TestFlowReconciliationArrowCountsIntradayReads(t *testing.T) {
 		t.Errorf("last summary %q, want the newest intraday read", recon.LastSummary)
 	}
 }
+
+// TestRunnerSettleForwardsTheFilesAsAsked: picking files is the runner's
+// API, not the console's — {"files": […]} reaches /sim/run as it was sent,
+// several files are still one call, and the runner's refusal comes back
+// with its own status and words rather than as a console error.
+func TestRunnerSettleForwardsTheFilesAsAsked(t *testing.T) {
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/sim/files":
+			_, _ = w.Write([]byte(`{"dir":"apps/settle-ingest/local","files":[
+				{"name":"worldline-reconciliation-sample.csv","currency":"EUR","mids":["1"],"seeded":true},
+				{"name":"worldline-reconciliation-sample-gbp.csv","currency":"GBP","mids":["6"],"seeded":false,"missing_mids":["6"]}]}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/sim/run":
+			b, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(b))
+			if len(bodies) > 1 {
+				w.WriteHeader(409)
+				_, _ = w.Write([]byte(`{"error":"a GBP run is already in flight (worldline/run-gbp-1.csv)"}`))
+				return
+			}
+			w.WriteHeader(202)
+			_, _ = w.Write([]byte(`{"runs":[{"run":"worldline/run-eur-1.csv"},{"run":"worldline/run-gbp-1.csv"}]}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.cat.Services = append(a.cat.Services, console.Service{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: srv.URL, HealthPath: "/status"})
+
+	w := call(t, a, http.MethodGet, "/api/runner/files", "")
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "worldline-reconciliation-sample-gbp.csv") {
+		t.Fatalf("files = %d %s", w.Code, w.Body.String())
+	}
+
+	both := `{"files":["worldline-reconciliation-sample.csv","worldline-reconciliation-sample-gbp.csv"]}`
+	if w := call(t, a, http.MethodPost, "/api/actions/runner-settle", both); w.Code != 202 {
+		t.Fatalf("run both = %d %s, want the runner's 202", w.Code, w.Body.String())
+	}
+	w = call(t, a, http.MethodPost, "/api/actions/runner-settle", `{"files":["worldline-reconciliation-sample-gbp.csv"]}`)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "already in flight") {
+		t.Errorf("second GBP run = %d %s, want the runner's 409 and its words", w.Code, w.Body.String())
+	}
+	if len(bodies) != 2 || bodies[0] != both {
+		t.Errorf("runner saw %q, want the body as sent, one call per click", bodies)
+	}
+}
+
+// The sweep is one call to the runner, and its refusal comes back as the
+// runner said it — a second click while one is running is the runner's 409,
+// not a console-made error.
+func TestRunnerSweepIsOneCallAndPassesTheRefusalThrough(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/sim/sweep" {
+			w.WriteHeader(404)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls > 1 {
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"error":"a reconciliation sweep is already running"}`))
+			return
+		}
+		w.WriteHeader(202)
+		_, _ = w.Write([]byte(`{"sweep":1,"note":"running"}`))
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.cat.Services = append(a.cat.Services, console.Service{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: srv.URL})
+
+	if w := call(t, a, http.MethodPost, "/api/actions/runner-sweep", "{}"); w.Code != 202 {
+		t.Fatalf("first sweep = %d %s, want the runner's 202", w.Code, w.Body)
+	}
+	w := call(t, a, http.MethodPost, "/api/actions/runner-sweep", "{}")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "already running") {
+		t.Errorf("second sweep = %d %s, want the runner's 409 and its words", w.Code, w.Body)
+	}
+	if calls != 2 {
+		t.Errorf("runner saw %d calls, want one per click", calls)
+	}
+}

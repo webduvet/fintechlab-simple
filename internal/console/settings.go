@@ -68,7 +68,7 @@ func SettingGroups() []SettingGroup {
 					Purpose: "Where to dial. This is the one variable a UAT or production swap changes."},
 				{Key: "WORLDLINE_SFTP_PRIVATE_KEY_PATH", Service: "settlement", Configured: "(unset -- password auth)",
 					Purpose: "Set this against a key-authenticated account. The client offers a key first and falls back to the password, so one configuration works on both."},
-				{Key: "WORLDLINE_SFTP_KNOWN_HOST_PATH", Service: "settlement", Configured: "/wlsftp-keys/host_key.pub",
+				{Key: "WORLDLINE_SFTP_KNOWN_HOST_PATH", Service: "settlement", Configured: "/keys/wlsftp-keys/host_key.pub",
 					Purpose: "Pins the acquirer's SSH host key. Unset it and the client accepts whatever answers on the port."},
 				{Key: "WORLDLINE_PULL_INTERVAL", Service: "settlement", Configured: "10s",
 					Purpose: "How often to list and download. Real Worldline is checked far less often; this is a lab clock."},

@@ -59,7 +59,7 @@ buddy's own local Banking Circle mock docs the same thing,
 `apps/banking-circle/README.md`):
 
 ```bash
-export NODE_EXTRA_CA_CERTS=/home/andrej/gh/fintechlab-simple/certs/ca.pem
+export NODE_EXTRA_CA_CERTS=/home/andrej/gh/fintechlab-simple/keys/certs/ca.pem
 ```
 
 Set it **before** the Node process starts (Node reads it once at startup,
@@ -77,7 +77,7 @@ vendor):
 BC_API_BASE_URL=https://banking-circle.fintechlab-simple.test:8085
 BC_AUTH_BASE_URL=https://banking-circle.fintechlab-simple.test:8085
 # BC_API_CLIENT_CERT_PEM_BASE64 / _KEY_PEM_BASE64: base64 of
-# certs/client.pem / certs/client-key.pem
+# keys/certs/client.pem / keys/certs/client-key.pem
 
 # apps/accounts-settlement (B4B payout caller)
 B4B_API_BASE_URL=http://b4b.fintechlab-simple.test:8086

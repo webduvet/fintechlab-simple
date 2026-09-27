@@ -16,6 +16,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
+	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
 )
@@ -100,8 +101,16 @@ func newWorldlinePuller(a *app) *worldlinePuller {
 	// halves come from the same generated keypair over a shared volume; a
 	// real deployment sets this to the platform's own private key and
 	// hands Worldline the matching public one.
-	privPath := env("WORLDLINE_PGP_PRIVATE_KEY_PATH", "/wlsftp-keys/worldline_private.asc")
-	pubPath := env("WORLDLINE_PGP_PUBLIC_KEY_PATH", "/wlsftp-keys/worldline_public.asc")
+	privPath := env("WORLDLINE_PGP_PRIVATE_KEY_PATH", "/keys/wlsftp-keys/worldline_private.asc")
+	pubPath := env("WORLDLINE_PGP_PUBLIC_KEY_PATH", "/keys/wlsftp-keys/worldline_public.asc")
+	// worldline writes this pair on its first start, and on a fresh volume
+	// that start is concurrent with this one. Without the wait, the first
+	// boot of a pod (or of compose with keys/ deleted) finds nothing, tries
+	// to generate a pair into a read-only mount, and runs with no key to
+	// decrypt anything until it is restarted.
+	if err := waitfor.Files(30*time.Second, pubPath, privPath); err != nil {
+		log.Printf("settlement: %v; generating a keypair of its own instead", err)
+	}
 	entity, err := wlsftp.LoadOrGenerateKeypair(pubPath, privPath, "infinitepay", "fintechlab-simple", "platform@fintechlab-simple.local")
 	if err != nil {
 		log.Printf("settlement: load PGP keypair for settlement-file decryption: %v", err)
