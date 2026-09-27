@@ -22,6 +22,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/console"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
 //go:embed web
@@ -37,6 +38,9 @@ type app struct {
 	secure  *http.Client
 	bcCfg   string
 	provErr string
+	// keysDir is the lab's keys directory, read for the connect-your-
+	// platform downloads.
+	keysDir string
 	// bc is the same Banking Circle client the Banks view uses, kept
 	// directly so the Configuration view can ask the service what delivery
 	// schedule it is *actually* running.
@@ -48,9 +52,9 @@ func main() {
 
 	plain := &http.Client{Timeout: 10 * time.Second}
 	secure, tlsErr := tlsClient(
-		env("CA_FILE", "certs/ca.pem"),
-		env("CLIENT_CERT", "certs/client.pem"),
-		env("CLIENT_KEY", "certs/client-key.pem"),
+		env("CA_FILE", "keys/certs/ca.pem"),
+		env("CLIENT_CERT", "keys/certs/client.pem"),
+		env("CLIENT_KEY", "keys/certs/client-key.pem"),
 	)
 	if tlsErr != nil {
 		// Not fatal. Without the CA the Banking Circle panels report why
@@ -63,10 +67,11 @@ func main() {
 
 	cat := console.DefaultCatalogue()
 	a := &app{
-		cat:    cat,
-		client: plain,
-		secure: secure,
-		bcCfg:  env("CONSOLE_BC_DELIVERY_CONFIG", "config/banking-circle.json"),
+		cat:     cat,
+		client:  plain,
+		secure:  secure,
+		bcCfg:   env("CONSOLE_BC_DELIVERY_CONFIG", "config/banking-circle.json"),
+		keysDir: env("CONSOLE_KEYS_DIR", "keys"),
 	}
 	a.mon = console.NewMonitor(cat, a.clientFor, envDuration("CONSOLE_PROBE_INTERVAL", 5*time.Second), 3*time.Second)
 
@@ -87,9 +92,14 @@ func main() {
 		a.bc,
 	)
 
+	// b4b writes its signing key on first start, concurrently with this one
+	// on a fresh keys volume, and the provisioner reads it only here. A
+	// short wait beats a console that says "disabled" until restarted.
+	b4bKey := env("B4B_JWT_PRIVATE_KEY_PATH", "keys/b4b-keys/private.pem")
+	_ = waitfor.Files(30*time.Second, b4bKey)
 	prov, err := console.NewProvisioner(plain, reg,
 		a.baseURL("b4b"),
-		env("B4B_JWT_PRIVATE_KEY_PATH", "b4b-keys/private.pem"),
+		b4bKey,
 		env("B4B_JWT_KEY_ID", "b4b-mock-1"),
 		a.baseURL("worldline"),
 	)
@@ -141,6 +151,11 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/outlets/{mid}/sanctions", a.setSanctions)
 	mux.HandleFunc("POST /api/partners", a.createPartner)
 
+	mux.HandleFunc("GET /api/connect", a.connect)
+	mux.HandleFunc("GET /api/connect/env", a.connectEnv)
+	mux.HandleFunc("GET /api/connect/env/{service}", a.connectEnv)
+	mux.HandleFunc("GET /api/connect/files/{service}/{name}", a.connectFile)
+
 	mux.HandleFunc("GET /api/config", a.getConfig)
 	mux.HandleFunc("PUT /api/config/worldline-channel", a.putWorldlineChannel)
 
@@ -148,6 +163,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/actions/settlement-pull", a.settlementPull)
 	mux.HandleFunc("POST /api/actions/runner-settle", a.runnerSettle)
 	mux.HandleFunc("POST /api/actions/runner-fund-sga", a.runnerFundSGA)
+	mux.HandleFunc("POST /api/actions/runner-sweep", a.runnerSweep)
 	mux.HandleFunc("GET /api/runner/files", a.runnerFiles)
 	mux.HandleFunc("GET /api/runner/clock", a.runnerClock)
 	mux.HandleFunc("POST /api/runner/clock", a.setRunnerClock)

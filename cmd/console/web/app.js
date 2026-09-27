@@ -1,4 +1,4 @@
-/* fintech sim lab console.
+/* fintech sim lab v1 console.
    Vanilla, no framework, no bundler: the whole point of the lab is that it
    runs offline from one `make up`, and a UI that needs a package registry
    would be the first thing to break. State is small enough to re-render
@@ -586,6 +586,15 @@ async function loadActivity() {
       state.payouts = { error: err.message };
     }
   }
+  // What a platform needs to connect: read while any card here is open,
+  // since every vendor card and the runner's carry a panel for it.
+  if (ov.services.some((s) => s.kind === VIEWS[state.view].kind && isOpen(s.id))) {
+    try {
+      state.connect = await api('GET', '/api/connect');
+    } catch (err) {
+      state.connect = { error: err.message };
+    }
+  }
   await Promise.all(watched.map(async (s) => {
     try {
       state.activity[s.id] = await api('GET', `/api/services/${encodeURIComponent(s.id)}/activity?limit=100`);
@@ -597,6 +606,106 @@ async function loadActivity() {
       state.activity[s.id] = { error: err.message };
     }
   }));
+}
+
+/* Connect your platform.
+   What a platform under test needs to reach this vendor: an .env in its own
+   variable names, and the keys it has to hold. Every vendor card carries its
+   own; the runner's card — the platform's — carries all of them at once.
+   Downloads are links, not actions (design-system.md, Download): the server
+   names the file, and curl -OJ on the same URL saves the same thing. */
+function connectPanel(s) {
+  if (s.id === 'local-runner') return connectAllPanel();
+  const c = state.connect;
+  const kit = c && !c.error && (c.kits || []).find((k) => k.service === s.id);
+  if (!kit) return '';
+  const id = `${s.id}:connect`;
+  const open = isOpen(id);
+  const files = kit.files || [];
+  const missing = files.filter((f) => !f.present).length;
+  const pills = [`<span class="pill">${kit.vars.length} variables</span>`]
+    .concat(files.length ? [`<span class="pill">${files.length} keys</span>`] : [])
+    .concat(missing ? [`<span class="pill warn">${missing} not generated</span>`] : [])
+    .join(' ');
+  const envName = `fintechlab-${s.id}.env`;
+
+  const body = open ? `<div class="card-body">
+      ${kit.note ? `<div class="note">${esc(kit.note)}</div>` : ''}
+      <p class="hint">Sets ${kit.vars.map((v) => `<span class="mono">${esc(v.key)}</span>`).join(', ')}.
+        Addresses use <span class="mono">${esc(c.host)}</span>, the host this console was opened on.</p>
+      ${files.length ? `<div class="table-scroll"><table>
+        <thead><tr><th>File</th><th>What it is for</th><th class="actions"></th></tr></thead>
+        <tbody>${files.map((f) => `<tr>
+          <td class="mono">${esc(f.name)}</td>
+          <td>${esc(f.purpose)}</td>
+          <td class="actions">${f.present
+            ? `<a class="ghost small" href="/api/connect/files/${encodeURIComponent(s.id)}/${encodeURIComponent(f.name)}" download>Download</a>`
+            : `<span class="hint">not generated yet — ${esc(s.name)} writes it on first start</span>`}</td>
+        </tr>`).join('')}</tbody></table></div>` : ''}
+      <div class="form">
+        <a class="ghost small" href="/api/connect/env/${encodeURIComponent(s.id)}" download>Download ${esc(envName)}</a>
+      </div>
+    </div>` : '';
+
+  return `<div class="card log ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">Connect your platform ${pills}</span>
+        <span class="desc">An .env in the platform's own variable names${files.length ? ', and the keys it has to hold' : ''}.</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
+}
+
+function connectAllPanel() {
+  const c = state.connect;
+  if (!c) return '';
+  if (c.error) return `<div class="note bad">Connection settings unavailable — ${esc(c.error)}</div>`;
+  const kits = c.kits || [];
+  const id = 'local-runner:connect';
+  const open = isOpen(id);
+  const missing = kits.reduce((n, k) => n + (k.files || []).filter((f) => !f.present).length, 0);
+  const pills = [`<span class="pill">${kits.length} vendors</span>`]
+    .concat(missing ? [`<span class="pill warn">${missing} keys not generated</span>`] : [])
+    .join(' ');
+
+  const body = open ? `<div class="card-body">
+      <div class="note">One .env for a platform that runs against the whole lab: every vendor's
+        addresses, lab credentials and keys, in the platform's own variable names. Use it as it is,
+        or copy the blocks you need into your own. Keys are the ones the lab is running with now —
+        regenerate them and download again.</div>
+      <p class="hint">Addresses use <span class="mono">${esc(c.host)}</span>, the host this console
+        was opened on. Add <span class="mono">?host=</span> to a link for another.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Vendor</th><th class="num">Variables</th><th class="num">Keys</th><th class="actions"></th></tr></thead>
+        <tbody>${kits.map((k) => {
+          const files = k.files || [];
+          const absent = files.filter((f) => !f.present).length;
+          return `<tr>
+            <td>${esc(k.title)}</td>
+            <td class="num">${k.vars.length}</td>
+            <td class="num">${files.length}${absent ? ` <span class="pill warn">${absent} not generated</span>` : ''}</td>
+            <td class="actions"><a class="ghost small" href="/api/connect/env/${encodeURIComponent(k.service)}" download>fintechlab-${esc(k.service)}.env</a></td>
+          </tr>`;
+        }).join('')}</tbody></table></div>
+      <p class="hint">Key and certificate files are on each vendor's own card, under Connect your platform.</p>
+      <div class="form">
+        <a class="ghost small" href="/api/connect/env" download>Download fintechlab.env</a>
+      </div>
+    </div>` : '';
+
+  return `<div class="card log ${open ? 'is-open' : ''}">
+    <div class="card-head" data-card="${esc(id)}" role="button" tabindex="0" aria-expanded="${open}">
+      <span class="chev">▸</span>
+      <div class="card-title">
+        <span class="name">Connect your platform ${pills}</span>
+        <span class="desc">Every vendor's .env in one file, for pointing the platform at this lab.</span>
+      </div>
+    </div>
+    ${body}
+  </div>`;
 }
 
 /* One nested card per log the service keeps. Collapsed, the header is the
@@ -673,6 +782,7 @@ const EMPTY_HINTS = {
   'banking-circle:payments': 'Nothing yet. B4B posts here once a payout clears its gates, and funding the safeguarding account shows up here too.',
   'banking-circle:notifications': 'Nothing yet. Notification batches appear here as they are posted to a subscription endpoint.',
   'banking-circle:reports': 'Nothing yet. The platform\'s reconciliation sweep reads the intraday report here about an hour after a settlement — move the platform clock forward an hour and trigger it to see one.',
+  'local-runner:sweeps': 'No sweep yet. A payout stays IN_PROGRESS until one resolves it — and a root is only swept an hour after its settlement by the platform clock, so advance the clock an hour, then Run reconciliation sweep.',
   'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
 };
 
@@ -794,7 +904,6 @@ function flowIsLit(id) {
 /* The colour rules, in one place:
      idle      nothing has ever come this way          dark grey
      active    something arrived in the last second    green
-     busy      a batch is in flight                    bright neutral
      partial   some of a batch was refused             amber
      failed    something broke                         red
      done      finished, and it was fine               dark green
@@ -804,12 +913,9 @@ function flowIsLit(id) {
 function flowStepClass(s) {
   const lit = flowIsLit(s.id);
   if (s.count === 0) return s.failed > 0 ? 'is-failed' : 'is-idle';
-  if (lit) {
-    // A batch in flight is neither good nor bad news yet, so it gets the
-    // brightest neutral rather than a verdict it has not earned.
-    if (s.failed > 0) return 'is-failed is-lit';
-    return s.multi ? 'is-busy is-lit' : 'is-active is-lit';
-  }
+  // Moving is one colour whether it is one message or a batch: a batch is
+  // judged once it stops, which is what partial and failed below are for.
+  if (lit) return s.failed > 0 ? 'is-failed is-lit' : 'is-active is-lit';
   if (s.failed > 0) {
     // Four of five report stages landing and one failing on the mail hop is
     // a partial success, and painting it the same red as "nothing arrived"
@@ -1000,7 +1106,6 @@ function flowLegend() {
   const keys = [
     ['is-idle', 'not yet'],
     ['is-active', 'happening now'],
-    ['is-busy', 'batch in flight'],
     ['is-done-ok', 'done'],
     ['is-partial', 'partly refused'],
     ['is-failed', 'failed'],
@@ -1091,6 +1196,7 @@ function serviceCard(s) {
       ${filesPanel(s)}
       ${subscriptionPanel(s)}
       ${payoutsPanel(s)}
+      ${connectPanel(s)}
       ${activityPanels(s)}
       ${(s.endpoints || []).length ? `<div class="table-scroll"><table>
         <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
@@ -1143,7 +1249,8 @@ function serviceExtras(s) {
     // process that is not listening would fail in a way that reads as the
     // lab being broken rather than the platform not being started.
     if (s.status && s.status.state === 'up') {
-      return `<button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
+      return `<button class="ghost small" data-action="runner-sweep">Run reconciliation sweep</button>
+              <button class="ghost small" data-action="runner-fund-sga">Fund safeguarding accounts</button>`;
     }
     return '';
   }
@@ -1505,6 +1612,13 @@ const ACTIONS = {
     if (!confirm(`Reverse ${d.id}? It becomes reversed, and ${d.amount} ${d.currency} is booked back to the safeguarding account. There is no undo.`)) return;
     const r = await api('POST', `/api/banking-circle/payouts/${encodeURIComponent(d.id)}/reverse`);
     toast('Payout reversed', `${r.id} is now ${r.state}.\nThe reversal is booked back to the safeguarding account.`, 'good');
+  },
+
+  // Starts the tick and returns: its outcome arrives in the Reconciliation
+  // sweeps panel on this card about twenty seconds later.
+  'runner-sweep': async () => {
+    const r = await api('POST', '/api/actions/runner-sweep', {});
+    toast('Reconciliation sweep started', r.note || r, 'good');
   },
 
   'runner-fund-sga': async () => {

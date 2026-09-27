@@ -82,7 +82,7 @@ func main() {
 	// reject that handshake outright. CA_FILE is optional (empty target
 	// URLs, or a plain-http real settle-aci-webhook target, need no
 	// trust at all).
-	client, err := httpClient(env("CA_FILE", "certs/ca.pem"))
+	client, err := httpClient(env("CA_FILE", "keys/certs/ca.pem"))
 	if err != nil {
 		log.Fatalf("aci: build http client: %v", err)
 	}

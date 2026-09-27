@@ -332,7 +332,7 @@ stand-in for `accounts-settlement`, the real caller). Concretely:
 - Remove the `bcURL`/`bcClient` app fields and `BANKING_CIRCLE_URL` env var
   entirely — settlement no longer talks to Banking Circle at all, direct or
   otherwise. New env vars: `B4B_URL` (default `http://b4b:8086`),
-  `B4B_JWT_PRIVATE_KEY_PATH` (default `/b4b-keys/private.pem`),
+  `B4B_JWT_PRIVATE_KEY_PATH` (default `/keys/b4b-keys/private.pem`),
   `B4B_JWT_KEY_ID` (default `b4b-mock-1` — must equal B4B's own
   `B4B_JWT_KEY_ID` default, see D below), `B4B_CALLBACK_URL`.
 
@@ -377,7 +377,7 @@ seam" — B4B has no client cert). Run two listeners in one process:
 ### D. B4B's JWT keypair is shared via a directory, not a value
 
 B4B generates (if missing) and persists an RSA keypair under
-`B4B_JWT_KEYS_DIR` (default `/b4b-keys`) as `private.pem`/`public.pem`,
+`B4B_JWT_KEYS_DIR` (default `/keys/b4b-keys`) as `private.pem`/`public.pem`,
 printing the public key and `kid` at startup. `B4B_JWT_KEY_ID` default on
 **both** the B4B mock and settlement is the literal string `b4b-mock-1` —
 two different `package main` binaries, so this is a matched default, not a

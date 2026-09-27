@@ -392,6 +392,14 @@ func (a *app) runnerFiles(w http.ResponseWriter, r *http.Request) {
 	httputilx.WriteJSON(w, 200, out)
 }
 
+// runnerSweep asks the runner for one tick of the platform's BC payment
+// reconciliation sweep. The runner answers at once and records the outcome
+// in its "sweeps" activity log, which the Local runner card already shows —
+// a tick takes ~20s, longer than this console holds a call open.
+func (a *app) runnerSweep(w http.ResponseWriter, r *http.Request) {
+	a.forwardJSON(w, r, a.baseURL("local-runner")+"/sim/sweep")
+}
+
 func (a *app) runnerFundSGA(w http.ResponseWriter, r *http.Request) {
 	a.proxyPost(w, r, a.baseURL("local-runner")+"/sim/fund-sga")
 }

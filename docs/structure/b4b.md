@@ -19,7 +19,7 @@ the boarding half refuses what it refuses.
 service exposes one port, `:8086`, **plain HTTP — no TLS at all**: unlike
 banking-circle, this lab's B4B auth is entirely an inbound RS512-signed
 bearer JWT that `cmd/b4b` itself verifies, not a transport-level
-credential. `B4B_JWT_KEYS_DIR=/b4b-keys` is a read-write volume b4b
+credential. `B4B_JWT_KEYS_DIR=/keys/b4b-keys` is a read-write volume b4b
 generates its RSA-2048 keypair into on first start; `settlement` mounts the
 same directory read-only to sign its outbound calls with the matching
 private key. (`B4B_JWT_PUBLIC_KEY_PATH` inverts that to the real-vendor
@@ -99,7 +99,7 @@ since neither a company nor a person has a `callback_url` field to carry.
 
 ## One trace, end to end
 
-`settlement` signs an RS512 JWT with the shared `b4b-keys` keypair
+`settlement` signs an RS512 JWT with the shared `keys/b4b-keys` keypair
 (`b4bJWT`) → `POST /oversight/v1/payments` with a beneficiary id, amount,
 and its own `callback_url` → `requireAuth` verifies the token →
 `gateBeneficiary` checks the beneficiary's sanctions status is `pass` and

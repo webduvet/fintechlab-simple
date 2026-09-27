@@ -335,6 +335,7 @@ func DefaultCatalogue() *Catalogue {
 				{"GET", "/sim/files", "the settlement files it can run: currency, MIDs, whether they are seeded, the last run of each"},
 				{"POST", "/sim/run", `run settlements end to end: {} the EUR file, {"currency":"GBP"}, or {"files":[…]} several at once`},
 				{"POST", "/sim/fund-sga", "top up the safeguarding accounts"},
+				{"POST", "/sim/sweep", "one tick of the BC payment reconciliation sweep; the outcome lands in its sweeps log"},
 				{"GET|POST", "/sim/clock", "the platform's clock: pin, advance, business day, real — every vendor follows it"},
 			},
 		},

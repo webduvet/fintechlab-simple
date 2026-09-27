@@ -62,16 +62,16 @@ sftp> ls download
 sftp> get download/<the .pgp file>
 ```
 
-Decrypting needs the private key (`wlsftp-keys/worldline_private.asc`,
+Decrypting needs the private key (`keys/wlsftp-keys/worldline_private.asc`,
 generated on first run):
 
 ```bash
-gpg --import wlsftp-keys/worldline_private.asc
+gpg --import keys/wlsftp-keys/worldline_private.asc
 gpg --decrypt <the .pgp file>
 ```
 
 A real deployment pins the server's host key. This lab writes the
-simulator's public host key to `wlsftp-keys/host_key.pub` at startup so you
+simulator's public host key to `keys/wlsftp-keys/host_key.pub` at startup so you
 can, and `settlement` already does
 (`WORLDLINE_SFTP_KNOWN_HOST_PATH`).
 
@@ -142,10 +142,10 @@ unless `BC_MTLS` says otherwise). `make up` already generated a lab client
 cert:
 
 ```bash
-TOKEN=$(curl -s --cacert certs/ca.pem --cert certs/client.pem --key certs/client-key.pem \
+TOKEN=$(curl -s --cacert keys/certs/ca.pem --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -u harness:harness https://127.0.0.1:8085/api/v1/authorizations/authorize \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
-BC="curl -s --cacert certs/ca.pem --cert certs/client.pem --key certs/client-key.pem -H \"Authorization: Bearer $TOKEN\""
+BC="curl -s --cacert keys/certs/ca.pem --cert keys/certs/client.pem --key keys/certs/client-key.pem -H \"Authorization: Bearer $TOKEN\""
 ```
 
 A subscription needs an endpoint, a status, and its **own** 32-character
@@ -153,7 +153,7 @@ encryption key (the raw UTF-8 bytes are the AES-256 key, so no other length
 can work):
 
 ```bash
-curl -s --cacert certs/ca.pem --cert certs/client.pem --key certs/client-key.pem \
+curl -s --cacert keys/certs/ca.pem --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST https://127.0.0.1:8085/api/v1/notificationselfservice/subscription \
   -d '{"endpoint":"https://receiver:8443/raw-events?sub=byhand","status":2,
@@ -169,7 +169,7 @@ in-flight update can be invalidated by a retry it knows nothing about.
 Add an event, or the subscription receives nothing:
 
 ```bash
-curl -s --cacert certs/ca.pem --cert certs/client.pem --key certs/client-key.pem \
+curl -s --cacert keys/certs/ca.pem --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST https://127.0.0.1:8085/api/v1/notificationselfservice/subscriptionEvent \
   -d '{"subscriptionId":"sub_XXXX","eventType":"OutgoingPaymentProcessed","targetType":1}'
@@ -180,7 +180,7 @@ Notifications are **batched**: a message goes out when the queue reaches
 land in `receiver`'s capture sink, ciphertext and all:
 
 ```bash
-curl -s https://127.0.0.1:8443/raw-events --cacert certs/ca.pem | python3 -m json.tool
+curl -s https://127.0.0.1:8443/raw-events --cacert keys/certs/ca.pem | python3 -m json.tool
 ```
 
 The `Nonce`, `AuthenticationTag` and `Checksum` headers are what you need
@@ -195,7 +195,7 @@ the first failure — then **deactivates** it, emails you, and **retains**
 the undelivered notifications:
 
 ```bash
-curl -s --cacert certs/ca.pem --cert certs/client.pem --key certs/client-key.pem \
+curl -s --cacert keys/certs/ca.pem --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -H "Authorization: Bearer $TOKEN" https://127.0.0.1:8085/sim/emails | python3 -m json.tool
 ```
 

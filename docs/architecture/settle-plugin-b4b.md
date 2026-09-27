@@ -14,7 +14,7 @@ Goal: lightyear / merchant settle can auth to and call `pod-emi-oversight`
 
 Lab JWT material: throwaway public PEM is the `api.jwt_public_pem` default in
 `kernels/secrets.yaml` (`*.pem` is gitignored). Override with
-`B4B_JWT_PUBLIC_KEY_PATH` to the shared `b4b-keys` public half in compose.
+`B4B_JWT_PUBLIC_KEY_PATH` to the shared `keys/b4b-keys` public half in compose.
 
 ## Remaining (out of scope here)
 

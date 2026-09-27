@@ -982,3 +982,39 @@ func TestRunnerSettleForwardsTheFilesAsAsked(t *testing.T) {
 		t.Errorf("runner saw %q, want the body as sent, one call per click", bodies)
 	}
 }
+
+// The sweep is one call to the runner, and its refusal comes back as the
+// runner said it — a second click while one is running is the runner's 409,
+// not a console-made error.
+func TestRunnerSweepIsOneCallAndPassesTheRefusalThrough(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/sim/sweep" {
+			w.WriteHeader(404)
+			return
+		}
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls > 1 {
+			w.WriteHeader(409)
+			_, _ = w.Write([]byte(`{"error":"a reconciliation sweep is already running"}`))
+			return
+		}
+		w.WriteHeader(202)
+		_, _ = w.Write([]byte(`{"sweep":1,"note":"running"}`))
+	}))
+	defer srv.Close()
+	a := testApp(t, srv)
+	a.cat.Services = append(a.cat.Services, console.Service{ID: "local-runner", Name: "Local runner", Kind: console.KindPlatform, BaseURL: srv.URL})
+
+	if w := call(t, a, http.MethodPost, "/api/actions/runner-sweep", "{}"); w.Code != 202 {
+		t.Fatalf("first sweep = %d %s, want the runner's 202", w.Code, w.Body)
+	}
+	w := call(t, a, http.MethodPost, "/api/actions/runner-sweep", "{}")
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "already running") {
+		t.Errorf("second sweep = %d %s, want the runner's 409 and its words", w.Code, w.Body)
+	}
+	if calls != 2 {
+		t.Errorf("runner saw %d calls, want one per click", calls)
+	}
+}

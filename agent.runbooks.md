@@ -40,7 +40,13 @@ make start    # restart from the images already built
   leaves b4b's bridge pointing at its old address and payouts time out. Use
   `make up` / `make start`.
 - **The console alone is safe to rebuild** (nothing calls it):
-  `podman-compose build console && podman rm -f fintechlab-simple_console_1 && podman-compose up -d --no-deps console`.
+  `podman-compose build console && podman rm -f fintechlab-simple_console_1 && podman-compose up -d --no-deps console`
+  — **but only while `compose.yml` is unchanged since the lab came up.**
+  podman-compose 1.0.6 starts the console with `--requires` on everything it
+  `depends_on`; after a compose.yml edit that single `up` recreated bank,
+  receiver, verify, banking-circle, worldline, b4b and settlement too, left
+  them `Created` rather than running, and lost Banking Circle's in-memory
+  state. After any compose.yml change, `make up`.
 - **After the lab restarts, restart the runner.** A fresh banking-circle has
   no subscriptions; buddy's `apps/banking-circle` subscribes on boot, so it
   needs the restart to get a new subscription (its id changes every time —
@@ -49,13 +55,45 @@ make start    # restart from the images already built
 Runner, from `~/infinite/buddy/infinite-local-runner`:
 
 ```sh
-# start (long-running: background it, output to a file)
-node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
+# start (long-running: background it, output to a file). FINTECH_SIM_LAB is
+# where apps/banking-circle reads the lab's mTLS certificate: the lab's keys
+# directory (LAB_KEYS_DIR, default ~/gh/fintechlab-simple/keys).
+FINTECH_SIM_LAB=~/gh/fintechlab-simple/keys node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts > up.log 2>&1 &
 # stop: SIGINT the up.ts process, it takes its children with it
 kill -INT "$(pgrep -f '^node -r ./src/clock-shim.cjs -r @swc-node/register src/up.ts$')"
 # ready when every process reports up
 curl -s localhost:3109/status | python3 -c "import json,sys; d=json.load(sys.stdin); print([(p['name'],p['state']) for p in d['processes']])"
 ```
+
+## Keys and connecting the platform
+
+Everything the lab generates is under `keys/` (`certs/`, `b4b-keys/`, `wlsftp-keys/`;
+`keys/README.md` says what each file is for). Containers see it at `/keys`.
+The platform does not need to read it: the console hands out an `.env` with
+the keys inlined, in buddy's variable names.
+
+```sh
+curl -OJ localhost:8090/api/connect/env                  # every vendor → fintechlab.env
+curl -OJ localhost:8090/api/connect/env/b4b              # one vendor
+curl -OJ localhost:8090/api/connect/files/banking-circle/fintechlab-ca.pem   # NODE_EXTRA_CA_CERTS
+```
+
+`LAB_KEYS_DIR` moves them: `make` generates into that path instead, and
+buddy reads it as `FINTECH_SIM_LAB` (the subdirectory names are the ones its
+`setup.sh` and `init/run-banking-circle.sh` expect).
+
+`make keys-regenerate CONFIRM=yes` issues new keys and restarts the lab
+(`make pod-up REGENERATE_KEYS=true` for the pod). Every copy the platform
+holds stops working: restart the runner, and download the `.env` again.
+
+## Running it as one pod instead
+
+`make pod-images && make pod-up` runs the same lab as one podman pod from
+images (docs/deploy-pod.md), on the same ports — so `make down` first.
+Container names become `fintechlab-<service>` (e.g.
+`podman logs fintechlab-banking-circle`), and state lives in `fintechlab-*`
+volumes rather than `keys/`, `console-data/` and `b4b-data/`. `make pod-down`
+stops it and keeps the volumes.
 
 ## The clock
 
@@ -162,14 +200,25 @@ all either way.
 ## Run the BC payment reconciliation sweep
 
 It picks up sweep stages at least an hour old **by the runner's clock**, so
-move the clock, trigger, and move it back:
+move the clock, trigger, and move it back. The trigger is one call (the
+console's *Run reconciliation sweep* on the Local runner card); it answers
+`202` and the tick takes ~20 s, so read the outcome from the runner's
+`sweeps` log rather than the response:
 
 ```sh
 curl -s -X POST localhost:3109/sim/clock -d '{"advance":"1h"}'
-cd ~/infinite/buddy/infinite-local-runner
-node -r ./src/clock-shim.cjs -r @swc-node/register src/trigger-bc-recon.ts   # not an Nx target: run it directly
+curl -s -X POST localhost:3109/sim/sweep                                  # 409 if one is running
+sleep 25; curl -s localhost:3109/sim/activity | python3 -c "
+import json,sys
+for l in json.load(sys.stdin)['logs']:
+    if l['name']=='sweeps':
+        for e in l['events'][:3]: print(e['status'], e['summary'], e.get('detail'))"
 curl -s -X POST localhost:3109/sim/clock -d '{"mode":"real"}'
 ```
+
+The same tick without the runner's HTTP API, printing the handler's own log:
+`node -r ./src/clock-shim.cjs -r @swc-node/register src/trigger-bc-recon.ts`
+from `~/infinite/buddy/infinite-local-runner`.
 
 It logs `open=N resolved=N unresolved=0` per root. Each resolved submission
 records how in `raw_webhook_payload->>'report'`: `intraday-reconciliation`

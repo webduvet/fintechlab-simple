@@ -39,7 +39,7 @@ Alice is down 25.00; merchant is up 25.00.
 ## 4. Webhook stored
 
 ```bash
-curl -s --cacert certs/ca.pem https://127.0.0.1:8443/events
+curl -s --cacert keys/certs/ca.pem https://127.0.0.1:8443/events
 ```
 
 Look for `"paymentId": "pay_…"` matching step 2. Or run `make demo-payment`, which polls until it appears.

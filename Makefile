@@ -20,7 +20,7 @@ ENGINE ?= $(shell if docker version >/dev/null 2>&1; then echo docker; \
 # podman-compose 1.x does not implement Compose "profiles".
 COMPOSE_IS_PODMAN := $(findstring podman,$(COMPOSE))
 
-.PHONY: help certs sftp-dirs key-dirs console-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild
+.PHONY: help keys-migrate keys-regenerate certs sftp-dirs key-dirs console-dir b4b-dir up start down logs test vet fmt-check demo-payment console harness harness-docker tidy rebuild pod-images pod-up pod-down pod-bundle
 
 help:
 	@echo "make up             build, replace the containers, start the lab"
@@ -31,17 +31,76 @@ help:
 	@echo "make test           unit tests + vet + gofmt check (no Docker required)"
 	@echo "make start          bring the lab back up without rebuilding"
 	@echo "make down           compose down"
+	@echo "make keys-regenerate new PKI and keypairs in LAB_KEYS_DIR ($(LAB_KEYS_DIR)), lab restarted"
 	@echo "make rebuild        no-cache rebuild of the console image"
+	@echo ""
+	@echo "make pod-images     build every image, tagged $(IMAGE_PREFIX)/<service>:$(LAB_VERSION)"
+	@echo "make pod-up         run the whole lab as one podman pod (podman kube play);"
+	@echo "                    REGENERATE_KEYS=true to start it on new keys"
+	@echo "make pod-down       stop the pod; its volumes (keys, data) are kept"
+	@echo "make pod-bundle     images + manifest in dist/, to run on a machine with no checkout"
 
-certs:
-	@mkdir -p certs
-	@CERTS_DIR=$$(pwd)/certs ./ca/generate.sh
+# Where the lab generates every key and certificate, one subdirectory per
+# owner (keys/README.md says what each file is for):
+#   certs/        the lab CA and the TLS certificates it signs (ca/generate.sh)
+#   b4b-keys/     B4B's RS512 JWT keypair (the b4b service generates it)
+#   wlsftp-keys/  Worldline's SSH host key and PGP keypair (worldline generates them)
+# Containers see it at /keys whatever it is on the host.
+#
+# Set it to keep the keys outside the checkout: `export LAB_KEYS_DIR=...`
+# before make, or on the command line. A platform that reads the lab's
+# keys from disk points at the same directory -- buddy's local runner takes
+# it as FINTECH_SIM_LAB, and the subdirectory names above are the ones it
+# reads. Made absolute, because compose would take a bare relative name for
+# a named volume, and exported, so compose and the scripts see it.
+LAB_KEYS_DIR ?= keys
+override LAB_KEYS_DIR := $(abspath $(LAB_KEYS_DIR))
+export LAB_KEYS_DIR
+
+# The three subdirectories used to sit at the top of the checkout. They are
+# moved, not regenerated: the platform under test may already hold copies
+# (the B4B signing key, the PGP keys, the pinned SFTP host key), and a
+# fresh set would fail its next call somewhere far from here. A directory
+# that exists in both places is left alone and reported, not merged.
+keys-migrate:
+	@for d in certs b4b-keys wlsftp-keys; do \
+		new="$(LAB_KEYS_DIR)/$$d"; \
+		if [ -d "$$d" ] && [ ! -e "$$new" ]; then \
+			mkdir -p "$(LAB_KEYS_DIR)" && mv "$$d" "$$new" && echo "moved $$d/ -> $$new/"; \
+		elif [ -d "$$d" ] && [ "$$(cd "$$d" && pwd)" != "$$new" ]; then \
+			echo "both $$d/ and $$new/ exist; using $$new/ -- delete $$d/ once you have checked it"; \
+		fi; \
+	done
+
+# Throw every key and certificate away and have the lab issue new ones:
+# stop the lab, empty the three directories, a new PKI, start the lab again
+# (b4b and worldline generate theirs on start; settlement and the console
+# wait for them). Every copy a platform holds stops working, hence the
+# question -- CONFIRM=yes answers it for scripts. down and up rather than
+# `start`, because docker compose's `up -d` alone would leave the running
+# containers holding the old keys in memory.
+keys-regenerate:
+	@if [ "$(CONFIRM)" != yes ]; then \
+		printf 'Delete every key and certificate in %s and issue new ones?\nA platform holding copies of the old ones stops working. [yes/N] ' "$(LAB_KEYS_DIR)"; \
+		read answer; [ "$$answer" = yes ] || { echo "nothing changed"; exit 1; }; \
+	fi
+	$(COMPOSE) down
+	rm -f "$(LAB_KEYS_DIR)"/certs/* "$(LAB_KEYS_DIR)"/b4b-keys/* "$(LAB_KEYS_DIR)"/wlsftp-keys/*
+	@$(MAKE) --no-print-directory certs key-dirs sftp-dirs console-dir b4b-dir
+	$(COMPOSE) up -d
+	@echo ""
+	@echo "new keys in $(LAB_KEYS_DIR). Restart the platform's runner, and download its .env again"
+	@echo "if it was configured from one (Platform -> Local runner -> Connect your platform)."
+
+certs: keys-migrate
+	@mkdir -p "$(LAB_KEYS_DIR)/certs"
+	@CERTS_DIR="$(LAB_KEYS_DIR)/certs" ./ca/generate.sh
 
 # Host directories shared into settlement/worldline as bind mounts (so a
 # human can `ls sftp/out` directly). Pre-created here, world-writable: the
 # two containers run as different non-root UIDs (65532) that don't own
 # whatever UID podman/docker would otherwise auto-create these as, and
-# unlike certs/ these hold no secrets — same fake-and-obvious-lab tradeoff
+# unlike keys/ these hold no secrets — same fake-and-obvious-lab tradeoff
 # as ca/generate.sh's cert permissions (see docs/security/ca-and-tls.md).
 # Non-recursive: subdirectories/files the containers create underneath are
 # their own responsibility (see internal/sftp's Stage(), which already
@@ -52,16 +111,17 @@ sftp-dirs:
 	@mkdir -p sftp/out sftp/staging sftp/outbound sftp/inbound sftp/config sftp/archive
 	@chmod 777 sftp sftp/out sftp/staging sftp/outbound sftp/inbound sftp/config sftp/archive
 
-# Same rationale as sftp-dirs, for the two new generated-keypair directories
+# Same rationale as sftp-dirs, for the two generated-keypair directories
 # (docs/ARCHITECTURE-vendor-corrections.md Addendum sections D/E): b4b
-# generates its JWT keypair into b4b-keys, settlement reads it back to sign
-# outgoing calls; worldline generates its SSH host key + PGP keypair into
-# wlsftp-keys, and settlement and the harness read the PGP private key back
-# to decrypt what they download over the real SFTP+PGP channel. World-writable, non-secret
-# (lab-only, gitignored, never real key material) -- same tradeoff as certs.
-key-dirs:
-	@mkdir -p b4b-keys wlsftp-keys
-	@chmod 777 b4b-keys wlsftp-keys
+# generates its JWT keypair into b4b-keys/, settlement reads it back to
+# sign outgoing calls; worldline generates its SSH host key + PGP keypair
+# into wlsftp-keys/, and settlement and the harness read the PGP private
+# key back to decrypt what they download over the real SFTP+PGP channel.
+# World-writable, non-secret (lab-only, gitignored, never real key material)
+# -- same tradeoff as certs/.
+key-dirs: keys-migrate
+	@mkdir -p "$(LAB_KEYS_DIR)/b4b-keys" "$(LAB_KEYS_DIR)/wlsftp-keys"
+	@chmod 777 "$(LAB_KEYS_DIR)/b4b-keys" "$(LAB_KEYS_DIR)/wlsftp-keys"
 
 # The console's merchant registry. A host bind mount rather than a named
 # volume (unlike settlement-data) because merchants you create in the UI
@@ -167,16 +227,61 @@ console:
 	@echo "http://127.0.0.1:8090"
 	@(xdg-open http://127.0.0.1:8090 >/dev/null 2>&1 || open http://127.0.0.1:8090 >/dev/null 2>&1 || true)
 
-# --- pods ---------------------------------------------------------------
-# The kernel/pod architecture (docs/kernels.md). One binary boots any
-# recipe, so these targets take a recipe directory rather than a service
-# name -- POD=recipes/<name>.
+# --- one podman pod -----------------------------------------------------
+# The same lab as one `podman kube play`, from images rather than a
+# checkout: docs/deploy-pod.md. The manifest names every image
+# localhost/fintechlab/<service>:v1 and is a runnable file as it stands;
+# a different IMAGE_PREFIX or LAB_VERSION is rewritten on the way in, so
+# pushing to a registry never means editing it.
 
-POD ?= recipes/bank-rails
+LAB_VERSION ?= v1
+IMAGE_PREFIX ?= localhost/fintechlab
+POD_MANIFEST := deploy/pod/fintechlab.yaml
+# ca is the pod's init container: it lays out the volumes and issues the PKI.
+POD_SERVICES := ca bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification console
+POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
 
+pod-images:
+	@for s in $(POD_SERVICES); do \
+		echo "building $(IMAGE_PREFIX)/$$s:$(LAB_VERSION)"; \
+		podman build -q -f docker/Dockerfile.$$s -t $(IMAGE_PREFIX)/$$s:$(LAB_VERSION) . >/dev/null || exit 1; \
+	done
 
+# --replace: a second pod-up swaps the containers for the current images.
+# The named volumes (keys, SFTP tree, state) are not part of that, so the
+# PKI a platform was configured with survives a redeploy.
+# Played from deploy/pod: kube play looks in its working directory for a
+# directory named like each image, to build it -- and podman 4.9 does so
+# even with --build=false. The repo root has a b4b binary and a worldline
+# directory, and the play fails on them. Nothing in deploy/pod is so named.
+#
+# REGENERATE_KEYS=true passes deploy/pod/regenerate-keys.yaml to the play:
+# the init container discards the keys volume's contents and the pod starts
+# on a new PKI and new keypairs.
+REGENERATE_KEYS ?= false
+POD_PLAY_OPTS = $(if $(filter true,$(REGENERATE_KEYS)),--configmap regenerate-keys.yaml)
 
+pod-up:
+	$(POD_RENDER) | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
+	@echo ""
+	@echo "lab is up as pod 'fintechlab'. control panel: http://127.0.0.1:8090"
+	@echo "platform env + keys: Platform -> Local runner -> Connect your platform"
 
+# Keeps the volumes, keys included. New keys are `make pod-up
+# REGENERATE_KEYS=true`, not a teardown.
+pod-down:
+	$(POD_RENDER) | (cd deploy/pod && podman kube down -)
+
+# Everything a machine without this checkout needs, in dist/:
+#   podman load -i fintechlab-$(LAB_VERSION)-images.tar
+#   podman kube play --replace fintechlab-$(LAB_VERSION).yaml
+#   (add --configmap regenerate-keys.yaml to issue new keys)
+pod-bundle: pod-images
+	@mkdir -p dist
+	podman save -m -o dist/fintechlab-$(LAB_VERSION)-images.tar $(foreach s,$(POD_SERVICES),$(IMAGE_PREFIX)/$(s):$(LAB_VERSION))
+	@$(POD_RENDER) > dist/fintechlab-$(LAB_VERSION).yaml
+	@cp deploy/pod/regenerate-keys.yaml dist/
+	@echo "dist/fintechlab-$(LAB_VERSION)-images.tar + dist/fintechlab-$(LAB_VERSION).yaml -- see docs/deploy-pod.md"
 
 harness:
 	@go run ./cmd/harness
@@ -196,15 +301,13 @@ harness-docker:
 		-e BANKING_CIRCLE_TARGET=pod \
 		-e ACI_URL=http://aci:8087 \
 		-e B4B_URL=http://b4b:8086 \
-		-e B4B_JWT_PRIVATE_KEY_PATH=/b4b-keys/private.pem \
+		-e B4B_JWT_PRIVATE_KEY_PATH=/keys/b4b-keys/private.pem \
 		-e B4B_JWT_KEY_ID=b4b-mock-1 \
-		-e CA_FILE=/certs/ca.pem \
-		-e CLIENT_CERT=/certs/client.pem \
-		-e CLIENT_KEY=/certs/client-key.pem \
+		-e CA_FILE=/keys/certs/ca.pem \
+		-e CLIENT_CERT=/keys/certs/client.pem \
+		-e CLIENT_KEY=/keys/certs/client-key.pem \
 		-e WORLDLINE_SFTP_HOST=worldline \
 		-e WORLDLINE_SFTP_PASSWORD=sim-sftp-dev-only \
-		-e WORLDLINE_PGP_PRIVATE_KEY_PATH=/wlsftp-keys/worldline_private.asc \
-		-v $$(pwd)/certs:/certs:ro \
-		-v $$(pwd)/wlsftp-keys:/wlsftp-keys:ro \
-		-v $$(pwd)/b4b-keys:/b4b-keys:ro \
+		-e WORLDLINE_PGP_PRIVATE_KEY_PATH=/keys/wlsftp-keys/worldline_private.asc \
+		-v "$(LAB_KEYS_DIR)":/keys:ro \
 		fintechlab-simple_harness

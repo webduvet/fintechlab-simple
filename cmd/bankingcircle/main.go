@@ -131,9 +131,9 @@ func main() {
 	if len(notifKey) != 32 {
 		log.Fatalf("BC_NOTIFICATION_KEY must be exactly 32 characters (raw UTF-8 bytes = AES-256 key), got %d", len(notifKey))
 	}
-	caFile := env("CA_FILE", "/certs/ca.pem")
-	certFile := env("TLS_CERT", "/certs/banking-circle.pem")
-	keyFile := env("TLS_KEY", "/certs/banking-circle-key.pem")
+	caFile := env("CA_FILE", "/keys/certs/ca.pem")
+	certFile := env("TLS_CERT", "/keys/certs/banking-circle.pem")
+	keyFile := env("TLS_KEY", "/keys/certs/banking-circle-key.pem")
 	// receiver's and our own certs are signed by this CA; the ca service and
 	// this one start concurrently under compose, so wait rather than trust
 	// orchestrator ordering (podman-compose does not block on it — see

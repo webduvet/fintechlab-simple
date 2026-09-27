@@ -527,7 +527,7 @@ input:focus, select:focus, textarea:focus {
 
 /* --- system in test: the sequence diagram ------------------------------- */
 
-/* Six states, and they are all data, so they are all allowed colour. The
+/* Five states, and they are all data, so they are all allowed colour. The
    rest of the diagram is grey on purpose: if the resting state carried any
    colour at all, the one arrow that just moved would have to compete with
    eleven that did not. */
@@ -536,7 +536,6 @@ input:focus, select:focus, textarea:focus {
   --flow-done: #8d86a3;      /* been through, at rest */
   --flow-active: var(--up);  /* happening now */
   --flow-done-ok: #2c8f56;   /* finished, and it was fine */
-  --flow-busy: #e6e2f2;      /* a batch in flight — the brightest neutral */
   --flow-partial: var(--warn);
   --flow-failed: var(--down);
   --flow-text: var(--text-dim);
@@ -545,7 +544,6 @@ input:focus, select:focus, textarea:focus {
   --flow-idle: #b3abc6;
   --flow-done: #7d7595;
   --flow-done-ok: #15803d;
-  --flow-busy: #2a2340;      /* the brightest neutral here is the darkest ink */
 }
 
 /* Rendered at 1:1, never magnified. An SVG set to width:100% scales its own
@@ -605,16 +603,13 @@ input:focus, select:focus, textarea:focus {
 
 .flow-step.is-active .flow-line { stroke: var(--flow-active); stroke-width: 2; }
 .flow-step.is-active .flow-head { fill: var(--flow-active); }
-.flow-step.is-busy .flow-line { stroke: var(--flow-busy); stroke-width: 2; }
-.flow-step.is-busy .flow-head { fill: var(--flow-busy); }
 .flow-step.is-done-ok .flow-line { stroke: var(--flow-done-ok); }
 .flow-step.is-done-ok .flow-head { fill: var(--flow-done-ok); }
 .flow-step.is-partial .flow-line { stroke: var(--flow-partial); }
 .flow-step.is-partial .flow-head { fill: var(--flow-partial); }
 .flow-step.is-failed .flow-line { stroke: var(--flow-failed); stroke-width: 1.9; }
 .flow-step.is-failed .flow-head { fill: var(--flow-failed); }
-.flow-step.is-active .flow-label,
-.flow-step.is-busy .flow-label { fill: var(--text); }
+.flow-step.is-active .flow-label { fill: var(--text); }
 
 /* The hold. A hop can take three milliseconds; without this it would repaint
    twice between two frames and you would never see it. The glow ramps up and
@@ -635,7 +630,6 @@ input:focus, select:focus, textarea:focus {
 }
 .flow-step.is-lit .flow-line, .flow-step.is-lit .flow-head { color: inherit; }
 .flow-step.is-active.is-lit { color: var(--flow-active); }
-.flow-step.is-busy.is-lit { color: var(--flow-busy); }
 .flow-step.is-failed.is-lit { color: var(--flow-failed); }
 
 /* legend */
@@ -643,7 +637,6 @@ input:focus, select:focus, textarea:focus {
 .flow-key { display: inline-flex; align-items: center; gap: 6px; }
 .flow-key i { width: 16px; height: 0; border-top: 2px solid var(--flow-idle); display: inline-block; }
 .flow-key.is-active i { border-top-color: var(--flow-active); }
-.flow-key.is-busy i { border-top-color: var(--flow-busy); }
 .flow-key.is-done-ok i { border-top-color: var(--flow-done-ok); }
 .flow-key.is-partial i { border-top-color: var(--flow-partial); }
 .flow-key.is-failed i { border-top-color: var(--flow-failed); }

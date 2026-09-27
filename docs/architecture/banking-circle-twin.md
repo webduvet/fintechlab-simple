@@ -131,19 +131,19 @@ Lab `/sim/*` and `/internal/*` are `auth: none` on this listener (still
 behind mTLS when `POD_MTLS=require`):
 
 ```bash
-TOKEN=$(curl -s --cacert certs/ca.pem \
-  --cert certs/client.pem --key certs/client-key.pem \
+TOKEN=$(curl -s --cacert keys/certs/ca.pem \
+  --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -u harness:harness \
   https://127.0.0.1:9085/api/v1/authorizations/authorize | jq -r .access_token)
 
-curl -s --cacert certs/ca.pem \
-  --cert certs/client.pem --key certs/client-key.pem \
+curl -s --cacert keys/certs/ca.pem \
+  --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -X POST https://127.0.0.1:9085/sim/funding \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"from":"external:acquirer-settlement","to":"sga-eur","amount_minor":50000,"currency":"EUR","reference":"lump-demo"}'
 
-curl -s --cacert certs/ca.pem \
-  --cert certs/client.pem --key certs/client-key.pem \
+curl -s --cacert keys/certs/ca.pem \
+  --cert keys/certs/client.pem --key keys/certs/client-key.pem \
   -H "Authorization: Bearer $TOKEN" \
   https://127.0.0.1:9085/api/v1/accounts/sga-eur/balances
 ```

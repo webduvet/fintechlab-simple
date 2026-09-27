@@ -1,0 +1,16 @@
+# Pass this to a play to throw the lab's keys and certificates away and
+# have it issue new ones:
+#
+#   podman kube play --replace --configmap regenerate-keys.yaml fintechlab.yaml
+#   make pod-up REGENERATE_KEYS=true                # the same, from a checkout
+#
+# It applies to that one play: the init container runs once per play, so a
+# later pod restart keeps the new keys, and the next play without this file
+# keeps them too. Every copy of the old keys a platform holds stops working
+# -- download its .env again from the console.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fintechlab-regenerate-keys
+data:
+  regenerate-keys: "true"

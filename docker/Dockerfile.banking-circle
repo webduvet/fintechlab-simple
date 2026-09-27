@@ -8,5 +8,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/banking-circle ./c
 FROM docker.io/library/alpine:3.20
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/banking-circle /usr/local/bin/banking-circle
+# The delivery schedule, so the image runs without a checkout (the pod).
+# Compose bind-mounts ./config over it, so an edit there still wins.
+COPY config/banking-circle.json /config/banking-circle.json
 USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/banking-circle"]

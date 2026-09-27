@@ -49,7 +49,13 @@ a UI. See [docs/console.md](docs/console.md), and
 [docs/design-system.md](docs/design-system.md) for the design record behind
 its look and feel.
 
-`make up` generates a local CA (if `certs/` is empty) and starts compose.
+`make up` generates a local CA (if `keys/certs/` is empty) and starts compose.
+Every generated key and certificate lives under [`keys/`](keys/README.md),
+one subdirectory per owner — or wherever `LAB_KEYS_DIR` points;
+`make keys-regenerate` issues new ones. To point your platform at the lab, download its
+`.env` — addresses, lab credentials and keys, in the platform's own variable
+names — from the console (Platform → Local runner → *Connect your platform*).
+
 `make demo-payment` creates a payment with an `Idempotency-Key`, then
 **polls the receiver until the webhook for that payment arrives** and
 prints it. `make harness` runs the full scenario suite; `make
@@ -101,24 +107,23 @@ for who owns the settlement file, and
 [ARCHITECTURE-banking-circle-webhooks.md](docs/ARCHITECTURE-banking-circle-webhooks.md)
 for subscriptions, batching and the retry schedule.
 
-## Kernels and pods
+## Your platform against the lab
 
-Beside the services above there is a composable second architecture: a
-**kernel** is one brand-generic financial job, a **pod** is a bundle of
-kernels behind one address — which is what a vendor actually is — and a
-**recipe** is a directory of YAML that names one.
+The loop this repo exists for — point a real platform at the lab, run a
+settlement, watch it reach the bank and reconcile — is walked through once
+in [docs/getting-started.md](docs/getting-started.md): start the lab, start
+the platform's runner with the lab's keys, run a file from the console,
+sweep, read the result.
 
-```bash
-```
+## Run it as a podman pod
 
-One binary for every vendor: the difference between simulating an acquirer
-and a payout rail is a directory of YAML, not a new `cmd/`. Four pods ship
-— an acquirer edge, bank rails, EMI oversight and a gateway facade — and
-the console's **Pods** view draws each one's kernels, effective
-configuration and wiring from the running process.
+The same lab as one `podman kube play`, from images, with no checkout on
+the machine that runs it: `make pod-images && make pod-up` here, or
+`make pod-bundle` to carry it to a server. See
+[docs/deploy-pod.md](docs/deploy-pod.md).
 
-which is what lets the runtime be described and shipped on its own. See
-moved out of the standalone services.
+(The kernel/pod/*recipe* architecture that used to be described here is a
+different thing, parked on its own branches; see `CLAUDE.md`.)
 
 ## Tests (no Docker)
 

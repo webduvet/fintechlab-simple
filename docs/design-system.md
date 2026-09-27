@@ -386,16 +386,23 @@ library that renders from a text description rebuilds its DOM on every
 change — and the whole value here is that *one* arrow animates while the
 rest hold still. You cannot animate an element you replace every second.
 
-**Six states, and they are the vocabulary:**
+**Five states, and they are the vocabulary:**
 
 | State | Means | Colour |
 | --- | --- | --- |
 | idle | nothing has come this way | `--flow-idle`, a dark grey |
 | active | something arrived in the last second | `--up` |
-| busy | a batch is in flight, verdict unknown | `--flow-busy`, the brightest neutral |
 | done | finished, and it was fine | `--flow-done-ok`, a dark green |
 | partial | some of a batch was refused | `--warn` |
 | failed | it broke | `--down` |
+
+**Moving is one colour, whatever is moving.** There used to be a sixth
+state, a bright neutral for "a batch is in flight, verdict unknown". On
+screen it sat beside the green it was meant to be distinct from and read as
+a second word for the same thing — which it was: both said *traffic arrived
+in the last second*. A batch is judged once it stops moving, and that is
+what done, partial and failed already say. Do not add a state whose
+difference from another only its legend can explain.
 
 Everything at rest is grey **on purpose**: if the resting state carried any
 colour, the one arrow that just moved would compete with eleven that did
@@ -548,6 +555,29 @@ Rules, and they are the whole component:
 - A service that keeps no log renders **no panel at all**, and its API
   answers `501` — the same rule as everything else here: never offer what
   the backend cannot do.
+
+### Download
+
+A file the operator takes away — an `.env`, a certificate, a key — is a
+**link, not an action**:
+
+```html
+<a class="ghost small" href="/api/connect/env/b4b" download>Download fintechlab-b4b.env</a>
+```
+
+- **A `.ghost`, never a `.btn`.** It changes nothing; the one primary
+  action in the card is still the one that does.
+- **No `data-action`, no toast.** The browser's own download is the
+  feedback, and a toast saying "downloaded" would be a claim the page
+  cannot check.
+- **The label names the file it saves**, and the server's
+  `Content-Disposition` gives it exactly that name, so the button and
+  `curl -OJ` of the same URL produce the same file.
+- **A file that does not exist yet is not a link.** Say what generates it,
+  in the row where the link would be — a link to a 503 is the same lie as a
+  disabled button.
+- Key material is served `Cache-Control: no-store`, and a listing of what
+  can be downloaded names files and variables, never their contents.
 
 ### Pill
 

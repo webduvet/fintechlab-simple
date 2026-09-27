@@ -73,7 +73,7 @@ func main() {
 		log.Fatalf("backoff: %v", err)
 	}
 	secret := []byte(env("HMAC_SECRET", "sim-hmac-dev-only"))
-	caFile := env("CA_FILE", "/certs/ca.pem")
+	caFile := env("CA_FILE", "/keys/certs/ca.pem")
 	// receiver's cert is signed by this CA; the ca and receiver services
 	// start concurrently with us under compose, so wait rather than trust
 	// orchestrator ordering (podman-compose does not block on it — see

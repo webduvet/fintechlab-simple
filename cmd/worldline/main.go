@@ -320,7 +320,7 @@ func startWorldlineSFTP() (*settlementApp, *enrolmentDesk, *activity.Log) {
 		log.Fatalf("worldline: sftp layout: %v", err)
 	}
 
-	hostKeyPath := env("WORLDLINE_SFTP_HOST_KEY_PATH", "/wlsftp-keys/host_key")
+	hostKeyPath := env("WORLDLINE_SFTP_HOST_KEY_PATH", "/keys/wlsftp-keys/host_key")
 	hostSigner, err := wlsftp.LoadOrGenerateHostKey(hostKeyPath)
 	if err != nil {
 		log.Fatalf("worldline: sftp host key: %v", err)
@@ -334,8 +334,8 @@ func startWorldlineSFTP() (*settlementApp, *enrolmentDesk, *activity.Log) {
 		}
 	}
 
-	pubPath := env("WORLDLINE_PGP_PUBLIC_KEY_PATH", "/wlsftp-keys/worldline_public.asc")
-	privPath := env("WORLDLINE_PGP_PRIVATE_KEY_PATH", "/wlsftp-keys/worldline_private.asc")
+	pubPath := env("WORLDLINE_PGP_PUBLIC_KEY_PATH", "/keys/wlsftp-keys/worldline_public.asc")
+	privPath := env("WORLDLINE_PGP_PRIVATE_KEY_PATH", "/keys/wlsftp-keys/worldline_private.asc")
 	own, err := wlsftp.LoadOrGenerateKeypair(pubPath, privPath, "mock-Worldline", "fintechlab-simple", "worldline@fintechlab-simple.local")
 	if err != nil {
 		log.Fatalf("worldline: pgp keypair: %v", err)
