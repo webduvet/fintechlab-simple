@@ -52,7 +52,7 @@ instead ([docs/deploy-pod.md](../docs/deploy-pod.md)).
 A platform that does not read from disk can take all of it from the
 console instead: each vendor card's **Connect your platform** panel offers
 the client-side files above and an `.env` with them inlined (all vendors at
-once from Platform → Local runner).
+once from Configuration → Connect your platform).
 
 ## New keys
 

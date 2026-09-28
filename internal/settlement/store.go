@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 // SettlementRecord is the persisted, live view of one settlement: the
@@ -251,5 +251,5 @@ func (s *Store) Load(path string) error {
 }
 
 func nowRFC3339() string {
-	return runnerclock.Now().Format(time.RFC3339)
+	return labclock.Now().Format(time.RFC3339)
 }

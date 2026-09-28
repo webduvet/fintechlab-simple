@@ -54,7 +54,7 @@ Every generated key and certificate lives under [`keys/`](keys/README.md),
 one subdirectory per owner — or wherever `LAB_KEYS_DIR` points;
 `make keys-regenerate` issues new ones. To point your platform at the lab, download its
 `.env` — addresses, lab credentials and keys, in the platform's own variable
-names — from the console (Platform → Local runner → *Connect your platform*).
+names — from the console (Configuration → *Connect your platform*).
 
 `make demo-payment` creates a payment with an `Idempotency-Key`, then
 **polls the receiver until the webhook for that payment arrives** and
@@ -114,6 +114,12 @@ settlement, watch it reach the bank and reconcile — is walked through once
 in [docs/getting-started.md](docs/getting-started.md): start the lab, start
 the platform's runner with the lab's keys, run a file from the console,
 sweep, read the result.
+
+The lab knows no platform by name. A platform under test **registers its
+own card** in the console — its buttons, its settlement files, its logs —
+and **follows the lab's clock** (the `clock` service, `:8096`, which every
+vendor follows too). [docs/plugins.md](docs/plugins.md) is that contract;
+buddy's `infinite-local-runner` is the reference plugin.
 
 ## Run it as a podman pod
 

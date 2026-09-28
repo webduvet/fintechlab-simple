@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,10 +42,21 @@ type serviceView struct {
 }
 
 func (a *app) overview(w http.ResponseWriter, r *http.Request) {
-	out := make([]serviceView, 0, len(a.cat.Services))
+	all := a.cat.All()
+	out := make([]serviceView, 0, len(all))
 	counts := map[string]int{}
-	for _, s := range a.cat.Services {
+	for _, s := range all {
 		st, _ := a.mon.Get(s.ID)
+		stopped := s.Plugin != nil && s.Plugin.State == console.PluginStopped
+		lapsed := s.Plugin != nil && s.Plugin.State == console.PluginLapsed && st.State != console.StateUp
+		if stopped || lapsed {
+			// A platform that stopped, or stopped renewing, is not a lab
+			// service that is down: grey with the reason, not red. A
+			// stopped one is no longer probed, so its last probe — "up",
+			// a second before it said goodbye — is not believed either.
+			st.State = console.StateUnknown
+			st.Detail = "registration " + s.Plugin.State
+		}
 		counts[st.State]++
 		out = append(out, serviceView{Service: s, Status: st})
 	}
@@ -365,92 +374,60 @@ func (a *app) settlementPull(w http.ResponseWriter, r *http.Request) {
 	a.proxyPost(w, r, a.baseURL("settlement")+"/worldline/pull")
 }
 
-// runnerSettle asks the local runner to drive settlements end to end — the
-// files the operator picked, {"files": […]}, forwarded verbatim; an empty
-// body is the runner's default file.
-//
-// One button rather than four terminals, but it is still exactly one POST a
-// human could make with curl: the runner owns the sequence — upload under a
-// name not used before, trigger, wait for the balance check, fund, tick,
-// follow the stages — because that sequence is the platform's, not the
-// lab's. This console only asks. Several files are still one call: the
-// runner starts them together, which is the point of running them together.
-func (a *app) runnerSettle(w http.ResponseWriter, r *http.Request) {
-	a.forwardJSON(w, r, a.baseURL("local-runner")+"/sim/run")
+// fundSGA tops up the empty safeguarding accounts — the wire Worldline
+// makes on its morning slot, for a run that did not come through one. Two
+// calls per currency (read the balance, credit it), because pressing twice
+// must not be twice the money.
+func (a *app) fundSGA(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	amount := r.URL.Query().Get("amount")
+	if amount == "" {
+		amount = "1000000.00"
+	}
+	results := console.FundSafeguarding(ctx, a.client, a.bcInternal, amount)
+	// Partial success is reported as partial (design-system.md, contract
+	// 4): one currency failing is a 200 whose rows say which. Only when
+	// nothing worked is it the peer's failure, in its own words.
+	var errs []string
+	for _, res := range results {
+		if res.Error != "" {
+			errs = append(errs, res.Currency+": "+res.Error)
+		}
+	}
+	if len(errs) == len(results) {
+		httputilx.WriteJSON(w, 502, map[string]any{"error": strings.Join(errs, "; "), "results": results})
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"results": results})
 }
 
-// runnerFiles is the runner's list of settlement files it can run, with
-// whether each one's merchants are seeded and how its last run went.
-func (a *app) runnerFiles(w http.ResponseWriter, r *http.Request) {
+// The lab clock. Every vendor follows its one offset, and so does a
+// platform that registered to follow it, so "what happens on a Sunday" is a
+// button rather than a restart — and "…and then on Monday, with the same
+// money" is the button after it.
+func (a *app) labClock(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := reqContext(r)
 	defer cancel()
 	var out any
-	if err := a.getJSON(ctx, a.client, a.baseURL("local-runner")+"/sim/files", &out); err != nil {
+	if err := a.getJSON(ctx, a.client, a.baseURL("clock")+"/clock", &out); err != nil {
 		httputilx.Error(w, 502, err.Error())
 		return
 	}
 	httputilx.WriteJSON(w, 200, out)
 }
 
-// runnerSweep asks the runner for one tick of the platform's BC payment
-// reconciliation sweep. The runner answers at once and records the outcome
-// in its "sweeps" activity log, which the Local runner card already shows —
-// a tick takes ~20s, longer than this console holds a call open.
-func (a *app) runnerSweep(w http.ResponseWriter, r *http.Request) {
-	a.forwardJSON(w, r, a.baseURL("local-runner")+"/sim/sweep")
-}
-
-func (a *app) runnerFundSGA(w http.ResponseWriter, r *http.Request) {
-	a.proxyPost(w, r, a.baseURL("local-runner")+"/sim/fund-sga")
-}
-
-// The runner's clock. Every one of its processes follows one shared offset,
-// so "what happens on a Sunday" is a button rather than a restart — and
-// "…and then on Monday, with the same money" is the button after it.
-func (a *app) runnerClock(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := reqContext(r)
-	defer cancel()
-	var out any
-	if err := a.getJSON(ctx, a.client, a.baseURL("local-runner")+"/sim/clock", &out); err != nil {
-		httputilx.Error(w, 502, err.Error())
+// setLabClock forwards the operator's intent verbatim — {"at": …},
+// {"advance": "1d"} or {"mode": …} — because the clock service owns what
+// those mean and a console that re-interpreted them would be a second place
+// to keep that correct. A hold (a run in flight) comes back as the
+// service's own 409.
+func (a *app) setLabClock(w http.ResponseWriter, r *http.Request) {
+	if why := a.clockLock(); why != "" {
+		httputilx.Error(w, 409, why)
 		return
 	}
-	httputilx.WriteJSON(w, 200, out)
-}
-
-// setRunnerClock forwards the operator's intent verbatim — {"at": …},
-// {"advance": "1d"} or {"mode": …} — because the runner owns what those
-// mean and a console that re-interpreted them would be a second place to
-// keep that correct.
-func (a *app) setRunnerClock(w http.ResponseWriter, r *http.Request) {
-	a.forwardJSON(w, r, a.baseURL("local-runner")+"/sim/clock")
-}
-
-// forwardJSON POSTs the request's JSON body to url as it came and answers
-// with whatever url answered, status and all.
-func (a *app) forwardJSON(w http.ResponseWriter, r *http.Request, url string) {
-	ctx, cancel := reqContext(r)
-	defer cancel()
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<10))
-	if err != nil {
-		httputilx.Error(w, 400, err.Error())
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		httputilx.Error(w, 500, err.Error())
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.client.Do(req)
-	if err != nil {
-		httputilx.Error(w, 502, err.Error())
-		return
-	}
-	defer resp.Body.Close()
-	var out any
-	_ = json.NewDecoder(resp.Body).Decode(&out)
-	httputilx.WriteJSON(w, resp.StatusCode, out)
+	a.forward(w, r, http.MethodPost, a.baseURL("clock")+"/clock")
 }
 
 func (a *app) proxyPost(w http.ResponseWriter, r *http.Request, url string) {

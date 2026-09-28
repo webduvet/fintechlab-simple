@@ -17,10 +17,19 @@ The kernel/pod/recipe experiment lives on its own branches and is parked.
 Do not add `core/`, `recipes/` or a pod runtime here. If a simulation needs
 new behaviour, it goes in that vendor's own package.
 
+## The platform under test is a plugin
+
+The lab knows no platform by name. A platform registers its own card with
+the console (`POST /api/plugins`) and follows the lab's clock service —
+[docs/plugins.md](docs/plugins.md). Do not add a catalogue entry, a proxy
+route or a UI special case for one particular platform; if a plugin needs
+something the console cannot draw, add a generic component to
+[docs/design-system.md](docs/design-system.md) and the contract.
+
 ## Driving the lab headless
 
 [agent.runbooks.md](agent.runbooks.md) is the how-to: ports, bringing the
-lab and the platform's runner up, the shared clock, running a settlement
+lab and the platform's runner up, the lab clock, running a settlement
 and the reconciliation sweep, the Banking Circle test hooks, and what looks
 broken but is not. Read it before driving the lab from a session.
 

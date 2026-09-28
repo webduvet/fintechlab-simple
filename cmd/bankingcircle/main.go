@@ -47,8 +47,8 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 	"github.com/webduvet/fintechlab-simple/internal/waitfor"
 )
 
@@ -96,10 +96,10 @@ func main() {
 	if err := list.Allowed(dest); err != nil {
 		log.Fatalf("default WEBHOOK_URL rejected by allowlist: %v", err)
 	}
-	// The platform's local runner can put its clock on another day. Follow
-	// it, so a booking is dated on the day the platform thinks it is; with
-	// RUNNER_CLOCK_URL unset this bank keeps the wall clock.
-	runnerclock.FollowEnv(context.Background(), "banking-circle")
+	// The lab clock can put the whole lab on another day. Follow it, so a
+	// booking is dated on the day the lab says it is; with LAB_CLOCK_URL
+	// unset this bank keeps the wall clock.
+	labclock.FollowEnv(context.Background(), "banking-circle")
 	// Delivery behaviour -- the retry schedule, batch sizing and the time
 	// scale that makes a two-day schedule watchable -- comes from a config
 	// file, because the interesting part of it is a table. A missing file
@@ -442,7 +442,7 @@ type pageInfo struct {
 // same underlying account (docs/ARCHITECTURE-phase3-corrections.md section
 // 1).
 func (a *app) balanceEntries(acct *bankingcircle.Account) []balanceEntry {
-	now := runnerclock.Now()
+	now := labclock.Now()
 	return []balanceEntry{{
 		Type:                     "CurrentBalance",
 		Currency:                 acct.Currency,
@@ -727,7 +727,7 @@ func (a *app) rejectionReport(w http.ResponseWriter, r *http.Request) {
 		IncludeReceived:     flag("IncludeReceived", true),
 		IncludeMissingFunds: flag("IncludeMissingFunds", true),
 		ExcludeBooked:       flag("ExcludeBooked", false),
-		ReportDate:          runnerclock.Now().Format("2006-01-02"),
+		ReportDate:          labclock.Now().Format("2006-01-02"),
 		IBAN:                a.accountIBAN,
 	}
 	flag("IncludeReversals", false)
@@ -851,7 +851,7 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
-	now := runnerclock.Now().Format(time.RFC3339)
+	now := labclock.Now().Format(time.RFC3339)
 	p := &bankingcircle.Payment{
 		ID:            req.PaymentID,
 		SettlementID:  req.ExternalRef,

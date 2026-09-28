@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 func TestCreateRejectsBlankAndDuplicateID(t *testing.T) {
@@ -135,9 +135,9 @@ func TestAutoSaveOnMutationWhenPathSet(t *testing.T) {
 // TestStoreTimestampsFollowTheRunnersClock: the platform stand-in's records
 // are stamped on the platform's clock.
 func TestStoreTimestampsFollowTheRunnersClock(t *testing.T) {
-	runnerclock.Set(-48 * time.Hour)
-	defer runnerclock.Set(0)
-	if got, want := nowRFC3339()[:10], runnerclock.Now().Format("2006-01-02"); got != want {
+	labclock.Set(-48 * time.Hour)
+	defer labclock.Set(0)
+	if got, want := nowRFC3339()[:10], labclock.Now().Format("2006-01-02"); got != want {
 		t.Errorf("timestamp %s, want the runner's day %s", nowRFC3339(), want)
 	}
 }

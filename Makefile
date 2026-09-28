@@ -90,7 +90,7 @@ keys-regenerate:
 	$(COMPOSE) up -d
 	@echo ""
 	@echo "new keys in $(LAB_KEYS_DIR). Restart the platform's runner, and download its .env again"
-	@echo "if it was configured from one (Platform -> Local runner -> Connect your platform)."
+	@echo "if it was configured from one (Configuration -> Connect your platform)."
 
 certs: keys-migrate
 	@mkdir -p "$(LAB_KEYS_DIR)/certs"
@@ -168,7 +168,7 @@ endif
 up: certs sftp-dirs key-dirs console-dir b4b-dir
 	$(COMPOSE_UP)
 	@echo "lab is up. payment-api :8080  bank :8081  notifier :8082  receiver :8443"
-	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088"
+	@echo "         settlement :8083  worldline :8084 (+ SFTP+PGP :2222)  banking-circle :8085 (+ internal :8095)  b4b :8086  aci :8087  verify :8088  clock :8096"
 	@echo ""
 	@echo "control panel: http://127.0.0.1:8090   (make console)"
 	@echo "next: make demo-payment  (or: make harness)"
@@ -238,7 +238,7 @@ LAB_VERSION ?= v1
 IMAGE_PREFIX ?= localhost/fintechlab
 POD_MANIFEST := deploy/pod/fintechlab.yaml
 # ca is the pod's init container: it lays out the volumes and issues the PKI.
-POD_SERVICES := ca bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification console
+POD_SERVICES := ca clock bank notifier payment-api receiver settlement worldline banking-circle b4b aci verify verification console
 POD_RENDER = sed -e 's|localhost/fintechlab/\([a-z-]*\):v1|$(IMAGE_PREFIX)/\1:$(LAB_VERSION)|' $(POD_MANIFEST)
 
 pod-images:
@@ -265,7 +265,7 @@ pod-up:
 	$(POD_RENDER) | (cd deploy/pod && podman kube play --replace --build=false $(POD_PLAY_OPTS) -)
 	@echo ""
 	@echo "lab is up as pod 'fintechlab'. control panel: http://127.0.0.1:8090"
-	@echo "platform env + keys: Platform -> Local runner -> Connect your platform"
+	@echo "platform env + keys: Configuration -> Connect your platform"
 
 # Keeps the volumes, keys included. New keys are `make pod-up
 # REGENERATE_KEYS=true`, not a teardown.

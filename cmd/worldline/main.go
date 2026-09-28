@@ -27,7 +27,7 @@ import (
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/sftpgateway"
 	"github.com/webduvet/fintechlab-simple/internal/wlsftp"
 	"github.com/webduvet/fintechlab-simple/internal/worldline"
@@ -40,7 +40,7 @@ const maxUploadBytes = sftpgateway.MaxInboundFileSize + (1 << 10)
 
 func main() {
 	addr := env("LISTEN", ":8084")
-	runnerclock.FollowEnv(context.Background(), "worldline")
+	labclock.FollowEnv(context.Background(), "worldline")
 	baseDir := env("SFTP_BASE_DIR", "/sftp")
 	merchantID := env("MERCHANT_ID", "GB00SIM0000000000003")
 

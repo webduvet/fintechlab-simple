@@ -17,10 +17,11 @@ import (
 // The System-in-test view, server side.
 //
 // Everything here is derived, nothing is stored: the vendors already keep a
-// ring of the traffic that reached them and the local runner already knows
-// its stage chain, so this endpoint's whole job is to read those and put
-// them in the shape a sequence diagram needs — participants down the top,
-// one entry per hop between them.
+// ring of the traffic that reached them and the registered platform already
+// knows its stage chain (its plugin's settlement.status_path), so this
+// endpoint's whole job is to read those and put them in the shape a
+// sequence diagram needs — participants down the top, one entry per hop
+// between them.
 //
 // Deriving it here rather than in the browser is deliberate. The mapping
 // from "b4b recorded 6 events with op payment.create" to "the payouts hop
@@ -198,9 +199,17 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 		wg     sync.WaitGroup
 	)
 
+	// The platform is whichever registered plugin settles. With none, the
+	// diagram still draws the vendors' side of whatever reached them.
+	plat, _, hasPlat := a.cat.SettlementPlugin()
+	ids := []string{"worldline", "b4b", "banking-circle"}
+	if hasPlat {
+		ids = append(ids, plat.ID)
+	}
+
 	// Every vendor is asked at once. Serially this is four round trips on
 	// a 1s poll, and the view exists to look live.
-	for _, id := range []string{"worldline", "b4b", "banking-circle", "local-runner"} {
+	for _, id := range ids {
 		wg.Add(1)
 		go func(id string) {
 			defer wg.Done()
@@ -223,10 +232,10 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer wg.Done()
 		var st map[string]any
-		if svc, ok := a.cat.Get("local-runner"); ok {
-			if err := a.getJSON(ctx, a.client, svc.BaseURL+"/status", &st); err != nil {
+		if hasPlat && plat.Settlement.StatusPath != "" {
+			if err := a.getJSON(ctx, a.client, plat.BaseURL+plat.Settlement.StatusPath, &st); err != nil {
 				mu.Lock()
-				errs["local-runner-status"] = err.Error()
+				errs[plat.ID+"-status"] = err.Error()
 				mu.Unlock()
 				return
 			}
@@ -247,9 +256,14 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 
 	isLab := labDelivery(a.knownHosts())
 
+	var stages map[string][]string
+	platID, runsLog := "", ""
+	if hasPlat {
+		platID, runsLog, stages = plat.ID, plat.Settlement.RunsLog, plat.Settlement.Stages
+	}
 	out := flowResponse{
-		Participants: a.flowParticipants(at, errs, isLab),
-		Steps:        flowSteps(at, runner, isLab),
+		Participants: a.flowParticipants(at, errs, isLab, platID, runsLog),
+		Steps:        flowSteps(at, runner, isLab, stages),
 		Run:          runner["last_run"],
 		Errors:       errs,
 	}
@@ -288,8 +302,11 @@ func (a *app) knownHosts() map[string]bool {
 	return out
 }
 
-func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string, isLab func(activity.Event) bool) []flowParticipant {
+func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string, isLab func(activity.Event) bool, platID, runsLog string) []flowParticipant {
 	state := func(id string) string {
+		if id == "" {
+			return "unknown"
+		}
 		st, _ := a.mon.Get(id)
 		if st.State == "" {
 			return "unknown"
@@ -318,10 +335,10 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 			},
 		},
 		{
-			ID: "platform", Label: "Platform", Role: "system under test",
-			Kind: "platform", Status: state("local-runner"), Error: errs["local-runner"],
+			ID: "platform", Label: label(platID, "Platform"), Role: "system under test",
+			Kind: "platform", Status: state(platID), Error: errs[platID],
 			Stats: []flowStat{
-				{Label: "runs", Value: itoa64(at("local-runner").total("runs"))},
+				{Label: "runs", Value: itoa64(at(platID).total(runsLog))},
 				{Label: "callbacks taken", Value: itoa(len(b4b.find("callbacks", "callback")))},
 			},
 		},
@@ -355,7 +372,7 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 	}
 }
 
-func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(activity.Event) bool) []flowStep {
+func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(activity.Event) bool, stages map[string][]string) []flowStep {
 	wl := at("worldline")
 	b4b := at("b4b")
 	bc := at("banking-circle")
@@ -426,15 +443,16 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 	}
 
 	// The two self-arrows are stages, not vendor traffic, so they are read
-	// from the runner rather than from a ring.
-	stages := runStages(runner)
+	// from the platform's run rather than from a ring — under the names the
+	// platform's plugin gave them.
+	ran := runStages(runner)
 	fill := func(id string, names ...string) {
 		for i := range steps {
 			if steps[i].ID != id {
 				continue
 			}
 			for _, n := range names {
-				st, ok := stages[n]
+				st, ok := ran[n]
 				if !ok {
 					continue
 				}
@@ -449,10 +467,8 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 			steps[i].LastSummary = strings.Join(names, ", ")
 		}
 	}
-	fill("ingest", "SETTLEMENT_FILE_INGESTION", "DAILY_MOVEMENT_PROCESSING")
-	fill("reports", "DAILY_MERCHANT_HELD_REPORT", "MERCHANT_DEFICIT_REPORT",
-		"VERIFY_DAILY_SETTLEMENT_STATISTICS", "DAILY_SETTLEMENT_REPORT",
-		"DAILY_REJECTED_SETTLEMENT_REPORT")
+	fill("ingest", stages["ingest"]...)
+	fill("reports", stages["reports"]...)
 	return steps
 }
 

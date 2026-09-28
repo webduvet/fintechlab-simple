@@ -373,6 +373,45 @@ keyboard — `tabindex="0"`, `role="button"`, `aria-expanded`, and Enter/Space
 handled alongside the click. The console does not do this yet; new apps
 should.
 
+### Plugin card — a card the system under test draws
+
+The platform under test is not part of the lab, so its card is not part of
+the console. A platform registers itself (`POST /api/plugins`, contract in
+[plugins.md](plugins.md)) with a **descriptor**: the same fields every
+service card is drawn from, plus its buttons, the settlement files it can
+run, and whether it follows the lab clock. The console draws that with the
+components on this page and nothing else.
+
+- **Data, never markup.** Every string in a descriptor is text and is
+  escaped like any peer's words. A plugin cannot bring HTML, CSS or script;
+  if it needs a component this page does not have, the component is added
+  here first — for every plugin at once.
+- **First in its view.** Plugins head the Platform view, before the lab's
+  own clock and stand-ins: the thing being tested is the thing with the
+  buttons.
+- **A declared button is one call.** `actions` become buttons in the card's
+  action row, each forwarded by the console to the path the plugin declared
+  and nowhere else. `primary: true` makes one of them the card's `.btn`
+  (still at most one); the rest are `.ghost`. `confirm` is asked first, in
+  the plugin's words. The toast is the platform's own answer — its `note`,
+  or the whole body.
+- **Say how the registration stands.** A *Registered* row in the `.kv`:
+  live, *lapsed* (stopped renewing) or *stopped* (said goodbye), and when.
+  A lapsed or stopped platform is **grey, not red** — it is not a lab
+  service that is down, it is someone else's process that is not running —
+  and its card shows the plugin's own `start_hint` in a `.note.warn` where
+  the buttons would be. No buttons while it is not up: a button on a
+  process that is not listening fails in a way that reads as the lab being
+  broken.
+- **Its logs are activity panels.** Everything under *Activity panel*
+  applies; the empty states are the plugin's `empty_hints`, so the hint
+  names what *that* platform would do to fill it.
+- **Settlement files are a table the lab defines.** A plugin that settles
+  declares `settlement.files_path`; the rows, their pills and the *Run* /
+  *Run all together* buttons are this console's component, in the shape
+  the contract fixes. One run per currency at a time is the platform's rule
+  and arrives as its own 409.
+
 ### Sequence diagram
 
 The home view of an app that drives a system: participants as boxes across
@@ -416,11 +455,14 @@ solid purple lifeline where the others are dashed grey — purple because
 that is decoration, which this is. Its border still carries its state like
 every other box, so being the platform never looks like being healthy.
 
-**Say what time it is on the platform.** Above the diagram, one line with
-the platform's clock in UTC and in the zones its calendars live in, whether
-it is shifted from the real clock, and whether it is a business day —
-amber when it is not. A run that did nothing because the platform was on a
-Sunday must be explainable from this screen.
+**Say what time it is in the lab.** Above the diagram, one line with the
+lab clock in UTC and in the zones its calendars live in, whether it is
+shifted from the real clock, whether it is a business day — amber when it
+is not, naming the calendar that fails — and who holds it, if anyone. A run
+that did nothing because the lab was on a Sunday must be explainable from
+this screen. The clock belongs to the lab, not to the platform: the vendors
+and a registered platform both follow it, and it is moved from its own card
+(Platform → Lab clock), never from a platform's.
 
 **A box reports on the participant, an arrow on the hop.** One report stage
 failing on a mail hop does not make the bank unwell. Red on a box means the
@@ -524,11 +566,11 @@ Rules, and they are the whole component:
 - **The count says what the amber is.** For a vendor, amber is a request
   it refused, and the pill says *refused*. A log whose amber means
   something else names it in its snapshot's `labels` (`{"warn": …,
-  "bad": …}`) and the pill uses that: the runner's runs are *with failed
+  "bad": …}`) and the pill uses that: a platform's runs are *with failed
   stages*, its processes *restarted*. "1 refused" on a run that nothing
   refused is a false statement in the one place people look first.
 - **Times are wall-clock.** Every log stamps `at` with the real time, even
-  where the platform's clock has been moved — the runner included — so
+  where the lab clock has been moved — a platform's logs included — so
   "2m ago" is true and events from different services sort together. The
   business date lives in the summary or the detail, never in `at`.
 - **A good row is not coloured.** Only `.warn` and `.bad` take a left

@@ -64,39 +64,17 @@ func TestEnvKeyShape(t *testing.T) {
 	}
 }
 
-// TestLocalRunnerCardIsDroppedWhenSwitchedOff. The lab has to stand alone:
-// most of the time there is no platform runner, and a permanently red row
-// for something nobody started teaches an operator to ignore red.
-func TestLocalRunnerCardIsDroppedWhenSwitchedOff(t *testing.T) {
-	if _, ok := DefaultCatalogue().Get("local-runner"); !ok {
-		t.Fatal("the runner card should be present by default")
-	}
-	t.Setenv("CONSOLE_LOCAL_RUNNER", "off")
-	cat := DefaultCatalogue()
-	if _, ok := cat.Get("local-runner"); ok {
-		t.Error("CONSOLE_LOCAL_RUNNER=off must drop the card")
-	}
-	// And drop only that one.
-	for _, id := range []string{"worldline", "b4b", "banking-circle"} {
-		if _, ok := cat.Get(id); !ok {
-			t.Errorf("%s went missing with it", id)
+// TestTheLabKnowsNoPlatformByName. The system under test registers itself
+// (plugins.go); a catalogue entry for one particular platform is what this
+// lab used to carry and must not again.
+func TestTheLabKnowsNoPlatformByName(t *testing.T) {
+	for _, s := range DefaultCatalogue().Services {
+		if strings.Contains(s.ID, "runner") || s.Plugin != nil {
+			t.Errorf("%s is a platform in the lab's own catalogue", s.ID)
 		}
 	}
-}
-
-// TestLocalRunnerIsReachableByEnv, because it runs on the host while the
-// console runs in a container, where "127.0.0.1" means the console itself.
-func TestLocalRunnerIsReachableByEnv(t *testing.T) {
-	t.Setenv("CONSOLE_URL_LOCAL_RUNNER", "http://host.containers.internal:3109")
-	s, ok := DefaultCatalogue().Get("local-runner")
-	if !ok {
-		t.Fatal("no runner card")
-	}
-	if s.BaseURL != "http://host.containers.internal:3109" {
-		t.Errorf("BaseURL = %q, want the override", s.BaseURL)
-	}
-	if s.Activity == "" {
-		t.Error("the runner keeps a log of its runs; the card must declare it")
+	if len(DefaultCatalogue().Plugins()) != 0 {
+		t.Error("a fresh catalogue has plugins")
 	}
 }
 

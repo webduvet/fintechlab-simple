@@ -33,8 +33,8 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/b4b"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
-	"github.com/webduvet/fintechlab-simple/internal/runnerclock"
 )
 
 type app struct {
@@ -73,7 +73,7 @@ type app struct {
 
 func main() {
 	addr := env("LISTEN", ":8086")
-	runnerclock.FollowEnv(context.Background(), "b4b")
+	labclock.FollowEnv(context.Background(), "b4b")
 	keysDir := env("B4B_JWT_KEYS_DIR", "/keys/b4b-keys")
 	pubKeyPath := env("B4B_JWT_PUBLIC_KEY_PATH", "")
 	kid := env("B4B_JWT_KEY_ID", "b4b-mock-1")
