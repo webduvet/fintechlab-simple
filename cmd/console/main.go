@@ -135,6 +135,9 @@ func (a *app) routes() http.Handler {
 	})
 
 	mux.HandleFunc("GET /api/flow", a.flow)
+	mux.HandleFunc("GET /api/flow/hops/{id}", a.flowHop)
+	mux.HandleFunc("GET /api/stand-ins", a.listStandIns)
+	mux.HandleFunc("POST /api/stand-ins/{id}", a.setStandIn)
 	mux.HandleFunc("GET /api/overview", a.overview)
 	mux.HandleFunc("POST /api/services/{id}/probe", a.probeService)
 	mux.HandleFunc("GET /api/services/{id}/activity", a.serviceActivity)

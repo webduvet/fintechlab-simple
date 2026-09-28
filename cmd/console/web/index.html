@@ -19,31 +19,31 @@
     </div>
 
     <nav class="nav" id="nav">
-      <button class="nav-item is-active" data-view="flow">
-        <span class="nav-icon">◎</span><span class="nav-label">System in test</span>
-        <span class="nav-badge" id="badge-flow"></span>
+      <button class="nav-item is-active" data-view="dashboard" title="Dashboard">
+        <span class="nav-icon">◎</span><span class="nav-label">Dashboard</span>
+        <span class="nav-badge" id="badge-dashboard"></span>
       </button>
-      <button class="nav-item" data-view="vendors">
+      <button class="nav-item" data-view="vendors" title="Vendors">
         <span class="nav-icon">▤</span><span class="nav-label">Vendors</span>
         <span class="nav-badge" id="badge-vendors"></span>
       </button>
-      <button class="nav-item" data-view="platform">
+      <button class="nav-item" data-view="platform" title="Platform">
         <span class="nav-icon">▥</span><span class="nav-label">Platform</span>
         <span class="nav-badge" id="badge-platform"></span>
       </button>
-      <button class="nav-item" data-view="verification">
+      <button class="nav-item" data-view="verification" title="Verification">
         <span class="nav-icon">◈</span><span class="nav-label">Verification</span>
         <span class="nav-badge" id="badge-verification"></span>
       </button>
-      <button class="nav-item" data-view="banks">
+      <button class="nav-item" data-view="banks" title="Banks">
         <span class="nav-icon">▦</span><span class="nav-label">Banks</span>
         <span class="nav-badge" id="badge-banks"></span>
       </button>
-      <button class="nav-item" data-view="merchants">
+      <button class="nav-item" data-view="merchants" title="Merchants">
         <span class="nav-icon">◍</span><span class="nav-label">Merchants</span>
         <span class="nav-badge" id="badge-merchants"></span>
       </button>
-      <button class="nav-item" data-view="config">
+      <button class="nav-item" data-view="config" title="Configuration">
         <span class="nav-icon">⚙</span><span class="nav-label">Configuration</span>
       </button>
     </nav>
@@ -54,19 +54,25 @@
         <span><i class="dot down"></i>down</span>
         <span><i class="dot unknown"></i>unknown</span>
       </div>
-      <button class="ghost small" id="theme-toggle">◐ theme</button>
+      <div class="sidebar-buttons">
+        <button class="ghost small" id="theme-toggle" title="Switch theme">◐ <span class="nav-label">theme</span></button>
+        <button class="ghost small" id="rail-toggle" title="Collapse the sidebar">«</button>
+      </div>
     </div>
   </aside>
 
   <main class="main">
     <header class="topbar">
       <div>
-        <h1 id="view-title">Pods</h1>
-        <p id="view-sub" class="sub">Mocked vendors as compositions of kernels. The brand lives in the recipe.</p>
+        <h1 id="view-title">Dashboard</h1>
+        <p id="view-sub" class="sub"></p>
       </div>
       <div class="topbar-actions" id="topbar-actions"></div>
     </header>
-    <div class="content" id="content"><div class="empty">Loading…</div></div>
+    <div class="main-body">
+      <div class="content" id="content"><div class="empty">Loading…</div></div>
+      <aside class="drawer" id="drawer" aria-label="Hop traffic" hidden></aside>
+    </div>
   </main>
 </div>
 

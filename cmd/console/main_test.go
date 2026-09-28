@@ -594,6 +594,63 @@ func TestFlowReadsStagesForTheHopsThatNeverLeaveThePlatform(t *testing.T) {
 	}
 }
 
+// TestAHopListsExactlyWhatItsArrowCounted. The drawer beside the diagram
+// shows the traffic behind one arrow. If it re-derived that list it could
+// disagree with the number on the arrow; it reads the same step instead.
+func TestAHopListsExactlyWhatItsArrowCounted(t *testing.T) {
+	peers := flowPeers(t)
+	defer peers.Close()
+	a := flowApp(t, peers)
+	steps := flowOf(t, a)
+
+	hop := func(id string) flowHopResponse {
+		t.Helper()
+		w := call(t, a, http.MethodGet, "/api/flow/hops/"+id, "")
+		if w.Code != 200 {
+			t.Fatalf("hop %s = %d %s", id, w.Code, w.Body.String())
+		}
+		var got flowHopResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	for _, id := range []string{"pull", "payouts", "confirm", "notify", "recon"} {
+		got := hop(id)
+		if len(got.Events) != steps[id].Count {
+			t.Errorf("%s: drawer lists %d, arrow says %d", id, len(got.Events), steps[id].Count)
+		}
+	}
+	// The platform's subscriber, not the lab's stub: the one batch with a
+	// foreign endpoint.
+	if c := hop("confirm"); len(c.Events) != 1 || !strings.Contains(c.Events[0].Summary, "to the platform") {
+		t.Errorf("confirm lists %+v", c.Events)
+	}
+	p := hop("payouts")
+	if p.Step.Source != "b4b" || p.Step.SourceLog != "payments" {
+		t.Errorf("payouts should point at b4b's payments log, got %q/%q", p.Step.Source, p.Step.SourceLog)
+	}
+
+	// A hop the platform makes to itself lists its stages, in the order the
+	// plugin declared them, including the ones the run has not reached.
+	r := hop("reports")
+	if len(r.Stages) != 5 || r.Step.Source != "test-platform" {
+		t.Fatalf("reports stages = %+v, source %q", r.Stages, r.Step.Source)
+	}
+	status := map[string]string{}
+	for _, st := range r.Stages {
+		status[st.Stage] = st.Status
+	}
+	if status["DAILY_SETTLEMENT_REPORT"] != "FAILED" || status["MERCHANT_DEFICIT_REPORT"] != "" {
+		t.Errorf("stage statuses = %+v", status)
+	}
+
+	if w := call(t, a, http.MethodGet, "/api/flow/hops/nope", ""); w.Code != 404 {
+		t.Errorf("unknown hop = %d, want 404", w.Code)
+	}
+}
+
 // TestFlowSurvivesAVendorBeingDown. The view is the first thing an operator
 // opens; it must render with one participant unreachable and say which,
 // rather than 500 and leave them with nothing.

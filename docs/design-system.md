@@ -314,6 +314,12 @@ spelled out in words somewhere in the expanded view.
   (`.brand-text, .nav-label, .nav-badge, .legend { display: none }`) and
   horizontal padding drops to 14px. That is the only breakpoint. These are
   desktop tools; a phone layout would be a different product.
+- **The operator can fold the sidebar to that rail at any width.** One
+  `.ghost.small` button in the sidebar foot, labelled with the action
+  (`« Collapse` / `»`), and the choice remembered per browser
+  (`localStorage`, in `try/catch` like the theme). Folded, every nav item
+  keeps its glyph and badge-less `title` tooltip, so nothing becomes
+  unreachable — the diagram gets the width, not a different app.
 
 Every wide thing (tables, code, diagrams) scrolls inside its own
 `.table-scroll { overflow-x: auto }`. The page body never scrolls sideways.
@@ -411,6 +417,120 @@ components on this page and nothing else.
   *Run all together* buttons are this console's component, in the shape
   the contract fixes. One run per currency at a time is the platform's rule
   and arrives as its own 409.
+
+### Dashboard — the home view
+
+The first screen answers four questions without a click: *what time is it
+in the lab, is the thing under test here, is everything up, and how did the
+last runs go?* Then it shows the run itself. Top to bottom:
+
+1. **A row of widgets** (below), in a grid that wraps
+   (`repeat(auto-fill, minmax(230px, 1fr))`, gap 10px). Order is fixed so
+   the eye learns it: lab clock, platform under test, services, recent runs,
+   quick links.
+2. **The sequence diagram** (below), with the clock line and run banner
+   above it as before.
+3. **The run report** card.
+
+The dashboard adds nothing that cannot be done elsewhere. It is a set of
+doorways: every widget links to the view and card where its detail lives
+and its controls are. The one exception is the platform's primary action —
+the button the whole lab exists to be pressed — which the platform widget
+repeats, as the same call, so a run can be started from the screen that
+shows it.
+
+### Widget — a doorway, not a destination
+
+A small card on the dashboard. It summarises one thing and links to where
+that thing lives.
+
+```html
+<a class="widget" href="#platform/clock">
+  <span class="w-title">Lab clock</span>
+  <span class="w-value mono">Fri 09:00 UTC</span>
+  <span class="w-line">a business day · shifted −62.5h</span>
+  <span class="w-foot">Move it →</span>
+</a>
+```
+
+- **The whole widget is one link** (`<a>`, since it navigates), to
+  `#view/card` — the card opens when you land. A widget that holds a button,
+  or lists several things, is a `<div class="widget">` whose title is the
+  link: each listed thing links to its own card, and the button is the one
+  call it names — never two buttons.
+- **Title** is a section heading (12px uppercase faint). **Value** is the
+  one headline — 17px, 600, tabular; mono when it is a machine value.
+  **Lines** are 12px `--text-dim`, at most three. **Foot** names where the
+  link goes, in accent: "Move it →", "All vendors →".
+- **Status colour only on status.** A widget border is `--border`, accent
+  on hover like a card. A health dot or a pill inside it carries the colour
+  — never the whole tile.
+- **Bars, not charts.** A history is the sparkline's idiom: one 6px bar
+  per item, `ok`/`warn`/`bad`, newest right, with its count beside it ("last
+  12 runs"). No axes, no library.
+- **Empty says what would fill it**, like every other empty state: "No
+  platform has registered — see docs/plugins.md".
+- **Unknown stays grey.** A widget whose source did not answer says so in
+  its line, grey, with the error in the `title`; it does not disappear, and
+  it does not go red unless the source is a lab service that is down.
+
+### Hop drawer — watching one arrow
+
+Every arrow in the sequence diagram is a button. Clicking it opens a
+**drawer** on the right of the content area: a live view of the traffic
+behind that one hop — the same events the arrow counts, newest first,
+refreshed every second while the drawer is open.
+
+- **It is a panel, not a modal.** The diagram stays visible and keeps
+  animating beside it, the poll does not pause, and another arrow can be
+  clicked to switch the drawer to it. `Escape` or the `×` closes it. Width
+  `min(420px, 42%)`, `--panel`, a left border carrying the sidebar's accent
+  gradient, full height below the topbar, its own scroll. While it is open
+  the sidebar folds to its rail and unfolds when it closes: the diagram
+  beside it needs the width, and shrunk any further its labels stop being
+  readable.
+- **The selected arrow is marked in the identity colour** — its label goes
+  accent and a wide `--accent-ghost` band sits behind its line — because
+  selection is decoration. The line itself keeps its status colour.
+- **Head:** `from → to` and the hop's label, the counts as pills (the
+  activity-panel rules: total neutral, refusals amber, failures red), the
+  hop's note, and a link to the card of the service whose log it reads
+  ("Open B4B Payments →").
+- **Body:** the events as activity-panel rows (`.log-row`), exactly the
+  events the server counted for this arrow — not the whole log it came
+  from. Rows that arrived since the drawer opened carry a thin accent rail
+  so "that one just came in" is visible without reading times. A stage hop
+  (the platform talking to itself) lists its stages with their status pills
+  instead.
+- **The server picks the events.** Which log, which ops and which
+  destinations make up a hop is judgement, and it lives where the arrow's
+  count is computed, so the drawer and the arrow can never disagree
+  (`GET /api/flow/hops/{id}`).
+- **Deep-linkable.** The open hop is the second segment of the hash
+  (`#dashboard/payouts`), so "look at this arrow" is a link.
+
+### Stand-in — scaffolding that steps aside
+
+A few of the lab's own services play the platform's part until a platform
+plugs in — the settlement service, the webhook receiver. Once one has,
+they are noise, so each carries two switches:
+
+- **Disconnect / Reconnect** stops the wiring it owns — its timers, the
+  vendor deliveries aimed at it — where that wiring lives (a lab switch on
+  the service, a subscription at the bank). The card lists each piece of
+  wiring with a pill read live from its owner: `connected` plain status
+  green, `disconnected` amber (caveated, not broken), and *not wired here*
+  as a hint when a vendor points somewhere else. The button's label is the
+  action; the pill in the card head says the state.
+- **Hide this card** takes it off its view and out of the diagram, hop and
+  all. Contract 10 applies: where the cards were, a note lists what is
+  hidden, by whom, each with a *Show* button. The dashboard's services
+  widget says how many are hidden.
+
+A platform can ask for both in its descriptor (`stand_ins`,
+[plugins.md](plugins.md)); the console applies that when the platform
+registers or changes its wishes, never on a renewal — so a button pressed
+here is not undone ten seconds later. Every card says who set it last.
 
 ### Sequence diagram
 
@@ -665,7 +785,8 @@ of probes. Cheap history beats an instantaneous truth: it tells you
 
 A row of `min-width: 108px` tiles above a list: big tabular number, tiny
 uppercase caption. Modifiers `.up`, `.down`, `.accent` colour **the number
-only**. Four tiles maximum — this is a summary, not a dashboard.
+only**. Four tiles maximum — this is a summary of the list below it. The
+home view's summary of *everything* is made of widgets, not more tiles.
 
 ### Definition list (`.kv`)
 
@@ -891,8 +1012,11 @@ they can never be mailed), streets nobody can post to.
 
 ### 9. Route the view in the hash
 
-`location.hash` is the view. Reload lands where you were; a link to a view
-is shareable. Nothing else goes in the URL.
+`location.hash` is the view, optionally followed by the one thing open in
+it: `#vendors/b4b` opens the B4B card, `#dashboard/payouts` the payouts
+hop. Reload lands where you were; a link to a view or a card is shareable,
+which is what lets a dashboard widget be a plain link. Nothing else goes in
+the URL — no filters, no scroll, no second card.
 
 ### 10. A control that suppresses something says so where the silence lands
 

@@ -71,7 +71,13 @@ type flowStep struct {
 	Refused     int    `json:"refused"`
 	LastAt      string `json:"last_at,omitempty"`
 	LastSummary string `json:"last_summary,omitempty"`
-	Source      string `json:"source,omitempty"` // which panel to open for detail
+	Source      string `json:"source,omitempty"`     // which service's card to open for detail
+	SourceLog   string `json:"source_log,omitempty"` // and which of its logs
+
+	// events is what Count counted, newest first. Not in /api/flow — the
+	// diagram needs the number — but the hop drawer shows exactly these,
+	// so the arrow and the drawer can never disagree.
+	events []activity.Event
 }
 
 type flowResponse struct {
@@ -187,10 +193,18 @@ func splitEvents(evs []activity.Event, isLab func(activity.Event) bool) (lab, pl
 	return lab, platform
 }
 
-func (a *app) flow(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := reqContext(r)
-	defer cancel()
+// flowInputs is everything the diagram is derived from, read once.
+type flowInputs struct {
+	at     func(string) *flowLogs
+	runner map[string]any
+	errs   map[string]string
+	isLab  func(activity.Event) bool
+	platID string
+	runs   string
+	stages map[string][]string
+}
 
+func (a *app) readFlow(ctx context.Context) flowInputs {
 	var (
 		mu     sync.Mutex
 		logs   = map[string]*flowLogs{}
@@ -247,33 +261,103 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	empty := &flowLogs{}
-	at := func(id string) *flowLogs {
-		if l, ok := logs[id]; ok {
-			return l
-		}
-		return empty
+	in := flowInputs{
+		at: func(id string) *flowLogs {
+			if l, ok := logs[id]; ok {
+				return l
+			}
+			return empty
+		},
+		runner: runner,
+		errs:   errs,
+		isLab:  labDelivery(a.knownHosts()),
 	}
-
-	isLab := labDelivery(a.knownHosts())
-
-	var stages map[string][]string
-	platID, runsLog := "", ""
 	if hasPlat {
-		platID, runsLog, stages = plat.ID, plat.Settlement.RunsLog, plat.Settlement.Stages
+		in.platID, in.runs, in.stages = plat.ID, plat.Settlement.RunsLog, plat.Settlement.Stages
 	}
+	return in
+}
+
+func (a *app) flow(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	in := a.readFlow(ctx)
+
 	out := flowResponse{
-		Participants: a.flowParticipants(at, errs, isLab, platID, runsLog),
-		Steps:        flowSteps(at, runner, isLab, stages),
-		Run:          runner["last_run"],
-		Errors:       errs,
+		Participants: a.flowParticipants(in.at, in.errs, in.isLab, in.platID, in.runs),
+		Steps:        flowSteps(in.at, in.runner, in.isLab, in.stages),
+		Run:          in.runner["last_run"],
+		Errors:       in.errs,
 	}
-	if runner != nil {
-		if live, ok := runner["running_now"]; ok && live != nil {
+	if in.runner != nil {
+		if live, ok := in.runner["running_now"]; ok && live != nil {
 			out.Run = live
 		}
 	}
-	out.Report = flowReport(at, runner, isLab)
+	out.Report = flowReport(in.at, in.runner, in.isLab)
+	// A hidden stand-in is hidden here too, with the hop into it: the
+	// developer said the receiver is not part of their picture.
+	if a.cat.Hidden("receiver") {
+		out.Participants = without(out.Participants, func(p flowParticipant) bool { return p.ID == "receiver" })
+		out.Steps = without(out.Steps, func(s flowStep) bool { return s.To == "receiver" || s.From == "receiver" })
+	}
 	httputilx.WriteJSON(w, 200, out)
+}
+
+// flowHopResponse is one arrow and the traffic behind it.
+type flowHopResponse struct {
+	Step   flowStep         `json:"step"`
+	Events []activity.Event `json:"events"`
+	// Kept says how many of the counted events are in Events: the drawer
+	// shows the newest hopWindow and says so when there were more.
+	Kept int `json:"kept"`
+	// Stages is set for a hop the platform makes to itself: its stages in
+	// the order the plugin declared them, with how each one stands. A stage
+	// the run has not reached has no status.
+	Stages []flowStage       `json:"stages,omitempty"`
+	Errors map[string]string `json:"errors,omitempty"`
+}
+
+type flowStage struct {
+	Stage  string `json:"stage"`
+	Status string `json:"status"`
+}
+
+// hopWindow is how many of a hop's events the drawer is sent.
+const hopWindow = 100
+
+// flowHop is the hop drawer's data: the same step /api/flow draws, with
+// the events it counted. Computed by the same code, never re-derived, so
+// an arrow saying 6 and a drawer listing 5 cannot happen.
+func (a *app) flowHop(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	id := r.PathValue("id")
+	in := a.readFlow(ctx)
+	for _, s := range flowSteps(in.at, in.runner, in.isLab, in.stages) {
+		if s.ID != id {
+			continue
+		}
+		out := flowHopResponse{Step: s, Events: s.events, Kept: len(s.events), Errors: in.errs}
+		if len(out.Events) > hopWindow {
+			out.Events = out.Events[:hopWindow]
+			out.Kept = hopWindow
+		}
+		if out.Events == nil {
+			out.Events = []activity.Event{}
+		}
+		if names, ok := in.stages[id]; ok {
+			// Stages are the platform's own; its card is where they live.
+			out.Step.Source, out.Step.SourceLog = in.platID, in.runs
+			ran := runStages(in.runner)
+			for _, n := range names {
+				out.Stages = append(out.Stages, flowStage{Stage: n, Status: ran[n]})
+			}
+		}
+		httputilx.WriteJSON(w, 200, out)
+		return
+	}
+	httputilx.WriteJSON(w, 404, map[string]string{"error": "no hop " + strconv.Quote(id) + " in the diagram"})
 }
 
 // fetchActivity reads one service's rings, through the same path the
@@ -379,10 +463,12 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 	labBatches, platformBatches := splitEvents(bc.find("notifications", "notification"), isLab)
 
 	step := func(id, from, to, label, note, source string, multi bool, evs []activity.Event) flowStep {
+		// source is "service" or "service:log" — where the whole log lives.
+		svc, log, _ := strings.Cut(source, ":")
 		s := flowStep{
 			ID: id, From: from, To: to, Label: label, Note: note,
-			Multi: multi, Count: len(evs), Source: source,
-			Capped: len(evs) >= flowWindow,
+			Multi: multi, Count: len(evs), Source: svc, SourceLog: log,
+			Capped: len(evs) >= flowWindow, events: evs,
 		}
 		for _, e := range evs {
 			switch e.Status {
@@ -403,33 +489,33 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 
 	steps := []flowStep{
 		step("pull", "platform", "worldline",
-			"connect + list", "the lab's own settlement service polls this on a timer; a run triggered from S3 does not use it", "worldline", false,
+			"connect + list", "the lab's own settlement service polls this on a timer; a run triggered from S3 does not use it", "worldline:sftp", false,
 			append(wl.find("sftp", "sftp.session"), wl.find("sftp", "sftp.list")...)),
 		step("collect", "worldline", "platform",
-			"settlement file", "the Bambora file, PGP-encrypted — collected by acquirer-fts, not by a run started here", "worldline", false,
+			"settlement file", "the Bambora file, PGP-encrypted — collected by acquirer-fts, not by a run started here", "worldline:sftp", false,
 			wl.find("sftp", "sftp.download")),
 		step("ingest", "platform", "platform",
 			"parse + daily movements", "", "", false, nil),
 		step("fund", "platform", "banking-circle",
-			"safeguarding balance", "funds must cover the run before it leaves", "banking-circle", false,
+			"safeguarding balance", "funds must cover the run before it leaves", "banking-circle:payments", false,
 			bc.find("payments", "payment.incoming")),
 		step("payouts", "platform", "b4b",
-			"create payouts", "one per merchant settlement", "b4b", true,
+			"create payouts", "one per merchant settlement", "b4b:payments", true,
 			b4b.find("payments", "payment.create")),
 		step("bridge", "b4b", "banking-circle",
-			"bridge approved payouts", "B4B moves the money at the bank", "banking-circle", true,
+			"bridge approved payouts", "B4B moves the money at the bank", "banking-circle:payments", true,
 			bc.find("payments", "payment.create")),
 		step("callbacks", "b4b", "platform",
-			"lifecycle callbacks", "SUBMITTED → IN_PROGRESS happens here", "b4b", true,
+			"lifecycle callbacks", "SUBMITTED → IN_PROGRESS happens here", "b4b:callbacks", true,
 			b4b.find("callbacks", "callback")),
 		step("notify", "banking-circle", "receiver",
-			"notification batches", "up to five events per batch, to the lab's own stub", "banking-circle", true,
+			"notification batches", "up to five events per batch, to the lab's own stub", "banking-circle:notifications", true,
 			labBatches),
 		step("confirm", "banking-circle", "platform",
 			"payout confirmations",
 			"the same batches to the platform's own subscriber — what moves a payout off IN_PROGRESS; "+
 				"grey under a green hop above means nothing of yours heard it",
-			"banking-circle", true, platformBatches),
+			"banking-circle:notifications", true, platformBatches),
 		step("reports", "platform", "platform",
 			"daily reports", "five report jobs; the mail hop fails alone when no mailer runs", "", true, nil),
 		// Last, because it comes last: the platform's reconciliation sweep
@@ -439,7 +525,7 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 			"intraday reconciliation",
 			"the platform's sweep reading the day's bookings — a payout it finds processed moves to SUCCESS "+
 				"without waiting for a webhook; refused reads are amber",
-			"banking-circle", false, bc.find("reports", "report.intraday")),
+			"banking-circle:reports", false, bc.find("reports", "report.intraday")),
 	}
 
 	// The two self-arrows are stages, not vendor traffic, so they are read
@@ -593,6 +679,16 @@ func countOK(evs []activity.Event) int {
 		}
 	}
 	return n
+}
+
+func without[T any](in []T, drop func(T) bool) []T {
+	out := in[:0:0]
+	for _, v := range in {
+		if !drop(v) {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func itoa(n int) string     { return strconv.Itoa(n) }

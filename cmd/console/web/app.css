@@ -120,6 +120,16 @@ html, body {
 .sidebar-foot { margin-top: auto; padding: 12px; border-top: 1px solid var(--border-soft); }
 .legend { display: flex; flex-wrap: wrap; gap: 8px 12px; font-size: 11px; color: var(--text-faint); margin-bottom: 10px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sidebar-buttons { display: flex; gap: 6px; }
+
+/* The icon rail: the same shape the 760px breakpoint forces, chosen by the
+   operator at any width (design-system.md, Layout). */
+.app:is(.is-rail, .drawer-open) .sidebar { width: 62px; flex-basis: 62px; }
+.app:is(.is-rail, .drawer-open) :is(.brand-text, .nav-label, .nav-badge, .legend) { display: none; }
+.app:is(.is-rail, .drawer-open) .sidebar-buttons { flex-direction: column; align-items: center; }
+.app:is(.is-rail, .drawer-open) .nav-item { justify-content: center; }
+/* Folded for the drawer, not by choice: nothing to toggle until it closes. */
+.app.drawer-open #rail-toggle { display: none; }
 
 /* --- main ------------------------------------------------------------- */
 
@@ -134,7 +144,8 @@ html, body {
 .sub { margin: 4px 0 0; font-size: 12.5px; color: var(--text-dim); max-width: 78ch; }
 .topbar-actions { display: flex; gap: 8px; flex: none; }
 
-.content { flex: 1; overflow-y: auto; padding: 20px 26px 60px; }
+.main-body { flex: 1; display: flex; min-height: 0; }
+.content { flex: 1; min-width: 0; overflow-y: auto; padding: 20px 26px 60px; }
 .content::-webkit-scrollbar { width: 10px; }
 .content::-webkit-scrollbar-thumb { background: var(--panel-3); border-radius: 10px; border: 3px solid var(--bg); }
 
@@ -387,7 +398,8 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 760px) {
   .sidebar { width: 62px; flex-basis: 62px; }
-  .brand-text, .nav-label, .nav-badge, .legend { display: none; }
+  .brand-text, .nav-label, .nav-badge, .legend, #rail-toggle { display: none; }
+  .sidebar-buttons { flex-direction: column; align-items: center; }
   .content, .topbar { padding-left: 14px; padding-right: 14px; }
   /* One kernel per row on a narrow screen; the boxes stay readable rather
      than shrinking into columns of two words. */
@@ -648,3 +660,105 @@ input:focus, select:focus, textarea:focus {
      only the ramp goes. */
   .flow-step.is-lit .flow-line, .flow-step.is-lit .flow-head { animation: none; }
 }
+
+/* --- dashboard: widgets --------------------------------------------------- */
+/* A widget is a doorway: one thing summarised, linked to where it lives.
+   Its border is structure, accent on hover like a card; only the dots and
+   pills inside it carry status colour. */
+
+.widgets {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px; margin-bottom: 16px;
+}
+.widget {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 12px 14px; color: var(--text); text-decoration: none;
+  transition: border-color .12s;
+}
+.widget:hover { border-color: var(--accent-line); }
+.w-title {
+  font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-faint); text-decoration: none; margin-bottom: 2px;
+}
+a.w-title:hover { color: var(--accent-hi); }
+.w-value {
+  font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.w-value.mono { font-family: var(--mono); font-size: 16px; }
+.w-line { font-size: 12px; color: var(--text-dim); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; overflow-wrap: anywhere; }
+.w-line.faint { color: var(--text-faint); }
+.w-line.mono { font-family: var(--mono); font-size: 11px; }
+.w-foot { margin-top: auto; padding-top: 6px; font-size: 12px; color: var(--accent-hi); }
+.w-actions { margin-top: auto; padding-top: 8px; }
+
+.w-chips { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
+.w-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--text-dim); text-decoration: none; white-space: nowrap;
+}
+.w-chip:hover { color: var(--text); }
+.w-chip .dot { width: 6px; height: 6px; }
+.w-chip .dot.up, .w-chip .dot.down { box-shadow: none; }
+
+/* The sparkline's idiom, one bar per run, newest on the right. */
+.w-bars { display: flex; align-items: flex-end; gap: 3px; height: 16px; margin: 4px 0 2px; }
+.w-bars i { width: 6px; height: 14px; border-radius: 1px; background: var(--up); }
+.w-bars i.warn { background: var(--warn); }
+.w-bars i.bad { background: var(--down); }
+.w-bars small { margin-left: 6px; font-size: 11px; color: var(--text-faint); align-self: center; }
+
+.w-line.clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* A strip across the whole row: links read left to right, not as a tower. */
+.widget.wide { grid-column: 1 / -1; flex-direction: row; align-items: center; gap: 18px; padding: 10px 14px; }
+.widget.wide .w-title { margin: 0; flex: none; }
+.w-links { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+.w-links a { color: var(--text); text-decoration: none; font-size: 12.5px; display: flex; flex-direction: column; }
+.w-links a:hover { color: var(--accent-hi); }
+.w-links small { font-size: 11px; color: var(--text-faint); }
+
+/* --- dashboard: the hop drawer -------------------------------------------- */
+/* A panel beside the diagram, not a modal: the diagram keeps animating next
+   to it. Its left edge carries the sidebar's accent gradient, so it reads
+   as part of the same shell. */
+
+.drawer {
+  flex: 0 0 min(420px, 42%); min-width: 0; position: relative;
+  background: var(--panel); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; animation: slide .18s ease-out;
+}
+.drawer::before {
+  content: ""; position: absolute; inset: 0 auto 0 -1px; width: 1px;
+  background: linear-gradient(180deg, transparent, var(--accent-line) 25%, var(--accent-line) 60%, transparent);
+}
+.drawer-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--border-soft);
+}
+.drawer-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.drawer-title h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.drawer-route { font-size: 12px; color: var(--text-dim); }
+.drawer-body { flex: 1; overflow-y: auto; padding: 12px 16px 30px; }
+.drawer-body .pill-row { margin-bottom: 4px; }
+.drawer-body .note { margin: 10px 0; }
+.drawer-body .hint a { color: var(--accent-hi); }
+.drawer .log-rows { max-height: none; }
+/* Arrived since the drawer opened: a thin accent rail, decoration rather
+   than status, so a warn or bad row keeps its own colour on top. */
+.log-row.is-new { box-shadow: inset 2px 0 0 var(--accent); }
+.log-row.is-new.warn, .log-row.is-new.bad { box-shadow: inset 5px 0 0 -2px var(--accent); }
+
+/* Arrows are buttons. The hit path is wide and invisible; the selection
+   band sits behind the line so the line keeps its status colour. */
+.flow-step { cursor: pointer; outline: none; }
+.flow-hit { stroke: transparent; stroke-width: 16; fill: none; pointer-events: stroke; }
+.flow-sel { stroke: transparent; stroke-width: 12; fill: none; stroke-linecap: round; pointer-events: none; }
+.flow-step:hover .flow-label, .flow-step:focus-visible .flow-label { fill: var(--text); }
+.flow-step:focus-visible .flow-sel { stroke: var(--accent-ghost); }
+.flow-step.is-selected .flow-sel { stroke: var(--accent-ghost); }
+.flow-step.is-selected .flow-label { fill: var(--accent-hi); font-weight: 600; }
+.flow-box[data-href] { cursor: pointer; outline: none; }
+.flow-box[data-href]:hover rect, .flow-box[data-href]:focus-visible rect { stroke: var(--accent-line); }

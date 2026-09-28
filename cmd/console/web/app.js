@@ -5,11 +5,16 @@
    the active view wholesale on every change. */
 
 const state = {
-  view: 'flow',
+  view: 'dashboard',
   open: new Set(),      // "view:id" of expanded cards, so a poll does not collapse them
   data: {},
   activity: {},         // service id -> {logs} | {error}, fetched only while a card is open
   files: {},            // plugin id -> its settlement files, likewise
+  runs: null,           // the settling plugin's run and sweep logs, for the dashboard
+  hop: null,            // the arrow whose traffic the drawer is showing
+  hopData: null,
+  hopSeen: null,        // events already there when the drawer opened
+  focus: null,          // a card to scroll to once it is drawn (#view/card)
   timer: null,
 };
 
@@ -18,9 +23,9 @@ const state = {
    item was still called "Standalone" — a leftover from an architecture this
    tree no longer has. */
 const VIEWS = {
-  flow: {
-    title: 'System in test',
-    sub: 'One settlement run as it happens: the platform down the middle, the vendors it talks to either side, and every hop between them.',
+  dashboard: {
+    title: 'Dashboard',
+    sub: 'The lab at a glance, then the last settlement run hop by hop — click an arrow to watch the traffic behind it.',
   },
   vendors: {
     title: 'Vendors',
@@ -163,7 +168,10 @@ function isServiceView(view = state.view) { return !!(VIEWS[view] && VIEWS[view]
 
 async function load() {
   try {
-    if (state.view === 'flow') {
+    if (state.view === 'dashboard') {
+      // First, so the widgets below can find the platform in it.
+      state.data.overview = await api('GET', '/api/overview');
+      await loadRuns();
       state.data.flow = await api('GET', '/api/flow');
       flowObserve(state.data.flow);
       // The lab clock heads the diagram. A clock that is not up is a note
@@ -177,6 +185,14 @@ async function load() {
     if (isServiceView()) {
       state.data.overview = await api('GET', '/api/overview');
       await loadActivity();
+    }
+    if (state.view === 'platform') {
+      // Read live from the services that own the wiring, never remembered.
+      try {
+        state.standins = await api('GET', '/api/stand-ins');
+      } catch (err) {
+        state.standins = { error: err.message };
+      }
     }
     if (state.view === 'banks') state.data.banks = await api('GET', '/api/banks');
     if (state.view === 'merchants') state.data.merchants = await api('GET', '/api/merchants');
@@ -192,7 +208,7 @@ async function load() {
     // when the Services view is not the one on screen.
     // The badges are wanted on every view, so the overview is refreshed even
     // when the view on screen is not a service list.
-    if (!isServiceView()) state.data.overview = await api('GET', '/api/overview');
+    if (!isServiceView() && state.view !== 'dashboard') state.data.overview = await api('GET', '/api/overview');
     state.error = null;
   } catch (err) {
     state.error = err.message;
@@ -833,7 +849,7 @@ function clock(iso) {
 
 function renderBadges() {
   const run = state.data.flow && state.data.flow.run;
-  const el = $('#badge-flow');
+  const el = $('#badge-dashboard');
   if (el) {
     const stages = (run && run.stages) || [];
     const done = stages.filter((s) => s.status === 'COMPLETED').length;
@@ -847,16 +863,12 @@ function renderBadges() {
     // a service that is down.
     for (const [view, meta] of Object.entries(VIEWS)) {
       if (!meta.kind) continue;
-      const group = ov.services.filter((s) => s.kind === meta.kind && s.health_path);
+      const group = ov.services.filter((s) => s.kind === meta.kind && s.health_path && !isHidden(s));
       const up = group.filter((s) => (s.status || {}).state === 'up').length;
       const el = $(`#badge-${view}`);
       if (el) el.textContent = group.length ? `${up}/${group.length}` : '';
     }
   }
-  const pods = state.data.pods;
-  // "2/4" — running out of declared. A pod that is not running still has a
-  // readable recipe, so this is a count, not a health verdict.
-  if (pods && pods.enabled) $('#badge-pods').textContent = `${pods.live}/${pods.total}`;
   const banks = state.data.banks;
   if (banks) $('#badge-banks').textContent = String(banks.banks.length);
   const m = state.data.merchants;
@@ -928,7 +940,7 @@ function flowObserve(data) {
   }
   // Re-render once when the hold expires, or an arrow that lit on the last
   // poll of a run would stay green until something else happened.
-  if (moved) setTimeout(() => { if (state.view === 'flow') renderView(); }, FLOW_HOLD_MS + 60);
+  if (moved) setTimeout(() => { if (state.view === 'dashboard') renderView(); }, FLOW_HOLD_MS + 60);
 }
 
 function flowIsLit(id) {
@@ -1012,7 +1024,7 @@ function flowClock() {
       ${shifted ? `Shifted ${esc(String(c.offset_hours))}h from the real clock.` : 'On the real clock.'}
       ${c.business_day ? 'A business day.' : `<b>Not a business day</b> on ${esc(offCalendars(c))}: settlement will not leave the bank.`}
       ${(c.holds || []).length ? `Held by <span class="mono">${esc(c.holds[0].holder)}</span>.` : ''}
-      <a href="#platform">Move it</a>.
+      <a href="#platform/clock">Move it</a>.
     </div>`;
 }
 
@@ -1036,7 +1048,8 @@ function flowBox(p, x, klass, deltas) {
   // gets what fits in it, because a title clipped by the viewBox reads as a
   // rendering bug rather than as a long name.
   const short = String(p.label || '').replace(/\s*\(.*\)\s*$/, '');
-  return `<g class="flow-box ${klass}${sut ? ' is-sut' : ''}">
+  const href = participantHref(p.id);
+  return `<g class="flow-box ${klass}${sut ? ' is-sut' : ''}"${href ? ` data-href="${esc(href)}" role="link" tabindex="0"` : ''}>
     <title>${esc(p.label)}${p.error ? ' — ' + esc(p.error) : ''}</title>
     <rect x="${left}" y="${FLOW_TOP}" width="${width}" height="${FLOW_BOX_H}" rx="9"></rect>
     <text class="flow-title" x="${left + 10}" y="${FLOW_TOP + 19}">${esc(short)}</text>
@@ -1062,14 +1075,25 @@ function flowArrow(s, at, y) {
     ? `${n}${delta ? ' (' + delta + ')' : ''}${s.failed ? ' · ' + s.failed + ' failed' : ''}`
     : '';
 
+  // Every arrow is a button that opens its drawer (design-system.md, Hop
+  // drawer). The selection band sits behind the line, so the line keeps its
+  // status colour; the hit path is wide and invisible, because a 1.3px line
+  // is not something anyone can click.
+  const sel = state.hop === s.id ? ' is-selected' : '';
+  const attrs = `class="flow-step ${klass}${sel}" data-step="${esc(s.id)}" data-hop="${esc(s.id)}"
+    role="button" tabindex="0" aria-label="${esc(s.label)}: watch its traffic"`;
+
   if (s.from === s.to) {
     // A self-call: a small loop off the lifeline, because a hop that never
     // leaves the platform is still a step in the sequence.
     const x = at[s.from];
     const w = 48;
-    return `<g class="flow-step ${klass}" data-step="${esc(s.id)}">
+    const d = `M ${x} ${y - 8} h ${w} v 16 h ${-w}`;
+    return `<g ${attrs}>
       ${flowTip(s)}
-      <path class="flow-line" d="M ${x} ${y - 8} h ${w} v 16 h ${-w}"></path>
+      <path class="flow-sel" d="${d}"></path>
+      <path class="flow-hit" d="${d}"></path>
+      <path class="flow-line" d="${d}"></path>
       <polygon class="flow-head" points="${x},${y + 8} ${x + 8},${y + 4.5} ${x + 8},${y + 11.5}"></polygon>
       <text class="flow-label at-start" x="${x + w + 10}" y="${y - 1}">${esc(s.label)}</text>
       ${badge ? `<text class="flow-count at-start" x="${x + w + 10}" y="${y + 13}">${esc(badge)}</text>` : ''}
@@ -1081,8 +1105,11 @@ function flowArrow(s, at, y) {
   const dir = x2 > x1 ? 1 : -1;
   const tipX = x2 - 8 * dir;
   const mid = (x1 + x2) / 2;
-  return `<g class="flow-step ${klass}" data-step="${esc(s.id)}">
+  return `<g ${attrs}>
     ${flowTip(s)}
+    <line class="flow-sel" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}"></line>
+    <line class="flow-hit" x1="${x1}" y1="${y - 14}" x2="${x2}" y2="${y - 14}"></line>
+    <line class="flow-hit" x1="${x1}" y1="${y}" x2="${x2}" y2="${y}"></line>
     <line class="flow-line" x1="${x1}" y1="${y}" x2="${tipX}" y2="${y}"></line>
     <polygon class="flow-head" points="${x2},${y} ${tipX},${y - 5} ${tipX},${y + 5}"></polygon>
     <text class="flow-label" x="${mid}" y="${y - 7}">${esc(s.label)}</text>
@@ -1121,7 +1148,7 @@ function renderFlow() {
     ? `<div class="note${live ? '' : ' flow-note-done'}">${live ? 'Running now' : 'Last run'} —
         <span class="mono">${esc(run.id || run.root || '')}</span>${run.error ? ' — ' + esc(run.error) : ''}</div>`
     : `<div class="note">No run yet. Start one from the platform's card on
-        <a href="#platform">Platform</a> — a platform under test registers it there — and this
+        <a href="${esc(platformHref())}">Platform</a> — a platform under test registers it there — and this
         diagram lights up as it goes.</div>`;
 
   const unreachable = Object.entries(d.errors || {})
@@ -1173,6 +1200,335 @@ function flowReport(d) {
   </div>`;
 }
 
+/* --- dashboard -----------------------------------------------------------
+
+   The home view: a row of widgets, then the diagram (design-system.md,
+   Dashboard). A widget is a doorway — it summarises one thing and links to
+   the card where that thing lives — so nothing here can be done only from
+   here. The one button it repeats is the platform's own primary action,
+   which is the same call its card makes. */
+
+const VIEW_OF_KIND = { vendor: 'vendors', platform: 'platform', verification: 'verification' };
+
+function services() { return (state.data.overview && state.data.overview.services) || []; }
+
+/* #view/id[:log] for a service's card — and, with a log, the panel in it. */
+function serviceHref(id, log) {
+  const s = services().find((x) => x.id === id);
+  const view = s && VIEW_OF_KIND[s.kind];
+  if (!view) return '';
+  return `#${view}/${encodeURIComponent(id)}${log ? ':' + encodeURIComponent(log) : ''}`;
+}
+
+/* The platform the diagram draws: the registered plugin that settles, else
+   any registered plugin. */
+function settlingPlugin() { return services().find((s) => s.plugin && s.plugin.settlement) || null; }
+function platformPlugin() { return settlingPlugin() || services().find((s) => s.plugin) || null; }
+function platformHref() { const p = platformPlugin(); return p ? serviceHref(p.id) : '#platform'; }
+function participantHref(pid) { return pid === 'platform' ? platformHref() : serviceHref(pid); }
+
+function shortName(name) { return String(name || '').replace(/\s*\(.*\)\s*$/, ''); }
+
+/* The settling platform's logs, for the recent-runs widget. Only while it is
+   up: a stopped platform's last answer would be reported as current. */
+async function loadRuns() {
+  const p = settlingPlugin();
+  if (!p || !p.activity_path || !isUp(p)) { state.runs = null; return; }
+  try {
+    state.runs = { id: p.id, ...(await api('GET', `/api/services/${encodeURIComponent(p.id)}/activity?limit=50`)) };
+  } catch (err) {
+    state.runs = { id: p.id, error: err.message };
+  }
+}
+
+function renderDashboard() {
+  return `<div class="widgets">
+      ${widgetClock()}${widgetPlatform()}${widgetServices()}${widgetRuns()}${widgetLinks()}
+    </div>
+    ${renderFlow()}`;
+}
+
+function widgetLine(text, klass = '') { return `<span class="w-line${klass ? ' ' + klass : ''}">${text}</span>`; }
+
+function widgetClock() {
+  const c = state.clock;
+  const shell = (value, lines) => `<a class="widget" href="#platform/clock">
+      <span class="w-title">Lab clock</span>${value}${lines}
+      <span class="w-foot">Move it →</span>
+    </a>`;
+  if (!c) return shell('<span class="w-value">…</span>', '');
+  if (c.error) {
+    return shell('<span class="w-value">unknown</span>',
+      widgetLine('The clock did not answer, so vendors keep the last time they were given.', 'faint') +
+      widgetLine(esc(c.error), 'faint mono'));
+  }
+  const at = new Date(c.now);
+  const when = at.toLocaleString('en-GB', { timeZone: 'UTC', weekday: 'short', hour: '2-digit', minute: '2-digit' });
+  const shifted = Math.abs(c.offset_hours) >= 0.05;
+  const hold = (c.holds || [])[0];
+  return shell(`<span class="w-value mono">${esc(when)} UTC</span>`,
+    widgetLine(`${esc((c.now || '').slice(0, 10))} · ${c.business_day
+      ? 'a business day'
+      : `<span class="pill warn">not a business day</span> on ${esc(offCalendars(c))}`}`) +
+    widgetLine(shifted ? `shifted <span class="mono">${esc(String(c.offset_hours))}h</span> · ${esc(c.mode)}` : `on the real clock · ${esc(c.mode)}`) +
+    (hold ? widgetLine(`held by <span class="mono">${esc(hold.holder)}</span>`) : ''));
+}
+
+function widgetPlatform() {
+  const p = platformPlugin();
+  if (!p) {
+    return `<a class="widget" href="#platform">
+        <span class="w-title">Platform under test</span>
+        <span class="w-value">none registered</span>
+        ${widgetLine('A platform puts its own card here by registering with the console — see <span class="mono">docs/plugins.md</span>.')}
+        <span class="w-foot">Platform →</span>
+      </a>`;
+  }
+  const up = isUp(p);
+  const pl = p.plugin;
+  const reg = pl.state === 'live'
+    ? `registered · renewed ${ago(pl.last_seen)} ago`
+    : `<span class="pill warn">${esc(pl.state)}</span> last heard ${ago(pl.last_seen)} ago`;
+  const run = state.data.flow && state.data.flow.run;
+  const running = run && !run.finished_at;
+  const primary = (pl.actions || []).find((a) => a.primary);
+  const button = up && primary
+    ? `<div class="w-actions"><button class="btn small" data-action="plugin-action" data-id="${esc(p.id)}" data-act="${esc(primary.id)}">${esc(primary.label)}</button></div>`
+    : '';
+  return `<div class="widget">
+      <a class="w-title" href="${esc(serviceHref(p.id))}">Platform under test →</a>
+      <span class="w-value"><i class="dot ${esc((p.status || {}).state || 'unknown')}"></i> ${esc(p.name)}</span>
+      ${widgetLine(reg)}
+      ${up
+        ? widgetLine(running ? `running now · <span class="mono">${esc(run.id || run.root || '')}</span>` : (pl.clock === 'wall' ? 'on the wall clock' : 'follows the lab clock'))
+        : widgetLine(esc(pl.start_hint || 'Not running. Start it, and it registers again.'), 'faint')}
+      ${button}
+    </div>`;
+}
+
+function widgetServices() {
+  const shown = services().filter((s) => !isHidden(s));
+  const hidden = services().filter(isHidden);
+  const list = shown.filter((s) => s.health_path && !(s.plugin && s.plugin.state !== 'live'));
+  const st = (s) => (s.status || {}).state || 'unknown';
+  const up = list.filter((s) => st(s) === 'up').length;
+  const down = list.filter((s) => st(s) === 'down');
+  const chips = shown
+    .filter((s) => VIEW_OF_KIND[s.kind])
+    .map((s) => `<a class="w-chip" href="${esc(serviceHref(s.id))}" title="${esc(s.name)} — ${esc(st(s))}"><i class="dot ${esc(st(s))}"></i>${esc(shortName(s.name))}</a>`)
+    .join('');
+  return `<div class="widget">
+      <a class="w-title" href="#vendors">Services →</a>
+      <span class="w-value">${up}/${list.length} up</span>
+      ${down.length
+        ? widgetLine(`<span class="pill bad">${down.length} down</span> ${esc(down.map((s) => shortName(s.name)).join(', '))}`)
+        : widgetLine(list.length ? 'every service with a health check answers' : 'not probed yet', list.length ? '' : 'faint')}
+      <span class="w-chips">${chips}</span>
+      ${hidden.length ? `<a class="w-line faint" href="#platform">${hidden.length} stand-in${hidden.length === 1 ? '' : 's'} hidden — ${esc(hidden.map((s) => shortName(s.name)).join(', '))}</a>` : ''}
+    </div>`;
+}
+
+function widgetRuns() {
+  const p = settlingPlugin();
+  if (!p) {
+    return `<a class="widget" href="#platform">
+        <span class="w-title">Recent runs</span>
+        <span class="w-value">—</span>
+        ${widgetLine('No platform that settles has registered, so nothing has run.', 'faint')}
+        <span class="w-foot">Platform →</span>
+      </a>`;
+  }
+  const logName = p.plugin.settlement.runs_log;
+  const href = serviceHref(p.id, logName);
+  const r = state.runs;
+  const shell = (value, lines) => `<a class="widget" href="${esc(href)}">
+      <span class="w-title">Recent runs</span>${value}${lines}
+      <span class="w-foot">All runs →</span>
+    </a>`;
+  if (!isUp(p)) return shell('<span class="w-value">—</span>', widgetLine(`${esc(p.name)} is not running, so its runs cannot be read.`, 'faint'));
+  if (!r) return shell('<span class="w-value">…</span>', '');
+  if (r.error) return shell('<span class="w-value">unknown</span>', widgetLine(esc(r.error), 'faint mono'));
+  const log = (r.logs || []).find((l) => l.name === logName);
+  const events = (log && log.events) || [];
+  if (!events.length) return shell('<span class="w-value">0 runs</span>', widgetLine(esc(emptyLogHint(p, logName)), 'faint'));
+  const labels = log.labels || {};
+  const recent = events.slice(0, 12);
+  const n = (k) => recent.filter((e) => (e.status || 'ok') === k).length;
+  // Newest on the right, like the sparkline: history reads left to right.
+  const bars = recent.slice().reverse().map((e) => `<i class="${esc(e.status || 'ok')}" title="${esc(e.summary)}"></i>`).join('');
+  const parts = [`${n('ok')} clean`]
+    .concat(n('warn') ? [`<span class="pill warn">${n('warn')} ${esc(labels.warn || 'refused')}</span>`] : [])
+    .concat(n('bad') ? [`<span class="pill bad">${n('bad')} ${esc(labels.bad || 'failed')}</span>`] : []);
+  return shell(`<span class="w-value">${log.total} run${log.total === 1 ? '' : 's'}</span>`,
+    `<span class="w-bars" aria-label="last ${recent.length} runs">${bars}<small>last ${recent.length}</small></span>` +
+    widgetLine(parts.join(' ')) +
+    widgetLine(`${esc(events[0].summary)} — ${ago(events[0].at)} ago`, 'faint clamp'));
+}
+
+function widgetLinks() {
+  const p = platformPlugin();
+  const links = [
+    ['#config/connect', 'Connect your platform', 'every vendor’s .env and keys'],
+    ['/api/connect/env', 'Download fintechlab.env', 'the whole lab, one file', true],
+    ['#vendors/worldline', 'Cut a settlement file', 'Worldline’s morning cycle'],
+    ['#vendors/banking-circle', 'Notification subscriptions', 'who Banking Circle calls'],
+    ['#merchants', 'Merchants and outlets', 'what the money is for'],
+  ];
+  return `<div class="widget wide">
+      <span class="w-title">Quick links</span>
+      <span class="w-links">${links.map(([href, label, note, dl]) =>
+        `<a href="${esc(href)}"${dl ? ' download' : ''}>${esc(label)}<small>${esc(note)}</small></a>`).join('')}
+        ${p && p.browse_url ? `<a href="${esc(p.browse_url)}" target="_blank" rel="noreferrer">Open ${esc(p.name)} ↗<small class="mono">${esc(p.browse_url)}</small></a>` : ''}
+      </span>
+    </div>`;
+}
+
+/* --- the hop drawer ------------------------------------------------------
+
+   Click an arrow, and the traffic behind it opens beside the diagram: the
+   events the server counted for that arrow, newest first, refreshed every
+   second while it is open (design-system.md, Hop drawer). A panel, not a
+   modal — the diagram keeps animating next to it, and another arrow
+   switches it. */
+
+const evKey = (e) => `${e.seq}|${e.at}`;
+
+function setHop(id, updateHash = true) {
+  if ((id || null) === state.hop) return;
+  state.hop = id || null;
+  state.hopData = null;
+  state.hopSeen = null;
+  clearInterval(state.hopTimer);
+  state.hopTimer = null;
+  if (state.hop) {
+    loadHop();
+    // Watching a hop is the reason to poll fast; the rest of the dashboard
+    // keeps its own rate.
+    state.hopTimer = setInterval(() => { if (!document.hidden) loadHop(); }, FLOW_LIVE_MS);
+  }
+  if (updateHash && state.view === 'dashboard') {
+    history.replaceState(null, '', state.hop ? `#dashboard/${encodeURIComponent(state.hop)}` : '#dashboard');
+  }
+  if (state.view === 'dashboard') renderView();
+}
+
+async function loadHop() {
+  const id = state.hop;
+  if (!id) return;
+  let data;
+  try {
+    data = await api('GET', `/api/flow/hops/${encodeURIComponent(id)}`);
+  } catch (err) {
+    data = { error: err.message };
+  }
+  if (state.hop !== id) return; // switched while this was in flight
+  if (!state.hopSeen && data.events) state.hopSeen = new Set(data.events.map(evKey));
+  state.hopData = data;
+  renderDrawer();
+}
+
+const STAGE_PILL = { COMPLETED: 'ok', FAILED: 'bad' };
+
+function renderDrawer() {
+  const el = $('#drawer');
+  const open = !!state.hop && state.view === 'dashboard';
+  // The sidebar folds while the drawer is open: the diagram beside it
+  // needs the width more than the nav labels do.
+  $('.app').classList.toggle('drawer-open', open);
+  if (!open) {
+    el.hidden = true;
+    el.innerHTML = '';
+    return;
+  }
+  const d = state.hopData;
+  const flowData = state.data.flow || {};
+  const step = (d && d.step) || (flowData.steps || []).find((s) => s.id === state.hop) || { id: state.hop, label: state.hop };
+  const who = (pid) => {
+    const p = (flowData.participants || []).find((x) => x.id === pid);
+    return shortName(p ? p.label : pid);
+  };
+  const route = step.from === step.to ? `inside ${who(step.from)}` : `${who(step.from)} → ${who(step.to)}`;
+  const src = step.source && services().find((s) => s.id === step.source);
+  const srcHref = step.source ? serviceHref(step.source, step.source_log) : '';
+
+  let pills = '';
+  let body = '<div class="empty">Reading…</div>';
+  if (d && d.error) {
+    body = `<div class="note bad">This hop could not be read — ${esc(d.error)}</div>`;
+  } else if (d && d.stages) {
+    const reached = d.stages.filter((s) => s.status).length;
+    pills = `<span class="pill">${reached} of ${d.stages.length} reached</span>`;
+    body = `<table><thead><tr><th>Stage</th><th class="num">Status</th></tr></thead><tbody>${d.stages.map((s) => `<tr>
+        <td class="mono">${esc(s.stage)}</td>
+        <td class="num">${s.status
+          ? `<span class="pill ${STAGE_PILL[s.status] || ''}">${esc(s.status.toLowerCase())}</span>`
+          : '<span class="hint">not reached</span>'}</td></tr>`).join('')}</tbody></table>
+      <p class="hint">Stages of the platform's ${flowData.run && !flowData.run.finished_at ? 'run in flight' : 'last run'}, in the order it declared them.</p>`;
+  } else if (d) {
+    const evs = d.events || [];
+    const failed = evs.filter((e) => e.status === 'bad').length;
+    const refused = evs.filter((e) => e.status === 'warn').length;
+    pills = [`<span class="pill">${step.count}${step.capped ? '+' : ''} total</span>`]
+      .concat(refused ? [`<span class="pill warn">${refused} refused</span>`] : [])
+      .concat(failed ? [`<span class="pill bad">${failed} failed</span>`] : [])
+      .join(' ');
+    const seen = state.hopSeen || new Set();
+    body = evs.length
+      ? `<div class="log-rows">${evs.map((e) => {
+          const row = logRow(e);
+          return seen.has(evKey(e)) ? row : row.replace('class="log-row ', 'class="log-row is-new ');
+        }).join('')}</div>
+        ${step.count > evs.length ? `<div class="log-foot">Showing the newest ${evs.length} of ${step.count}${step.capped ? '+' : ''}.</div>` : ''}`
+      : `<div class="empty">Nothing has come this way yet. It lands here the moment it does — this refreshes every second while it is open.</div>`;
+  }
+
+  const prev = el.querySelector('.drawer-body');
+  const scroll = prev ? prev.scrollTop : 0;
+  el.hidden = false;
+  el.innerHTML = `<div class="drawer-head">
+      <div class="drawer-title">
+        <span class="w-title">Hop · live</span>
+        <h2>${esc(step.label)}</h2>
+        <span class="drawer-route">${esc(route)}</span>
+      </div>
+      <button class="ghost small" data-close aria-label="Close">×</button>
+    </div>
+    <div class="drawer-body">
+      ${pills ? `<div class="pill-row">${pills}</div>` : ''}
+      ${step.note ? `<div class="note">${esc(step.note)}</div>` : ''}
+      ${srcHref ? `<p class="hint"><a href="${esc(srcHref)}">Open ${esc(src ? shortName(src.name) : step.source)}${step.source_log ? ` — its ${esc(step.source_log)} log` : ''} →</a></p>` : ''}
+      ${body}
+    </div>`;
+  el.querySelector('.drawer-body').scrollTop = scroll;
+  el.querySelector('[data-close]').addEventListener('click', () => setHop(null));
+}
+
+/* Arrows open their drawer; boxes go to their service's card. Both are
+   reachable from the keyboard. */
+function bindFlow(root) {
+  const activate = (el, fn) => {
+    el.addEventListener('click', fn);
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); fn(); }
+    });
+  };
+  root.querySelectorAll('[data-hop]').forEach((g) => activate(g, () => {
+    setHop(g.dataset.hop === state.hop ? null : g.dataset.hop);
+  }));
+  root.querySelectorAll('.flow-box[data-href]').forEach((g) => activate(g, () => {
+    location.hash = g.dataset.href;
+  }));
+}
+
+/* The sidebar folds to its icon rail at any width, remembered per browser. */
+function setRail(on) {
+  $('.app').classList.toggle('is-rail', on);
+  const btn = $('#rail-toggle');
+  btn.textContent = on ? '»' : '«';
+  btn.title = on ? 'Expand the sidebar' : 'Collapse the sidebar';
+  try { localStorage.setItem('console-rail', on ? '1' : '0'); } catch (_) { /* private window */ }
+}
+
 /* --- services ---------------------------------------------------------- */
 
 /* Some cards earn the top of their list. A registered platform is the
@@ -1187,7 +1543,9 @@ function renderServices() {
   const ov = state.data.overview;
   if (!ov) return `<div class="empty">${esc(state.error || 'Loading…')}</div>`;
   const kind = VIEWS[state.view].kind;
-  const group = ov.services.filter((s) => s.kind === kind);
+  const all = ov.services.filter((s) => s.kind === kind);
+  const hidden = all.filter(isHidden);
+  const group = all.filter((s) => !isHidden(s));
 
   // Three tiles for this section, one for the lab. Splitting the list took
   // away the screen that answered "is everything up?", and that answer is
@@ -1214,7 +1572,61 @@ function renderServices() {
         posting a descriptor to <span class="mono">/api/plugins</span> and renewing it — see
         <span class="mono">docs/plugins.md</span>. It then heads this list, with its buttons.</div>`
     : '';
-  return html + noPlatform + ordered.map(serviceCard).join('');
+  return html + noPlatform + ordered.map(serviceCard).join('') + hiddenNote(hidden);
+}
+
+function isHidden(s) { return !!(s.stand_in && !s.stand_in.shown); }
+
+/* Hidden is said where the cards would have been (design-system.md,
+   contract 10), each with the button that brings it back. */
+function hiddenNote(hidden) {
+  if (!hidden.length) return '';
+  return `<div class="note">Hidden stand-ins — the platform under test replaces them, so their
+      cards are out of the way. They still run.
+      <div class="form">${hidden.map((s) => `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}"
+        data-shown="true">Show ${esc(shortName(s.name))}${s.stand_in.set_by ? ` <span class="hint">hidden by ${esc(s.stand_in.set_by)}</span>` : ''}</button>`).join('')}</div>
+    </div>`;
+}
+
+/* A stand-in's wiring and the two switches (design-system.md, Stand-in).
+   Connected is read live from the services that own the wiring. */
+function standInPanel(s) {
+  if (!s.stand_in) return '';
+  const all = state.standins;
+  if (!all) return '<div class="note">Reading how this stand-in is wired…</div>';
+  if (all.error) return `<div class="note bad">Stand-in wiring unavailable — ${esc(all.error)}</div>`;
+  const v = (all.stand_ins || []).find((x) => x.id === s.id);
+  if (!v) return '';
+  const conns = v.connections || [];
+  const rows = conns.map((c) => `<tr>
+      <td>${esc(c.label)}</td>
+      <td>${c.error ? `<span class="pill">unknown</span>` : c.connected == null ? '<span class="hint">not wired here</span>'
+        : c.connected ? '<span class="pill ok">connected</span>' : '<span class="pill warn">disconnected</span>'}</td>
+      <td class="hint">${esc(c.error || c.detail || '')}</td></tr>`).join('');
+  const switchable = conns.some((c) => c.connected != null);
+  const toggle = !switchable ? ''
+    : v.state === 'connected' || v.state === 'partial'
+      ? `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-connected="false">Disconnect</button>`
+      : `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-connected="true">Reconnect</button>`;
+  return `<div class="section-title">Stand-in</div>
+    <div class="note">This service plays your platform's part until your platform does. Disconnect it
+      once yours is plugged in: its timers stop and vendors stop delivering to it, so what lands
+      in their logs is yours. Hiding takes the card off this view and out of the diagram.
+      ${v.set_by ? `Last set by <span class="mono">${esc(v.set_by)}</span>.` : ''}</div>
+    ${conns.length ? `<div class="table-scroll"><table>
+      <thead><tr><th>Wiring</th><th>State</th><th>What it is</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`
+      : '<p class="hint">Nothing in the lab calls this service on its own, so there is nothing to disconnect — only to hide.</p>'}
+    <div class="form">${toggle}
+      <button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-shown="false">Hide this card</button>
+    </div>`;
+}
+
+function standInPill(s) {
+  if (!s.stand_in) return '';
+  const v = state.standins && !state.standins.error && (state.standins.stand_ins || []).find((x) => x.id === s.id);
+  const st = v && v.state;
+  return ` <span class="pill">stand-in</span>${st === 'disconnected' || st === 'partial' ? ` <span class="pill warn">${esc(st)}</span>` : ''}`;
 }
 
 function serviceCard(s) {
@@ -1238,6 +1650,7 @@ function serviceCard(s) {
         ${s.plugin ? pluginRows(s.plugin) : ''}
       </dl>
       ${clockPanel(s)}
+      ${standInPanel(s)}
       ${filesPanel(s)}
       ${subscriptionPanel(s)}
       ${payoutsPanel(s)}
@@ -1264,7 +1677,7 @@ function serviceCard(s) {
       <i class="dot ${esc(st.state || 'unknown')}"></i>
       <div class="card-title">
         <span class="name">${esc(s.name)} <span class="pill ${esc(s.kind)}">${esc(s.kind)}</span>${
-          s.plugin ? ` <span class="pill${s.plugin.state === 'live' ? '' : ' warn'}">${s.plugin.state === 'live' ? 'registered' : esc(s.plugin.state)}</span>` : ''}</span>
+          s.plugin ? ` <span class="pill${s.plugin.state === 'live' ? '' : ' warn'}">${s.plugin.state === 'live' ? 'registered' : esc(s.plugin.state)}</span>` : ''}${standInPill(s)}</span>
         <span class="desc">${esc(s.summary)}</span>
       </div>
       <div class="card-meta">${spark(st.history)}<span>${esc(latency)}</span></div>
@@ -1673,6 +2086,18 @@ const ACTIONS = {
     toast('Payout reversed', `${r.id} is now ${r.state}.\nThe reversal is booked back to the safeguarding account.`, 'good');
   },
 
+  /* Connect, disconnect, show or hide a stand-in: one call. Partial
+     success is reported as partial, per wiring. */
+  standin: async (d) => {
+    const body = {};
+    if (d.connected) body.connected = d.connected === 'true';
+    if (d.shown) body.shown = d.shown === 'true';
+    if (body.connected === false && !confirm('Disconnect this stand-in? Its timers stop and vendors stop delivering to it until it is reconnected — nothing already delivered is undone.')) return;
+    const v = await api('POST', `/api/stand-ins/${encodeURIComponent(d.id)}`, body);
+    const what = body.shown === undefined ? `now ${v.state}` : body.shown ? 'shown' : 'hidden';
+    toast(`${shortName(v.name)} ${what}`, (v.errors || []).join('\n') || '', (v.errors || []).length ? 'bad' : 'good');
+  },
+
   /* A button a platform declared: one call to the path it declared, the
      toast in the platform's own words. */
   'plugin-action': async (d) => {
@@ -1871,7 +2296,7 @@ function renderView() {
     : `<button class="ghost small" data-action="refresh">Refresh</button>`;
 
   const html =
-    state.view === 'flow' ? renderFlow() :
+    state.view === 'dashboard' ? renderDashboard() :
     isServiceView() ? renderServices() :
     state.view === 'banks' ? renderBanks() :
     state.view === 'merchants' ? renderMerchants() :
@@ -1888,14 +2313,64 @@ function renderView() {
   bindActions(content);
   bindActions($('#topbar-actions'));
   bindChanges(content);
+  bindFlow(content);
+  scrollToFocus();
+  renderDrawer();
 }
 
-function setView(view) {
+/* The hash is the view, and optionally the one thing open in it:
+   #vendors/b4b opens the B4B card, #vendors/b4b:payments that card and its
+   payments log, #dashboard/payouts the payouts hop's drawer
+   (design-system.md, contract 9). A dashboard widget is a plain link
+   because of this. */
+function parseHash() {
+  const raw = decodeURIComponent(location.hash.replace(/^#/, ''));
+  const [view, ...rest] = raw.split('/');
+  // #flow was this view's name while it only held the diagram, and
+  // #services the old single list; a bookmark to either still lands.
+  const alias = { flow: 'dashboard', services: 'vendors' };
+  const v = alias[view] || view;
+  return { view: VIEWS[v] ? v : 'dashboard', item: rest.join('/') || '' };
+}
+
+function route() {
+  const { view, item } = parseHash();
+  if (view === 'dashboard') {
+    setHop(item || null, false);
+    // Landing on a hop's link: bring its arrow into view too.
+    if (item) state.focus = { hop: item };
+  } else if (item) {
+    // "b4b:payments" opens the card and the panel inside it.
+    const parts = item.split(':');
+    for (let i = 1; i <= parts.length; i++) state.open.add(`${view}:${parts.slice(0, i).join(':')}`);
+    state.focus = parts[0];
+  }
+  setView(view, item);
+}
+
+function setView(view, item = '') {
+  if (view !== 'dashboard') setHop(null, false);
   state.view = view;
   document.querySelectorAll('.nav-item').forEach((b) => b.classList.toggle('is-active', b.dataset.view === view));
-  location.hash = view;
+  const want = item ? `${view}/${item}` : view;
+  if (decodeURIComponent(location.hash.replace(/^#/, '')) !== want) {
+    history.replaceState(null, '', `#${want}`);
+  }
   renderView();
   load();
+}
+
+/* After a deep link, bring the card it opened into view — once it exists,
+   which may be a poll later. */
+function scrollToFocus() {
+  if (!state.focus) return;
+  const el = state.focus.hop
+    ? $('#content').querySelector(`[data-hop="${CSS.escape(state.focus.hop)}"]`)
+    : $('#content').querySelector(`.card-head[data-card="${CSS.escape(state.focus)}"]`);
+  if (!el) return;
+  const block = state.focus.hop ? 'center' : 'start';
+  state.focus = null;
+  el.scrollIntoView({ block });
 }
 
 function isEditing() {
@@ -1918,19 +2393,25 @@ function init() {
     const item = ev.target.closest('.nav-item');
     if (item) setView(item.dataset.view);
   });
+  // A widget, a card link or a typed URL changes the hash; each lands.
+  window.addEventListener('hashchange', route);
+  try {
+    if (localStorage.getItem('console-rail') === '1') setRail(true);
+  } catch (_) { /* private window: the sidebar stays open */ }
+  $('#rail-toggle').addEventListener('click', () => setRail(!$('.app').classList.contains('is-rail')));
   $('#theme-toggle').addEventListener('click', () => {
     setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   });
   $('#modal-backdrop').addEventListener('click', (ev) => {
     if (ev.target === $('#modal-backdrop')) closeModal();
   });
-  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (!$('#modal-backdrop').hidden) closeModal();
+    else if (state.hop) setHop(null);
+  });
 
-  const hash = location.hash.replace('#', '');
-  // #services was the old single list; a bookmark to it should still land
-  // somewhere sensible rather than on an empty view.
-  const landing = hash === 'services' ? 'vendors' : hash;
-  setView(VIEWS[landing] ? landing : 'flow');
+  route();
 
   // Poll, so a service coming up or going down shows without a reload.
   // Paused while a modal is open or a field has focus: re-rendering
@@ -1948,7 +2429,7 @@ function init() {
     if (isEditing()) return;
     sinceLoad += 250;
     const run = state.data.flow && state.data.flow.run;
-    const live = state.view === 'flow' && run && !run.finished_at;
+    const live = state.view === 'dashboard' && run && !run.finished_at;
     if (sinceLoad < (live ? FLOW_LIVE_MS : FLOW_IDLE_MS)) return;
     sinceLoad = 0;
     load();

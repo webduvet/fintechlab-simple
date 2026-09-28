@@ -4,9 +4,9 @@
 
 A control panel for the lab — the thing that turns a set of containers and
 a page of `curl` invocations into something you can hand to someone who
-has not read the repo. Views: **System in test** (the home page — one run as
-a sequence diagram), **Vendors**, **Platform**, **Verification**, **Banks**,
-**Merchants**, **Configuration**.
+has not read the repo. Views: **Dashboard** (the home page — the lab at a
+glance, then one run as a sequence diagram), **Vendors**, **Platform**,
+**Verification**, **Banks**, **Merchants**, **Configuration**.
 
 ## What it is, and what it deliberately is not
 
@@ -31,10 +31,26 @@ It owns exactly one piece of state of its own: the merchant registry, in
 `console-data/registry.json`. That is a plain file you can read, diff and
 delete.
 
-## System in test
+## Dashboard
 
-The home view, and the one to open first: a **sequence diagram of one
-settlement run**. The platform sits in the middle, the vendors it talks to
+The home view, and the one to open first. It answers four questions
+without a click, in a row of **widgets** — each a link to the card where
+its detail and controls live:
+
+| Widget | Says | Goes to |
+| --- | --- | --- |
+| Lab clock | the lab's time in UTC, business day or not, shifted or not, held or not | Platform → Lab clock |
+| Platform under test | the registered plugin, how its registration stands, and its primary button (the same call as on its card) | its card |
+| Services | how many are up, a dot per service, which are down, how many stand-ins are hidden | each dot to its card |
+| Recent runs | the settling plugin's runs log: total, a bar per recent run, clean vs. with failed stages, the last one | its card, runs log open |
+| Quick links | connect your platform, download `fintechlab.env`, cut a Worldline file, BC subscriptions, merchants, the platform's own page | |
+
+Links are `#view/card` — `#vendors/b4b` opens the B4B card,
+`#vendors/b4b:payments` its payments log too — so any card can be linked
+to. The sidebar folds to an icon rail from the button at its foot
+(remembered per browser).
+
+Under the widgets, a **sequence diagram of one settlement run**. The platform sits in the middle, the vendors it talks to
 either side, and each hop between them is an arrow that lights as its own
 traffic arrives — the SFTP pull, the payouts into B4B, B4B's bridge into
 Banking Circle, the lifecycle callbacks coming back, the notification
@@ -97,6 +113,23 @@ The data is `GET /api/flow`, which reads the vendors' activity rings and the
 platform's stage chain (its plugin's `status_path`) and puts them in the shape a sequence needs. The server
 counts; the browser remembers what the count was a second ago and lights
 what changed.
+
+### Watching one hop
+
+**Click an arrow** and the traffic behind it opens in a drawer beside the
+diagram: exactly the events that arrow counted, newest first, refreshed
+every second while the drawer is open, with anything that arrived since you
+opened it marked. The payouts arrow lists B4B's `payment.create` calls; the
+confirmations arrow lists only the batches Banking Circle delivered to
+*your* subscriber, not the receiver's. The two arrows the platform draws to
+itself list its stages instead, in the order it declared them, with how
+each stands. The drawer links to the card whose log it reads. Click another
+arrow to switch, `Escape` or `×` to close; `#dashboard/payouts` links
+straight to one. Clicking a box goes to that service's card.
+
+The drawer's data is `GET /api/flow/hops/{id}` — the same step
+`/api/flow` draws, computed by the same code, with its events attached, so
+an arrow saying 6 and a drawer listing 5 cannot happen.
 
 ## Vendors, Platform, Verification
 
@@ -227,6 +260,48 @@ per root, how many payouts were open and how many it resolved; amber when
 some stay open. A root is only swept an hour after its settlement *by the
 lab clock*: after a run, press *+1 hour* on the Lab clock card, sweep, then
 *Now*.
+
+### Stand-ins: disconnect and hide
+
+The **settlement** service and the **webhook receiver** played the
+platform's part while the lab was being built — the settlement service
+pulls Worldline's files every ten seconds and pays outlets at the daily
+cutoff; Banking Circle's seeded subscription and ACI deliver to the
+receiver. With a real platform plugged in they are noise: payouts at B4B
+nobody made, deliveries to a listener that is not yours, a Worldline
+*connect + list* arrow that is not your platform connecting.
+
+Each stand-in's card has a **Stand-in** section listing its wiring, read
+live from the services that own it, and two buttons:
+
+- **Disconnect / Reconnect** — the settlement service's timers stop (a
+  forced *Pull from Worldline now* still works); the receiver's Banking
+  Circle subscriptions are deactivated through the bank's own API, so the
+  Banking Circle card says so too; ACI, when it points at the receiver,
+  records its webhooks as `held` instead of sending them. Nothing already
+  delivered is undone.
+- **Hide this card** — off the Platform view and out of the diagram (the
+  receiver's box and its *notification batches* arrow). A note where the
+  cards were lists what is hidden and by whom, with a *Show* for each.
+
+`payment-api` and `notifier` are stand-ins with nothing calling them on
+their own: they can be hidden, not disconnected. Both switches start on;
+`SETTLEMENT_CONNECTED=false` on the settlement service and
+`ACI_WEBHOOK_CONNECTED=false` on ACI start them off.
+
+A platform can ask for this itself, in its descriptor's `stand_ins`
+([plugins.md](plugins.md#stand-ins)). The console applies that when the
+platform registers or its wishes change — not on every renewal, so a
+button pressed here holds. The console keeps *shown* in memory: after a
+console restart every card is back until the platform's next registration
+re-applies its wishes. *Connected* lives in the services and survives a
+console restart.
+
+```sh
+curl -s localhost:8090/api/stand-ins                                           # each stand-in, its wiring, live
+curl -s -XPOST localhost:8090/api/stand-ins/receiver -d '{"connected":false}'  # disconnect
+curl -s -XPOST localhost:8090/api/stand-ins/settlement -d '{"shown":false}'    # hide
+```
 
 ### The lab clock
 

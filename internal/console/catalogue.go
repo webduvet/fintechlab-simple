@@ -67,6 +67,9 @@ type Service struct {
 	// Plugin is set on a platform that registered itself (plugins.go):
 	// its buttons, its settlement files and how its registration stands.
 	Plugin *PluginInfo `json:"plugin,omitempty"`
+	// StandIn marks one of the lab's own services that plays the
+	// platform's part until a platform plugs in (standins.go).
+	StandIn *StandInInfo `json:"stand_in,omitempty"`
 }
 
 // Catalogue is the ordered list of the lab's own services, vendors first,
@@ -77,13 +80,18 @@ type Catalogue struct {
 	mu      sync.RWMutex
 	plugins []*registration
 	now     func() time.Time // for tests; nil is time.Now
+
+	standIns        map[string]*StandInInfo // live shown/hidden state, see standins.go
+	appliedStandIns map[string]string       // plugin id -> the stand_ins last applied for it
 }
 
 // Get returns the service with the given id, the lab's own or a plugin.
 func (c *Catalogue) Get(id string) (Service, bool) {
 	for _, s := range c.Services {
 		if s.ID == id {
-			return s, true
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			return c.overlayLocked(s), true
 		}
 	}
 	for _, s := range c.Plugins() {
@@ -284,7 +292,7 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "settlement", Name: "Settlement (platform stand-in)", Kind: KindPlatform,
+			ID: "settlement", Name: "Settlement (platform stand-in)", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
 			Summary:    "Scaffolding for your platform: pulls Worldline's file over real SFTP+PGP, decrypts, parses, splits it per MID and pays each outlet through B4B.",
 			BaseURL:    "http://127.0.0.1:8083",
 			HealthPath: "/health",
@@ -307,7 +315,7 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "receiver", Name: "Webhook receiver (platform stand-in)", Kind: KindPlatform,
+			ID: "receiver", Name: "Webhook receiver (platform stand-in)", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
 			Summary:    "Stand-in for your own listener: verifies the HMAC scheme, and captures raw bodies for wire formats it holds no key for.",
 			BaseURL:    "https://127.0.0.1:8443",
 			HealthPath: "/health",
@@ -321,7 +329,7 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "payment-api", Name: "Payment API", Kind: KindPlatform,
+			ID: "payment-api", Name: "Payment API", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
 			Summary: "Generic payment facade with Idempotency-Key. Scaffolding, not vendor-shaped.",
 			BaseURL: "http://127.0.0.1:8080", HealthPath: "/health",
 			Ports: []string{"8080/http"}, Transport: "HTTP", Auth: "none (lab)",
@@ -345,7 +353,7 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "notifier", Name: "Notifier", Kind: KindPlatform,
+			ID: "notifier", Name: "Notifier", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
 			Summary: "Signed webhook worker with retries and an allowlist.",
 			BaseURL: "http://127.0.0.1:8082", HealthPath: "/health",
 			Ports: []string{"8082/http"}, Transport: "HTTP", Auth: "HMAC out",

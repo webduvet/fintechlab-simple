@@ -16,7 +16,9 @@ that look broken and are not.
   `make`.
 - A buddy checkout with the runner set up once: from
   `infinite-local-runner/`, `podman compose up -d && ./setup.sh`
-  (its README, *Quick start*).
+  (its README, *Quick start*). `setup.sh` links the runner's library,
+  `fintechlab-runner` — clone it to `~/gh/fintechlab-runner` first, or set
+  `FINTECHLAB_RUNNER_DIR`.
 - The ports free: 8080–8096, 8443 and 2222 for the lab, 3109 and 3114 for
   the runner.
 
@@ -73,7 +75,7 @@ the **Lab clock** card under it.
    `worldline-reconciliation-sample.csv` (EUR). The row turns amber with the
    stage it is on; about forty seconds later it shows the root id and the
    payouts.
-3. **Watch it.** **System in test** draws the run as it happens: the file
+3. **Watch it.** The **Dashboard** draws the run as it happens: the file
    collected, the safeguarding account funded, payouts to B4B, B4B handing
    them to Banking Circle, and Banking Circle's webhooks to the platform.
 

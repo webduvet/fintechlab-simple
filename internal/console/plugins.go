@@ -60,7 +60,7 @@ type PluginSettlement struct {
 	// RunPath starts runs: POST {"files": [...]}.
 	RunPath string `json:"run_path"`
 	// StatusPath says what is running and how the last run went, for the
-	// System in test diagram.
+	// Dashboard diagram.
 	StatusPath string `json:"status_path,omitempty"`
 	// RunsLog names the activity log that counts runs.
 	RunsLog string `json:"runs_log,omitempty"`
@@ -89,6 +89,10 @@ type Plugin struct {
 	Actions      []PluginAction    `json:"actions,omitempty"`
 	Settlement   *PluginSettlement `json:"settlement,omitempty"`
 	EmptyHints   map[string]string `json:"empty_hints,omitempty"`
+	// StandIns is how the platform wants the lab's stand-ins: connected or
+	// not, shown or not. Applied when it first registers and whenever it
+	// changes, not on every renewal (standins.go).
+	StandIns map[string]StandInPref `json:"stand_ins,omitempty"`
 }
 
 // Registration states, as the card says them.
@@ -251,6 +255,9 @@ func (c *Catalogue) Register(p Plugin) (PluginInfo, error) {
 	if err := p.validate(c.static); err != nil {
 		return PluginInfo{}, err
 	}
+	if err := c.validStandIns(p.StandIns); err != nil {
+		return PluginInfo{}, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.clockNow().UTC()
@@ -325,7 +332,13 @@ func (c *Catalogue) Plugins() []Service {
 // All is the lab's own services with the registered plugins first: the
 // system under test heads its view, the stand-ins below it are reference.
 func (c *Catalogue) All() []Service {
-	return append(c.Plugins(), c.Services...)
+	out := c.Plugins()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.Services {
+		out = append(out, c.overlayLocked(s))
+	}
+	return out
 }
 
 // Plugin returns the registered descriptor for id.
@@ -340,7 +353,7 @@ func (c *Catalogue) Plugin(id string) (Plugin, PluginInfo, bool) {
 	return Plugin{}, PluginInfo{}, false
 }
 
-// SettlementPlugin is the platform the System in test diagram draws: the
+// SettlementPlugin is the platform the Dashboard diagram draws: the
 // first live plugin that settles, or failing that the first one that ever
 // did, so a stopped runner still shows its last run.
 func (c *Catalogue) SettlementPlugin() (Plugin, PluginInfo, bool) {

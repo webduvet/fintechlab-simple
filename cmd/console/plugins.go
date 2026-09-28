@@ -34,6 +34,7 @@ func (a *app) registerPlugin(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	a.applyPluginStandIns(p)
 	// Probe at once rather than on the next tick, so the card a developer
 	// is watching turns green when the platform says it is there.
 	go func() {

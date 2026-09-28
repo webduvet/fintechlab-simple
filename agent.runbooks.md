@@ -57,7 +57,12 @@ make start    # restart from the images already built
   card and clock need nothing: it re-registers within ten seconds of a
   console restart, and keeps the last offset while the clock is away.
 
-Runner, from `~/infinite/buddy/infinite-local-runner`:
+Runner, from `~/infinite/buddy/infinite-local-runner`. Its generic half is
+the library `~/gh/fintechlab-runner`, linked into the runner's
+`node_modules`: once per checkout, and after changing the library, run
+`bash init/link-lab-runner.sh` (`setup.sh` does it; `FINTECHLAB_RUNNER_DIR`
+overrides the path). To have the runner disconnect and hide the lab's
+stand-ins on registration, `cp fintechlab.example.json fintechlab.json`.
 
 ```sh
 # start (long-running: background it, output to a file). apps/banking-circle
@@ -255,7 +260,7 @@ records how in `raw_webhook_payload->>'report'`: `intraday-reconciliation`
 
 Where the lab shows it:
 
-- **Diagram** (System in test): the bottom arrow, *intraday reconciliation*,
+- **Diagram** (Dashboard): the bottom arrow, *intraday reconciliation*,
   Banking Circle → platform, lights on each intraday report read. It counts
   those reads only; a refused (400) read turns it amber.
 - **Banking Circle card → *Reconciliation reads***: every intraday report,
@@ -318,6 +323,23 @@ curl -s localhost:8090/api/flow | python3 -c "
 import json,sys
 for s in json.load(sys.stdin)['steps']:
     if s['id'] == 'recon': print(s['count'], s.get('last_at'), s.get('last_summary'))"
+# the events behind one arrow — exactly what it counted (the hop drawer's data)
+curl -s localhost:8090/api/flow/hops/payouts | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print(d['step']['count'], d['step'].get('source'), d['step'].get('source_log'))
+for e in d['events'][:5]: print('   ', e['at'], e['status'], e['summary'])"
+```
+
+The stand-ins (settlement, receiver) can be disconnected so their own
+traffic stops competing with the platform's — the runner's `fintechlab.json`
+may already have asked for it on registration:
+
+```sh
+curl -s localhost:8090/api/stand-ins | python3 -c "
+import json,sys
+for s in json.load(sys.stdin)['stand_ins']: print(s['id'], s['state'], 'shown' if s['shown'] else 'hidden', s.get('set_by'))"
+curl -s -X POST localhost:8090/api/stand-ins/receiver -d '{"connected":false}'   # BC subscription inactive, ACI holds
+curl -s -X POST localhost:8090/api/stand-ins/receiver -d '{"connected":true,"shown":true}'
 ```
 
 The runner's side, through the console — its card is a plugin, so every
@@ -361,8 +383,7 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
       .filter((d) => d.startsWith('chromium_headless_shell'))
       .map((d) => `${process.env.HOME}/.cache/ms-playwright/${d}/chrome-headless-shell-linux64/chrome-headless-shell`)[0] });
   const p = await b.newPage({ viewport: { width: 1500, height: 1100 } });
-  await p.goto('http://127.0.0.1:8090/#platform');          // a fresh page per view: hash-only navigation does not re-route
-  await p.click('[data-card="infinite-local-runner"]');     // cards open on click; open state is not in the URL
+  await p.goto('http://127.0.0.1:8090/#platform/infinite-local-runner'); // #view/card opens the card
   await p.waitForTimeout(1500);
   await (await p.$('.card.is-open')).screenshot({ path: 'runner.png' });
   await b.close();
@@ -373,12 +394,17 @@ Inside the runner card: the settlement files table is
 `table:has(th:text("Last run"))`, its buttons
 `button:has-text("Run all 2 together")` and `[data-action="plugin-run"]`,
 and the runs log opens with `[data-card="infinite-local-runner:runs"]`.
-Switch views with `.nav-item[data-view="flow"]` clicks. Wait ~10 s
+Switch views with `.nav-item[data-view="dashboard"]` clicks, or go straight
+to a card with `#vendors/b4b` (or `#vendors/b4b:payments` for its log) — a
+hash change routes. An arrow's drawer is `[data-hop="payouts"]` or
+`#dashboard/payouts`; the drawer itself is `#drawer`. Wait ~10 s
 after a click before expecting a stage name: the upload stage takes that
 long to appear, and the panel refreshes every few seconds.
 
 ## Things that look broken and are not
 
+- **Every runner process dies at start with "@fintechlab/runner is not
+  linked":** the link script has not run — `bash init/link-lab-runner.sh`.
 - **Mailer `Service Unavailable` errors** in the runner log: the report
   emails have no mailer locally. Unrelated to payments.
 - **`IncomingPaymentProcessed` ignored** by accounts-settlement: buddy does

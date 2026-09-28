@@ -134,6 +134,11 @@ func newWorldlinePuller(a *app) *worldlinePuller {
 // to stop.
 func (p *worldlinePuller) run() {
 	for {
+		// Disconnected, the timer stops pulling; a forced pull still runs.
+		if !p.app.wiring.Connected() {
+			time.Sleep(p.interval)
+			continue
+		}
 		if n, err := p.pullOnce(); err != nil {
 			log.Printf("settlement: worldline pull: %v", err)
 		} else if n > 0 {

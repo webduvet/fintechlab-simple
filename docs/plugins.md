@@ -3,12 +3,16 @@
 The lab simulates vendors. The system under test is somebody else's, so
 its card in the console is too: a platform **registers itself** with the
 console, and the console draws its card, forwards its buttons and puts it
-in the System in test diagram. The lab knows no platform by name. A new
+in the Dashboard's diagram. The lab knows no platform by name. A new
 button on a platform is a change to that platform, never a release of the
 lab.
 
-buddy's `infinite-local-runner` is the reference plugin (its `src/up.ts`,
-section *the lab's console*).
+buddy's `infinite-local-runner` is the reference plugin. Its generic half —
+the descriptor types, register/renew/unregister, the clock follower and the
+clock shim, activity logs, the `fintechlab.json` config — is the library
+`fintechlab-runner` (`@fintechlab/runner`, a sibling repo), which
+any Node platform can use to implement this contract; its README has a
+minimal example.
 
 Two things a platform does with the lab, both outbound from the platform:
 
@@ -72,6 +76,7 @@ drawn from.
 | `actions` | | buttons, below |
 | `settlement` | | a platform that settles Worldline files, below |
 | `empty_hints` | | `{"<log name>": "what would put something here"}` |
+| `stand_ins` | | how the lab's stand-ins should be, below |
 
 Every path is **a path on `base_url`**: absolute, no `..`, no host. The
 console appends it to `base_url` and calls nothing else, which is what
@@ -105,7 +110,7 @@ most eight.
 ### Settlement
 
 A platform that settles Worldline files gets the files table on its card
-and is the platform the System in test diagram draws:
+and is the platform the Dashboard's diagram draws:
 
 ```json
 "settlement": {
@@ -163,6 +168,39 @@ activity log whose total is the diagram's *runs*.
 
 `status` is `ok`, `warn` or `bad`; `at` is wall-clock time.
 
+### Stand-ins
+
+The lab's **stand-ins** played the platform's part before one plugged in:
+`settlement` pulls Worldline's files on a timer and pays outlets at the
+daily cutoff; `receiver` is where Banking Circle's seeded subscription and
+ACI deliver. `payment-api` and `notifier` are stand-ins nothing calls on its
+own. A platform that replaces them says so:
+
+```json
+"stand_ins": {
+  "settlement": {"connected": false, "shown": false},
+  "receiver":   {"connected": false, "shown": false}
+}
+```
+
+- **`connected: false`** stops the wiring the stand-in owns, where it lives:
+  the settlement service's timers, the receiver's Banking Circle
+  subscriptions (deactivated through the bank's API) and ACI's delivery
+  when ACI points at the receiver (held, not sent). `true` puts it back.
+- **`shown: false`** hides its card and takes it out of the diagram.
+
+Either field may be left out, and so may any stand-in: absent is "leave it
+as it is". Anything but a stand-in's id is a `400` — a plugin cannot hide a
+vendor. The console applies `stand_ins` when the plugin first registers and
+whenever the value changes, **not on every renewal**, so a developer's
+*Reconnect* in the console holds until the plugin's wishes change. Each
+stand-in card says who set it last. The same switches are
+`POST /api/stand-ins/{id}` for anyone else (see [console.md](console.md)).
+
+buddy's runner sends it when `infinite-local-runner/fintechlab.json` exists
+(`cp fintechlab.example.json fintechlab.json`: both stand-ins disconnected
+and hidden); with no file it sends none.
+
 ## The clock
 
 The lab owns one business clock: the `clock` service, `:8096`. Every
@@ -171,7 +209,7 @@ books on Monday at the bank.
 
 - **`"clock": "follows"`** — the platform polls `GET /clock` and applies
   `offset_ms` to its own business time (buddy's runner writes it to the
-  file its clock shim watches). Only the offset changes hands, so a
+  file its clock shim, `@fintechlab/runner/clock-shim`, watches). Only the offset changes hands, so a
   follower anywhere is right to within its poll.
 - **`"clock": "wall"`** — the platform cannot be moved (a deployed stack).
   While one is live, the console refuses to move the lab clock: the

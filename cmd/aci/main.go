@@ -32,6 +32,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/labswitch"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
 )
 
@@ -44,6 +45,10 @@ type app struct {
 	targetURL string
 	bodyMode  string
 	sent      *sentStore
+	// wiring is the delivery to targetURL. Off, a simulated payment is
+	// still recorded — held, saying why — and nothing is sent: the lab's
+	// receiver stand-in is disconnected once a platform listens itself.
+	wiring *labswitch.Switch
 }
 
 func main() {
@@ -96,6 +101,8 @@ func main() {
 		targetURL: targetURL,
 		bodyMode:  bodyMode,
 		sent:      newSentStore(),
+		wiring: labswitch.FromEnv("aci", "delivers webhooks to ACI_WEBHOOK_TARGET_URL",
+			env("ACI_WEBHOOK_CONNECTED", "true")).Target(targetURL),
 	}
 
 	mux := http.NewServeMux()
@@ -105,6 +112,7 @@ func main() {
 	mux.HandleFunc("POST /internal/simulate-payment", a.simulatePayment)
 	mux.HandleFunc("GET /internal/sent", a.listSent)
 	mux.HandleFunc("GET /internal/sent/{id}", a.getSent)
+	a.wiring.Routes(mux, "/sim/connected")
 
 	log.Printf("aci listening on %s target=%s body_mode=%s allowlist=%s", addr, targetURL, bodyMode, spec)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
@@ -185,6 +193,14 @@ func (a *app) simulatePayment(w http.ResponseWriter, r *http.Request) {
 		BodyMode:       a.bodyMode,
 		CreatedAt:      now,
 		DeliveryStatus: "pending",
+	}
+	if !a.wiring.Connected() {
+		// Said where the silence lands: the record is there, held.
+		rec.DeliveryStatus = "held"
+		rec.DeliveryError = "not delivered: the webhook target is disconnected in the lab (GET /sim/connected)"
+		a.sent.put(rec)
+		httputilx.WriteJSON(w, 202, simulateResp{ID: rec.ID})
+		return
 	}
 	a.sent.put(rec)
 

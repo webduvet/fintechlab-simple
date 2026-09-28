@@ -231,13 +231,22 @@ func (b *BankingCircleBank) AuthorizedGet(ctx context.Context, path string, out 
 // credentialed path the Banks view already established rather than a
 // second one that would have to learn mTLS all over again.
 func (b *BankingCircleBank) AuthorizedPost(ctx context.Context, path string, out any) error {
+	return b.AuthorizedDo(ctx, http.MethodPost, path, nil, out)
+}
+
+// AuthorizedDo is the same for any method and extra headers — the
+// subscription activate and deactivate calls are PUTs carrying If-Match.
+func (b *BankingCircleBank) AuthorizedDo(ctx context.Context, method, path string, hdr http.Header, out any) error {
 	tok, err := b.bearer(ctx)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.BaseURL+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, b.BaseURL+path, nil)
 	if err != nil {
 		return err
+	}
+	for k, v := range hdr {
+		req.Header[k] = v
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := b.Client.Do(req)
@@ -252,9 +261,9 @@ func (b *BankingCircleBank) AuthorizedPost(ctx context.Context, path string, out
 		}
 		_ = json.NewDecoder(resp.Body).Decode(&body)
 		if body.Error != "" {
-			return fmt.Errorf("banking-circle POST %s: %s", path, body.Error)
+			return fmt.Errorf("banking-circle %s %s: %s", method, path, body.Error)
 		}
-		return fmt.Errorf("banking-circle POST %s: HTTP %d", path, resp.StatusCode)
+		return fmt.Errorf("banking-circle %s %s: HTTP %d", method, path, resp.StatusCode)
 	}
 	if out == nil {
 		return nil

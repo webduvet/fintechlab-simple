@@ -36,6 +36,7 @@ import (
 	"github.com/webduvet/fintechlab-simple/internal/bankingcircle"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
+	"github.com/webduvet/fintechlab-simple/internal/labswitch"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 	"github.com/webduvet/fintechlab-simple/internal/settlement"
 	"github.com/webduvet/fintechlab-simple/internal/sftp"
@@ -62,6 +63,12 @@ type app struct {
 	bcInternalURL       string       // Banking Circle's plain INTERNAL_LISTEN, balance check only
 	bcInternalClient    *http.Client
 	sgaAccounts         map[string]string // currency -> Banking Circle SGA account id
+
+	// wiring is what this stand-in does on its own — the Worldline pull on
+	// a timer and the payouts at the daily cutoff. Off once a real platform
+	// takes its place (internal/labswitch); an explicit pull or generate
+	// still works.
+	wiring *labswitch.Switch
 }
 
 func main() {
@@ -125,6 +132,9 @@ func main() {
 		bcInternalURL:       bcInternalURL,
 		bcInternalClient:    &http.Client{Timeout: 5 * time.Second},
 		sgaAccounts:         sgaAccounts,
+		wiring: labswitch.FromEnv("settlement",
+			"pulls Worldline's files on a timer and pays outlets at the daily cutoff",
+			env("SETTLEMENT_CONNECTED", "true")),
 	}
 
 	go a.runCutoffLoop(cutoff)
@@ -152,6 +162,7 @@ func main() {
 	mux.HandleFunc("GET /sftp/out/{merchant_id}/{filename}", a.readOut)
 	mux.HandleFunc("GET /sftp/staging", a.listStaging)
 	mux.HandleFunc("POST /internal/b4b-webhook", a.b4bWebhook)
+	a.wiring.Routes(mux, "/sim/connected")
 	if puller != nil {
 		puller.routes(mux)
 	}
@@ -1130,6 +1141,11 @@ func (a *app) runCutoffLoop(cutoff string) {
 			return now.Add(durationUntilCutoff(now, cutoff))
 		})
 		yesterday := labclock.Now().AddDate(0, 0, -1).Format("2006-01-02")
+		if !a.wiring.Connected() {
+			log.Printf("settlement: cutoff batch for %s skipped — disconnected in the lab", yesterday)
+			time.Sleep(time.Minute)
+			continue
+		}
 		ids, err := a.runBatch(yesterday, yesterday, "")
 		if err != nil {
 			log.Printf("settlement: cutoff batch for %s failed: %v", yesterday, err)
