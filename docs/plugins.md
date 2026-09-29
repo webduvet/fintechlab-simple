@@ -117,6 +117,8 @@ and is the platform the Dashboard's diagram draws:
   "files_path": "/sim/files",
   "run_path": "/sim/run",
   "status_path": "/status",
+  "upload_path": "/sim/files/upload",
+  "preview_path": "/sim/files/preview",
   "runs_log": "runs",
   "stages": {
     "ingest": ["SETTLEMENT_FILE_INGESTION", "DAILY_MOVEMENT_PROCESSING"],
@@ -136,6 +138,25 @@ and is the platform the Dashboard's diagram draws:
                                           "finished_at": "…", "error": null}}],
  "seeded_error": null}
 ```
+
+A file may also carry `"uploaded": true`, `"bytes"`, and `"problem"` —
+why it cannot be run (not a Worldline file) — and the answer
+`"upload_dir"`, where uploads are kept. A file with a `problem` gets no
+*Run*.
+
+**Files from anywhere** (optional; no `upload_path`, no upload button):
+
+| Console | Forwarded to | |
+| --- | --- | --- |
+| `POST /api/plugins/{id}/files?name=<file>` | `POST upload_path?name=` | the raw bytes, streamed — the console holds none of it and caps it at `CONSOLE_UPLOAD_MAX_MB` (512). Answer `201 {"name", "bytes", "note"}`; `name` is what it was kept as, `note` the toast |
+| `DELETE /api/plugins/{id}/files?name=` | `DELETE upload_path?name=` | forget an uploaded file; `204` |
+| `GET /api/plugins/{id}/files/preview?name=&lines=` | `GET preview_path?name=&lines=` | the head of any listed file, `lines` clamped to 1–1000: `{"name", "lines": […], "truncated", "long_lines", "bytes"}` |
+
+The platform keeps uploads where it likes and lists them with the rest.
+`fintechlab-runner` has all three: `FileStore` (streamed to disk under a
+safe, free name), `uploadHandler` and `previewHandler` (reads no further
+than the lines it returns). buddy's runner keeps them in
+`infinite-local-runner/.runs/uploads/`.
 
 `POST run_path` with `{"files": ["…csv", …]}` — the console's
 `POST /api/plugins/{id}/run` forwards it — answers `202`

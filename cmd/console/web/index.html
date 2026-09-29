@@ -11,11 +11,24 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">◈</div>
+      <!-- The mark is drawn, not a glyph: a font's diamond sits on its own
+           baseline and never quite centres in the tile. It also folds and
+           unfolds the sidebar. -->
+      <button class="brand-mark" id="brand-mark" type="button" title="Collapse the sidebar" aria-label="Collapse the sidebar">
+        <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+          <path d="M16 6 26 16 16 26 6 16Z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+          <path d="M16 11.5 20.5 16 16 20.5 11.5 16Z" fill="#fff"/>
+        </svg>
+      </button>
       <div class="brand-text">
         <strong>fintech sim lab v1</strong>
         <span>control panel</span>
       </div>
+      <button class="rail-toggle" id="rail-toggle" type="button" title="Collapse the sidebar" aria-label="Collapse the sidebar">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+          <path d="M3 5.5h10M3 10.5h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
 
     <nav class="nav" id="nav">
@@ -43,6 +56,9 @@
         <span class="nav-icon">◍</span><span class="nav-label">Merchants</span>
         <span class="nav-badge" id="badge-merchants"></span>
       </button>
+      <button class="nav-item" data-view="docs" title="Docs">
+        <span class="nav-icon">¶</span><span class="nav-label">Docs</span>
+      </button>
       <button class="nav-item" data-view="config" title="Configuration">
         <span class="nav-icon">⚙</span><span class="nav-label">Configuration</span>
       </button>
@@ -56,7 +72,6 @@
       </div>
       <div class="sidebar-buttons">
         <button class="ghost small" id="theme-toggle" title="Switch theme">◐ <span class="nav-label">theme</span></button>
-        <button class="ghost small" id="rail-toggle" title="Collapse the sidebar">«</button>
       </div>
     </div>
   </aside>

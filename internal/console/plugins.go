@@ -62,6 +62,11 @@ type PluginSettlement struct {
 	// StatusPath says what is running and how the last run went, for the
 	// Dashboard diagram.
 	StatusPath string `json:"status_path,omitempty"`
+	// UploadPath takes a file from anywhere: POST ?name=<file name> with the
+	// raw bytes, DELETE ?name= to remove one it took. Optional.
+	UploadPath string `json:"upload_path,omitempty"`
+	// PreviewPath shows the head of a file: GET ?name=&lines=. Optional.
+	PreviewPath string `json:"preview_path,omitempty"`
 	// RunsLog names the activity log that counts runs.
 	RunsLog string `json:"runs_log,omitempty"`
 	// Stages maps the diagram's two self-arrows ("ingest", "reports") to
@@ -219,6 +224,12 @@ func (p *Plugin) validate(static func(string) bool) error {
 			return err
 		}
 		if err := pluginPath("settlement.status_path", s.StatusPath, false); err != nil {
+			return err
+		}
+		if err := pluginPath("settlement.upload_path", s.UploadPath, false); err != nil {
+			return err
+		}
+		if err := pluginPath("settlement.preview_path", s.PreviewPath, false); err != nil {
 			return err
 		}
 		if s.RunsLog != "" && !logName.MatchString(s.RunsLog) {

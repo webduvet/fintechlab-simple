@@ -183,6 +183,9 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/plugins/{id}/actions/{action}", a.pluginAction)
 	mux.HandleFunc("GET /api/plugins/{id}/files", a.pluginFiles)
 	mux.HandleFunc("POST /api/plugins/{id}/run", a.pluginRun)
+	mux.HandleFunc("POST /api/plugins/{id}/files", a.pluginUpload)
+	mux.HandleFunc("DELETE /api/plugins/{id}/files", a.pluginDeleteFile)
+	mux.HandleFunc("GET /api/plugins/{id}/files/preview", a.pluginPreview)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

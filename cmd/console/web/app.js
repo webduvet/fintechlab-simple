@@ -50,6 +50,10 @@ const VIEWS = {
     title: 'Merchants',
     sub: 'Distributor → partner → merchant → outlet. The outlet is what the money cares about: Worldline calls it a submerchant and identifies it by MID.',
   },
+  docs: {
+    title: 'Docs',
+    sub: 'How the three parts fit — your platform with its test harness, the runner library, and this lab — and how to stand them up.',
+  },
   config: {
     title: 'Configuration',
     sub: 'How a platform connects to this lab, the knobs that change what the lab does, and the two config files behind the timings.',
@@ -231,14 +235,16 @@ function filesPanel(s) {
   if (!d) return '';
   if (d.error) return `<div class="note bad">Settlement files unavailable — ${esc(d.error)}</div>`;
   const files = d.files || [];
+  const st = s.plugin.settlement;
+  const upload = uploadBlock(s, d);
   if (!files.length) {
     return `<div class="note warn">No settlement files in <span class="mono">${esc(d.dir || '')}</span> —
-      ${esc(s.name)} offers nothing to run.</div>`;
+      ${esc(s.name)} offers nothing to run.</div>${upload}`;
   }
 
   // One run per currency at a time, so "all together" is the first free,
   // seeded file of each currency.
-  const runnable = (f) => f.seeded !== false && !f.in_flight;
+  const runnable = (f) => !f.problem && f.seeded !== false && !f.in_flight;
   const together = [];
   for (const f of files) {
     if (runnable(f) && !together.some((t) => t.currency === f.currency)) together.push(f);
@@ -247,6 +253,8 @@ function filesPanel(s) {
   const rows = files.map((f) => {
     const pills = [];
     if (f.default) pills.push('<span class="pill">default</span>');
+    if (f.uploaded) pills.push(`<span class="pill">uploaded${f.bytes != null ? ' · ' + esc(fmtBytes(f.bytes)) : ''}</span>`);
+    if (f.problem) pills.push(`<span class="pill warn" title="${esc(f.problem)}">cannot run</span>`);
     if (f.in_flight && f.in_flight.file === f.name) {
       const stages = f.in_flight.stages || [];
       const at = stages.length ? stages[stages.length - 1].stage : 'starting';
@@ -268,14 +276,22 @@ function filesPanel(s) {
     const run = runnable(f)
       ? `<button class="btn small" data-action="plugin-run" data-id="${esc(s.id)}" data-files="${esc(f.name)}">Run</button>`
       : '';
+    const preview = st.preview_path
+      ? `<button class="ghost small" data-action="plugin-preview" data-id="${esc(s.id)}" data-name="${esc(f.name)}">Preview</button>`
+      : '';
+    const remove = st.upload_path && f.uploaded && !f.in_flight
+      ? `<button class="danger small" data-action="plugin-remove-file" data-id="${esc(s.id)}" data-name="${esc(f.name)}">Remove</button>`
+      : '';
     return `<tr>
       <td class="mono">${esc(f.name)}</td>
-      <td class="mono">${esc(f.currency)}</td>
+      <td class="mono">${esc(f.currency || '—')}</td>
       <td class="mono">${esc(midList(f.mids))}</td>
       <td class="mono num">${esc(f.total)}</td>
-      <td><div class="pill-row">${pills.join('')}</div></td>
+      <td><div class="pill-row">${pills.join('')}</div>${f.problem ? `<div class="hint">${esc(f.problem)}</div>` : ''}</td>
       <td>${last}</td>
+      ${st.preview_path ? `<td class="actions">${preview}</td>` : ''}
       <td class="actions">${run}</td>
+      ${st.upload_path ? `<td class="actions">${remove}</td>` : ''}
     </tr>`;
   }).join('');
 
@@ -294,14 +310,105 @@ function filesPanel(s) {
       all of them at once — one run per currency at a time, and the lab clock decides the day.</div>
     <div class="table-scroll"><table>
       <thead><tr><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th>
-        <th>State</th><th>Last run</th><th class="actions"></th></tr></thead>
+        <th>State</th><th>Last run</th>${st.preview_path ? '<th class="actions"></th>' : ''}<th class="actions"></th>${st.upload_path ? '<th class="actions"></th>' : ''}</tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
     ${seedNote}${unknown}
     ${together.length > 1 ? `<div class="form">
       <button class="ghost small" data-action="plugin-run" data-id="${esc(s.id)}"
         data-files="${esc(together.map((f) => f.name).join('|'))}">Run all ${together.length} together</button>
-    </div>` : ''}`;
+    </div>` : ''}
+    ${upload}`;
+}
+
+/* A file from anywhere (design-system.md, File field). The picker is not
+   in the rendered view: the view re-renders on every poll, and a chosen
+   file cannot be put back into a new <input> — so the button opens a
+   picker made on the spot and the upload starts on the choice. Progress
+   lives in state for the same reason. */
+function uploadBlock(s, d) {
+  const st = s.plugin.settlement;
+  if (!st.upload_path) return '';
+  const up = state.uploading && state.uploading.id === s.id ? state.uploading : null;
+  return `<div class="section-title">Add a settlement file</div>
+    <p class="hint">Any file, from anywhere on this machine. ${esc(s.name)} keeps it in
+      <span class="mono">${esc(d.upload_dir || 'its own directory')}</span> and lists it above; a
+      Worldline file with a Settlement row can be run like the fixtures. Big files are fine —
+      they are streamed, and a preview reads only the head.</p>
+    ${up ? `<div class="note">Uploading <span class="mono">${esc(up.name)}</span> — ${esc(up.progress)}</div>` : ''}
+    <div class="form">
+      <button class="ghost small" data-action="plugin-upload" data-id="${esc(s.id)}"${up ? ' disabled' : ''}>Upload a file to ${esc(s.name)}…</button>
+    </div>`;
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1073741824) return `${(n / 1048576).toFixed(1)} MB`;
+  return `${(n / 1073741824).toFixed(2)} GB`;
+}
+
+/* The head of a file, in a wide modal: line numbers, the lines as they
+   are, and how much of the file that is. */
+async function openPreview(id, name, lines) {
+  const r = await api('GET', `/api/plugins/${encodeURIComponent(id)}/files/preview?name=${encodeURIComponent(name)}&lines=${lines}`);
+  const rows = r.lines || [];
+  const width = String(rows.length).length;
+  const other = lines >= 1000 ? 100 : 1000;
+  $('#modal').classList.add('wide');
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2 class="mono">${esc(r.name || name)}</h2>
+      <p>${r.truncated ? `The first ${rows.length} lines` : `All ${rows.length} lines`} of ${esc(fmtBytes(r.bytes || 0))}${
+        r.truncated ? ' — the rest is not read, however long the file is.' : '.'}${
+        r.long_lines ? ` ${r.long_lines} long line${r.long_lines === 1 ? ' is' : 's are'} cut short.` : ''}</p>
+    </div>
+    <div class="modal-body">
+      <div class="preview" style="--gutter:${width + 1}ch">${rows.map((l, i) =>
+        `<div class="pl"><span class="pn">${i + 1}</span><span class="pt">${esc(l) || ' '}</span></div>`).join('')}</div>
+    </div>
+    <div class="modal-foot">
+      ${r.truncated || lines > 100 ? `<button class="ghost small" data-preview-lines="${other}">Show ${other === 1000 ? 'the first 1000' : 'only 100'} lines</button>` : ''}
+      <button class="btn small" data-close-modal>Close</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  const more = $('#modal').querySelector('[data-preview-lines]');
+  if (more) {
+    more.addEventListener('click', async () => {
+      more.disabled = true;
+      more.textContent = '…';
+      try {
+        await openPreview(id, name, Number(more.dataset.previewLines));
+      } catch (err) {
+        toast('Failed', err.message, 'bad');
+      }
+    });
+  }
+  $('#modal').querySelector('[data-close-modal]').addEventListener('click', closeModal);
+  $('#modal').querySelector('[data-close-modal]').focus();
+}
+
+/* XHR rather than fetch: fetch cannot report upload progress, and a big
+   file with no progress looks like a hung button. */
+function uploadFile(id, file) {
+  return new Promise((done, fail) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/api/plugins/${encodeURIComponent(id)}/files?name=${encodeURIComponent(file.name)}`);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable || !state.uploading) return;
+      state.uploading.progress = `${Math.floor((ev.loaded / ev.total) * 100)}% of ${fmtBytes(ev.total)}`;
+      if (!isEditing()) renderView();
+    };
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch (_) { /* keep the raw text */ }
+      if (xhr.status >= 200 && xhr.status < 300) done(body || {});
+      else fail(new Error((body && (body.error || body.message)) || xhr.responseText || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => fail(new Error('the upload did not reach the console'));
+    xhr.send(file);
+  });
 }
 
 /* A time stamped on the lab clock. Not "ago": a platform following it
@@ -1429,12 +1536,37 @@ async function loadHop() {
 
 const STAGE_PILL = { COMPLETED: 'ok', FAILED: 'bad' };
 
+/* A drawer row is stacked: the activity panel's four columns do not fit
+   420px, and the summary column ends up a letter a line. */
+function drawerRow(e, isNew) {
+  const detail = e.detail || {};
+  const keys = Object.keys(detail).filter((k) => k !== 'status').sort();
+  const at = new Date(e.at);
+  return `<div class="d-row ${esc(e.status || 'ok')}${isNew ? ' is-new' : ''}">
+      <div class="d-meta">
+        <span class="mono" title="${esc(e.at)}">${esc(shortStamp(e.at))}</span>
+        <span>${Number.isNaN(at.getTime()) ? '' : `${ago(e.at)} ago`}</span>
+        ${e.op ? `<span class="mono">${esc(e.op)}</span>` : ''}
+        ${e.peer ? `<span class="mono">${esc(e.peer)}</span>` : ''}
+      </div>
+      <div class="d-summary">${esc(e.summary || '')}</div>
+      ${keys.length ? `<dl class="d-detail">${keys.map((k) =>
+        `<dt>${esc(k)}</dt><dd>${esc(detail[k])}</dd>`).join('')}</dl>` : ''}
+    </div>`;
+}
+
+/* HH:MM:SS today; the date too when it is not. */
+function shortStamp(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const time = d.toTimeString().slice(0, 8);
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${time}`;
+}
+
 function renderDrawer() {
   const el = $('#drawer');
   const open = !!state.hop && state.view === 'dashboard';
-  // The sidebar folds while the drawer is open: the diagram beside it
-  // needs the width more than the nav labels do.
-  $('.app').classList.toggle('drawer-open', open);
   if (!open) {
     el.hidden = true;
     el.innerHTML = '';
@@ -1474,10 +1606,7 @@ function renderDrawer() {
       .join(' ');
     const seen = state.hopSeen || new Set();
     body = evs.length
-      ? `<div class="log-rows">${evs.map((e) => {
-          const row = logRow(e);
-          return seen.has(evKey(e)) ? row : row.replace('class="log-row ', 'class="log-row is-new ');
-        }).join('')}</div>
+      ? `<div class="d-rows">${evs.map((e) => drawerRow(e, !seen.has(evKey(e)))).join('')}</div>
         ${step.count > evs.length ? `<div class="log-foot">Showing the newest ${evs.length} of ${step.count}${step.capped ? '+' : ''}.</div>` : ''}`
       : `<div class="empty">Nothing has come this way yet. It lands here the moment it does — this refreshes every second while it is open.</div>`;
   }
@@ -1523,10 +1652,247 @@ function bindFlow(root) {
 /* The sidebar folds to its icon rail at any width, remembered per browser. */
 function setRail(on) {
   $('.app').classList.toggle('is-rail', on);
-  const btn = $('#rail-toggle');
-  btn.textContent = on ? '»' : '«';
-  btn.title = on ? 'Expand the sidebar' : 'Collapse the sidebar';
+  const label = on ? 'Expand the sidebar' : 'Collapse the sidebar';
+  for (const btn of [$('#rail-toggle'), $('#brand-mark')]) {
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  }
   try { localStorage.setItem('console-rail', on ? '1' : '0'); } catch (_) { /* private window */ }
+}
+
+/* --- docs -----------------------------------------------------------------
+
+   How the pieces fit, for someone who has cloned one of them and wonders
+   what the other two are (design-system.md, Guide). Static: nothing here
+   is fetched, so it reads the same with the lab half up — except the one
+   line that says what this lab can see right now. */
+
+const GUIDE_PARTS = [
+  {
+    id: 'platform',
+    name: 'The app in test',
+    tag: 'your platform + its test harness',
+    where: '~/infinite/buddy · infinite-local-runner/',
+    what: 'Your platform, run locally — for buddy the settle path: orchestrator, SQS workers, gateway, the Banking Circle webhook app. Inside it lives the test harness: one command that supervises those processes, drives a whole settlement run, and puts a card for all of it in this console.',
+    needs: [
+      'Node ≥ 22 and pnpm; Podman for its own postgres and queues',
+      'the lab’s keys — FINTECH_SIM_LAB, default ~/gh/fintechlab-simple/keys',
+      'fintechlab-runner, linked by init/link-lab-runner.sh',
+      'ports 3109 (control) and 3114 (webhooks) free',
+      'optional fintechlab.json: which stand-ins to switch off',
+    ],
+    cmd: 'podman compose up -d && ./setup.sh\npnpm nx up infinite-local-runner',
+    see: 'Platform → Local runner, registered and green',
+    href: '#platform',
+  },
+  {
+    id: 'runner',
+    name: 'fintechlab-runner',
+    tag: 'the library the harness is built on',
+    where: '~/gh/fintechlab-runner',
+    what: 'The lab’s plugin contract as typed code, so a harness only writes what is its own: register the card and keep it alive, follow the lab clock (and hold it during a run), the clock shim, logs in the lab’s shape, a store for uploaded files, a process supervisor. TypeScript, no runtime dependencies.',
+    needs: [
+      'Node ≥ 20 and npm',
+      'npm install && npm run build — the harness loads dist/',
+      'nothing from the lab at build time: the contract is in its types',
+    ],
+    cmd: 'git clone … ~/gh/fintechlab-runner\ncd ~/gh/fintechlab-runner && npm install && npm run build',
+    see: 'the harness starts; without it: “@fintechlab/runner is not linked”',
+    href: '',
+  },
+  {
+    id: 'lab',
+    name: 'fintechlab',
+    tag: 'this lab: the vendors, the console, the clock',
+    where: '~/gh/fintechlab-simple',
+    what: 'The third parties, simulated with their real protocols — Worldline over SFTP+PGP, B4B with RS512 JWTs, Banking Circle with mTLS and encrypted webhook batches, ACI — plus this console, the one business clock everyone follows, and the stand-ins that played the platform before one plugged in.',
+    needs: [
+      'Go 1.22+, Podman or Docker, openssl, make',
+      'ports 8080–8096, 8443 and 2222 free',
+      'nothing from the platform: it waits for one to register',
+    ],
+    cmd: 'git clone https://github.com/webduvet/fintechlab-simple.git\ncd fintechlab-simple && make up',
+    see: 'Dashboard → Services, every vendor green',
+    href: '#vendors',
+  },
+];
+
+const GUIDE_STEPS = [
+  { part: 'lab', title: 'Start the lab', cmd: 'cd ~/gh/fintechlab-simple\nmake up', see: 'The console on :8090, every vendor green. Keys and certificates are generated into keys/ the first time.', href: '#vendors', link: 'Vendors' },
+  { part: 'runner', title: 'Build the runner library', cmd: 'cd ~/gh/fintechlab-runner\nnpm install && npm run build', see: 'dist/ built. Rebuild after changing it — the harness loads what is built.', href: '', link: '' },
+  { part: 'platform', title: 'Set the harness up once', cmd: 'cd ~/infinite/buddy/infinite-local-runner\npodman compose up -d && ./setup.sh', see: 'setup.sh links the library, writes .env from the lab’s keys, creates queues and seeds merchants. A platform that does not read the lab’s disk takes one .env instead.', href: '#config/connect', link: 'Connect your platform' },
+  { part: 'platform', title: 'Choose your stand-ins (optional)', cmd: 'cp fintechlab.example.json fintechlab.json', see: 'On registration the lab disconnects and hides its settlement service and webhook receiver: what lands in the vendors’ logs is then yours alone.', href: '#platform', link: 'Platform' },
+  { part: 'platform', title: 'Start the platform', cmd: 'cd ~/infinite/buddy\npnpm nx up infinite-local-runner', see: '“🧩 registered with the lab console” and “⏰ following the lab clock” in its log; its card heads the Platform view.', href: platformHrefOrPlatform, link: 'its card' },
+  { part: 'lab', title: 'Run, watch, reconcile', cmd: 'Run a settlement file — or upload your own — on its card.\nLab clock +1 hour, then Run reconciliation sweep.', see: 'The Dashboard draws every hop as it happens; click an arrow to watch its traffic. The sweep moves payouts to SUCCESS.', href: '#dashboard', link: 'Dashboard' },
+];
+
+function platformHrefOrPlatform() { return platformHref(); }
+
+const GUIDE_LAYOUTS = [
+  {
+    name: 'All on your laptop',
+    note: 'The default, and what the steps above build.',
+    lines: ['platform and lab on one machine', 'the console reaches the platform at host.containers.internal:3109', 'the platform follows the lab clock, so a Sunday is a Sunday everywhere'],
+  },
+  {
+    name: 'Lab elsewhere, platform local',
+    note: 'A shared lab on a server (docs/deploy-pod.md).',
+    lines: ['FINTECH_SIM_LAB_CONSOLE_URL and _CLOCK_URL point at the lab', 'registering and the clock are outbound — no tunnel needed', 'the card’s live parts need one: RUNNER_ADVERTISED_URL = a tunnel (cloudflared, ngrok, pinggy) to :3109'],
+  },
+  {
+    name: 'Platform deployed, lab elsewhere',
+    note: 'A real stack pointed at the lab.',
+    lines: ['it registers with clock: "wall" — it cannot be moved', 'so the console refuses to move the lab clock while it is live', 'point its vendor URLs at the lab with the downloaded .env'],
+  },
+];
+
+function renderDocs() {
+  const ov = state.data.overview;
+  const plugin = ov && platformPlugin();
+  const up = ov ? services().filter((s) => isUp(s)).length : null;
+  const now = ov
+    ? `<div class="note">Right now: ${up} of ${services().filter((s) => s.health_path).length} services answer,
+        and ${plugin ? `<a href="${esc(serviceHref(plugin.id))}">${esc(plugin.name)}</a> is registered as the platform under test` : 'no platform has registered yet — steps 2 to 5 below'}.</div>`
+    : '';
+  return `<div class="guide">
+    ${now}
+    <section class="guide-hero" data-anchor="overview">
+      <h2>Three parts, two directions</h2>
+      <p class="guide-lede">The lab is the world your platform talks to. Your platform talks to it
+        exactly as it would to the real vendors — and, through its test harness, tells the lab it is
+        there: it puts its own card in this console and keeps its business clock on the lab’s.
+        The runner library is what makes the second half a few lines instead of a few hundred.</p>
+      <div class="guide-diagram">${guideDiagram()}</div>
+      <p class="hint">Solid arrows are what happens while it runs; the dashed one is set-up.
+        Purple marks the system under test, as on the Dashboard.</p>
+    </section>
+
+    <section data-anchor="parts">
+      <div class="section-title">The parts</div>
+      <div class="guide-parts">${GUIDE_PARTS.map(guidePart).join('')}</div>
+    </section>
+
+    <section data-anchor="setup">
+      <div class="section-title">Setting it up <small>once through, in this order</small></div>
+      <ol class="guide-steps">${GUIDE_STEPS.map(guideStep).join('')}</ol>
+    </section>
+
+    <section data-anchor="layouts">
+      <div class="section-title">Where each part can run</div>
+      <div class="guide-layouts">${GUIDE_LAYOUTS.map((l) => `<div class="guide-card">
+          <h3>${esc(l.name)}</h3>
+          <p class="hint">${esc(l.note)}</p>
+          <ul>${l.lines.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+        </div>`).join('')}</div>
+    </section>
+
+    <section data-anchor="reference">
+      <div class="section-title">Further reading <small>in the repos</small></div>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Document</th><th>For</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">fintechlab-simple/docs/getting-started.md</td><td>the loop above, by hand, with what each screen should show</td></tr>
+          <tr><td class="mono">fintechlab-simple/docs/plugins.md</td><td>the contract a platform implements: the card, the clock, files, stand-ins</td></tr>
+          <tr><td class="mono">fintechlab-simple/agent.runbooks.md</td><td>every step as one curl, and what looks broken but is not</td></tr>
+          <tr><td class="mono">fintechlab-simple/docs/console.md</td><td>this console, view by view</td></tr>
+          <tr><td class="mono">fintechlab-runner/README.md</td><td>the library’s modules and a minimal platform</td></tr>
+          <tr><td class="mono">buddy/infinite-local-runner/README.md</td><td>the reference harness</td></tr>
+        </tbody></table></div>
+    </section>
+  </div>`;
+}
+
+function guidePart(p) {
+  return `<div class="guide-card part-${esc(p.id)}">
+      <div class="guide-card-head"><span class="guide-badge part-${esc(p.id)}"></span>
+        <div><h3>${esc(p.name)}</h3><span class="hint">${esc(p.tag)}</span></div></div>
+      <p>${esc(p.what)}</p>
+      <div class="w-title">Needs</div>
+      <ul>${p.needs.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>
+      <div class="w-title">Lives in</div>
+      <p class="mono">${esc(p.where)}</p>
+      <pre class="guide-cmd">${esc(p.cmd)}</pre>
+      <p class="hint">Then: ${p.href ? `<a href="${esc(p.href)}">${esc(p.see)}</a>` : esc(p.see)}</p>
+    </div>`;
+}
+
+function guideStep(s, i) {
+  const part = GUIDE_PARTS.find((p) => p.id === s.part);
+  const href = typeof s.href === 'function' ? s.href() : s.href;
+  return `<li class="guide-step">
+      <span class="guide-num part-${esc(s.part)}">${i + 1}</span>
+      <div class="guide-step-body">
+        <h3>${esc(s.title)} <span class="pill">${esc(part ? part.name : s.part)}</span></h3>
+        <pre class="guide-cmd">${esc(s.cmd)}</pre>
+        <p>${esc(s.see)}${href && s.link ? ` <a href="${esc(href)}">${esc(s.link)} →</a>` : ''}</p>
+      </div>
+    </li>`;
+}
+
+/* Hand-drawn, like the sequence diagram: tokens for every colour, so it
+   is right in both themes, and no library. */
+function guideDiagram() {
+  const box = (x, y, w, h, klass, title, sub) => `<g class="gd-box ${klass}">
+      <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10"></rect>
+      <text class="gd-title" x="${x + 14}" y="${y + 22}">${esc(title)}</text>
+      ${sub ? `<text class="gd-sub" x="${x + 14}" y="${y + 38}">${esc(sub)}</text>` : ''}
+    </g>`;
+  const chip = (x, y, w, label, klass = '') => `<g class="gd-chip ${klass}">
+      <rect x="${x}" y="${y}" width="${w}" height="24" rx="6"></rect>
+      <text x="${x + w / 2}" y="${y + 16}">${esc(label)}</text>
+    </g>`;
+  const arrow = (x1, y, x2, label, sub, klass = '') => {
+    const dir = x2 > x1 ? 1 : -1;
+    const tip = x2 - 9 * dir;
+    return `<g class="gd-arrow ${klass}">
+      <line x1="${x1}" y1="${y}" x2="${tip}" y2="${y}"></line>
+      <polygon points="${x2},${y} ${tip},${y - 5} ${tip},${y + 5}"></polygon>
+      <text class="gd-label" x="${(x1 + x2) / 2}" y="${y - 7}">${esc(label)}</text>
+      ${sub ? `<text class="gd-code" x="${(x1 + x2) / 2}" y="${y + 15}">${esc(sub)}</text>` : ''}
+    </g>`;
+  };
+  return `<svg class="gd" viewBox="0 0 1000 470" role="img"
+      aria-label="The platform with its test harness and the runner library on the left, the lab on the right, and the calls between them">
+    ${box(10, 10, 390, 450, 'is-sut', 'The app in test', 'your platform, run locally')}
+    ${chip(30, 64, 170, 'orchestrator')}
+    ${chip(210, 64, 170, 'SQS workers')}
+    ${chip(30, 96, 170, 'gateway (callbacks)')}
+    ${chip(210, 96, 170, 'webhook app :3114')}
+    ${box(30, 150, 350, 290, 'is-harness', 'Test harness', 'infinite-local-runner · control API :3109')}
+    <text class="gd-note" x="46" y="212">supervises the processes above</text>
+    <text class="gd-note" x="46" y="230">drives a settlement run end to end</text>
+    <text class="gd-note" x="46" y="248">keeps uploaded files, previews them</text>
+    ${box(46, 290, 318, 130, 'is-lib', 'fintechlab-runner', 'library · linked into node_modules')}
+    ${chip(62, 342, 90, 'card', 'lib')}
+    ${chip(160, 342, 90, 'clock', 'lib')}
+    ${chip(258, 342, 90, 'logs', 'lib')}
+    ${chip(62, 374, 90, 'shim', 'lib')}
+    ${chip(160, 374, 90, 'files', 'lib')}
+    ${chip(258, 374, 90, 'supervisor', 'lib')}
+
+    ${box(600, 10, 390, 450, 'is-lab', 'fintechlab', 'the lab: vendors, console, clock')}
+    ${chip(620, 64, 170, 'Worldline SFTP :2222')}
+    ${chip(800, 64, 170, 'B4B :8086')}
+    ${chip(620, 96, 170, 'Banking Circle :8085')}
+    ${chip(800, 96, 170, 'ACI :8087')}
+    ${chip(620, 128, 350, 'verification · AML · core ledger')}
+    ${box(620, 160, 170, 76, 'is-core', 'Console :8090', 'cards · buttons · logs')}
+    ${chip(840, 186, 130, 'your browser', 'browser')}
+    ${arrow(840, 198, 790, '', '', 'is-browse')}
+    ${box(620, 254, 170, 44, 'is-core', 'Lab clock :8096', '')}
+    <text class="gd-group" x="620" y="330">STAND-INS</text>
+    ${chip(620, 340, 170, 'settlement', 'standin')}
+    ${chip(800, 340, 170, 'webhook receiver', 'standin')}
+    <text class="gd-note" x="620" y="386">played the platform before one plugged in —</text>
+    <text class="gd-note" x="620" y="402">switch them off once yours is here</text>
+
+    ${arrow(380, 76, 620, 'SFTP+PGP · JWT · mTLS', '', 'is-traffic')}
+    ${arrow(620, 108, 380, 'webhooks · callbacks', '', 'is-traffic')}
+    ${arrow(380, 180, 620, 'registers its card, renews it', 'POST /api/plugins')}
+    ${arrow(620, 222, 380, 'buttons, files, logs', 'on its base_url, :3109')}
+    ${arrow(380, 276, 620, 'follows the clock, holds it in a run', 'GET /clock')}
+    ${arrow(600, 436, 400, 'fintechlab.env', 'addresses · credentials · keys', 'is-setup')}
+  </svg>`;
 }
 
 /* --- services ---------------------------------------------------------- */
@@ -2019,6 +2385,32 @@ const ACTIONS = {
      best part of a minute, and a button that sat spinning through it would
      hide the thing worth watching, which is the stages arriving in the
      panels. */
+  'plugin-upload': async (d) => {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    const file = await new Promise((done) => {
+      picker.addEventListener('change', () => done(picker.files[0] || null), { once: true });
+      picker.addEventListener('cancel', () => done(null), { once: true });
+      picker.click();
+    });
+    if (!file) return;
+    state.uploading = { id: d.id, name: file.name, progress: `0% of ${fmtBytes(file.size)}` };
+    try {
+      const r = await uploadFile(d.id, file);
+      toast(`Uploaded ${file.name}`, r.note || `kept as ${r.name}, ${fmtBytes(r.bytes || file.size)}`, 'good');
+    } finally {
+      state.uploading = null;
+    }
+  },
+
+  'plugin-preview': async (d) => { await openPreview(d.id, d.name, 100); },
+
+  'plugin-remove-file': async (d) => {
+    if (!confirm(`Remove ${d.name} from the platform's uploads? Runs it already did stay done — only the file goes.`)) return;
+    await api('DELETE', `/api/plugins/${encodeURIComponent(d.id)}/files?name=${encodeURIComponent(d.name)}`);
+    toast('Removed', d.name, 'good');
+  },
+
   'plugin-run': async (d) => {
     const files = d.files.split('|');
     const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/run`, { files });
@@ -2281,7 +2673,11 @@ function openMerchantModal() {
   $('#modal').querySelector('[data-field="legal_name"]').focus();
 }
 
-function closeModal() { $('#modal-backdrop').hidden = true; $('#modal').innerHTML = ''; }
+function closeModal() {
+  $('#modal-backdrop').hidden = true;
+  $('#modal').innerHTML = '';
+  $('#modal').classList.remove('wide');
+}
 
 /* --- shell ---------------------------------------------------------------- */
 
@@ -2300,6 +2696,7 @@ function renderView() {
     isServiceView() ? renderServices() :
     state.view === 'banks' ? renderBanks() :
     state.view === 'merchants' ? renderMerchants() :
+    state.view === 'docs' ? renderDocs() :
     renderConfig();
 
   const content = $('#content');
@@ -2366,7 +2763,7 @@ function scrollToFocus() {
   if (!state.focus) return;
   const el = state.focus.hop
     ? $('#content').querySelector(`[data-hop="${CSS.escape(state.focus.hop)}"]`)
-    : $('#content').querySelector(`.card-head[data-card="${CSS.escape(state.focus)}"]`);
+    : $('#content').querySelector(`.card-head[data-card="${CSS.escape(state.focus)}"], [data-anchor="${CSS.escape(state.focus)}"]`);
   if (!el) return;
   const block = state.focus.hop ? 'center' : 'start';
   state.focus = null;
@@ -2398,7 +2795,9 @@ function init() {
   try {
     if (localStorage.getItem('console-rail') === '1') setRail(true);
   } catch (_) { /* private window: the sidebar stays open */ }
-  $('#rail-toggle').addEventListener('click', () => setRail(!$('.app').classList.contains('is-rail')));
+  const toggleRail = () => setRail(!$('.app').classList.contains('is-rail'));
+  $('#rail-toggle').addEventListener('click', toggleRail);
+  $('#brand-mark').addEventListener('click', toggleRail);
   $('#theme-toggle').addEventListener('click', () => {
     setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   });

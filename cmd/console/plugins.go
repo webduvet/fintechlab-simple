@@ -4,8 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/webduvet/fintechlab-simple/internal/console"
@@ -171,4 +176,151 @@ func (a *app) clockLock() string {
 		return name + " is registered on the wall clock and cannot follow the lab's; moving the lab would put its vendors on a different day from the platform they serve"
 	}
 	return ""
+}
+
+// --- settlement files: upload, preview, delete ---------------------------
+//
+// A file from anywhere — not only the fixtures the platform ships — goes to
+// the platform, which keeps it where it keeps its own (buddy's runner:
+// .runs/uploads/) and lists it with the rest. The console only passes the
+// bytes through: it streams them, so a million-line file is never held in
+// the console's memory, and it stores nothing.
+
+// uploadLimit is the largest file the console passes on,
+// CONSOLE_UPLOAD_MAX_MB (default 512).
+func uploadLimit() int64 {
+	mb, err := strconv.ParseInt(env("CONSOLE_UPLOAD_MAX_MB", "512"), 10, 64)
+	if err != nil || mb <= 0 {
+		mb = 512
+	}
+	return mb << 20
+}
+
+// settlementPath is one of the settlement paths a live plugin declared, or
+// an answer saying why there is none: 501 when it does not offer the
+// feature, which the page reads as "no button" rather than "failed".
+func (a *app) settlementPath(w http.ResponseWriter, r *http.Request, pick func(*console.PluginSettlement) string, what string) (console.Plugin, string, bool) {
+	p, ok := a.livePlugin(w, r.PathValue("id"))
+	if !ok {
+		return p, "", false
+	}
+	if p.Settlement == nil {
+		httputilx.Error(w, 404, p.Name+" runs no settlement files")
+		return p, "", false
+	}
+	path := pick(p.Settlement)
+	if path == "" {
+		httputilx.Error(w, 501, p.Name+" does not offer "+what)
+		return p, "", false
+	}
+	return p, path, true
+}
+
+func withQuery(base string, q url.Values) string {
+	if strings.Contains(base, "?") {
+		return base + "&" + q.Encode()
+	}
+	return base + "?" + q.Encode()
+}
+
+// pluginUpload streams POST /api/plugins/{id}/files?name= to the plugin's
+// upload_path, bytes untouched.
+func (a *app) pluginUpload(w http.ResponseWriter, r *http.Request) {
+	p, path, ok := a.settlementPath(w, r, func(s *console.PluginSettlement) string { return s.UploadPath }, "uploads")
+	if !ok {
+		return
+	}
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		httputilx.Error(w, 400, "name the file: ?name=<file name>")
+		return
+	}
+	limit := uploadLimit()
+	if r.ContentLength > limit {
+		httputilx.Error(w, 413, fmt.Sprintf("%d bytes is over the console's %d MB limit (CONSOLE_UPLOAD_MAX_MB)", r.ContentLength, limit>>20))
+		return
+	}
+	// The request's own context, not the usual five seconds: a big file
+	// takes as long as it takes, and the operator can cancel by leaving.
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost,
+		withQuery(p.BaseURL+path, url.Values{"name": {name}}), http.MaxBytesReader(w, r.Body, limit))
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	req.ContentLength = r.ContentLength
+	req.Header.Set("Content-Type", "application/octet-stream")
+	client := &http.Client{Transport: a.client.Transport}
+	a.relay(w, client, req)
+}
+
+// pluginDeleteFile removes a file the plugin took: DELETE upload_path?name=.
+func (a *app) pluginDeleteFile(w http.ResponseWriter, r *http.Request) {
+	p, path, ok := a.settlementPath(w, r, func(s *console.PluginSettlement) string { return s.UploadPath }, "uploads")
+	if !ok {
+		return
+	}
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		withQuery(p.BaseURL+path, url.Values{"name": {r.URL.Query().Get("name")}}), nil)
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	a.relay(w, a.client, req)
+}
+
+// maxPreviewLines is the most a preview asks for: enough to read a file's
+// shape, and a bounded answer however long the file is.
+const maxPreviewLines = 1000
+
+// pluginPreview forwards GET …/files/preview?name=&lines= to the plugin's
+// preview_path, clamping lines to 1..1000.
+func (a *app) pluginPreview(w http.ResponseWriter, r *http.Request) {
+	p, path, ok := a.settlementPath(w, r, func(s *console.PluginSettlement) string { return s.PreviewPath }, "previews")
+	if !ok {
+		return
+	}
+	lines, err := strconv.Atoi(r.URL.Query().Get("lines"))
+	if err != nil || lines <= 0 {
+		lines = 100
+	}
+	if lines > maxPreviewLines {
+		lines = maxPreviewLines
+	}
+	ctx, cancel := reqContext(r)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, withQuery(p.BaseURL+path, url.Values{
+		"name": {r.URL.Query().Get("name")}, "lines": {strconv.Itoa(lines)},
+	}), nil)
+	if err != nil {
+		httputilx.Error(w, 500, err.Error())
+		return
+	}
+	a.relay(w, a.client, req)
+}
+
+// relay sends req and answers with the peer's status and JSON body — its
+// refusal in its own words.
+func (a *app) relay(w http.ResponseWriter, client *http.Client, req *http.Request) {
+	resp, err := client.Do(req)
+	if err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			httputilx.Error(w, 413, fmt.Sprintf("over the console's %d MB limit (CONSOLE_UPLOAD_MAX_MB)", tooBig.Limit>>20))
+			return
+		}
+		httputilx.Error(w, 502, err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	var out any
+	if len(bytes.TrimSpace(raw)) == 0 {
+		out = map[string]any{}
+	} else if err := json.Unmarshal(raw, &out); err != nil {
+		out = map[string]any{"output": string(raw)}
+	}
+	httputilx.WriteJSON(w, resp.StatusCode, out)
 }

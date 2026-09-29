@@ -83,14 +83,26 @@ html, body {
   background: linear-gradient(180deg, transparent, var(--accent-line) 25%, var(--accent-line) 60%, transparent);
 }
 
-.brand { display: flex; align-items: center; gap: 10px; padding: 18px 16px 16px; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 18px 12px 16px 16px; }
 .brand-mark {
+  padding: 0; border: 0; cursor: pointer; overflow: hidden;
   width: 32px; height: 32px; flex: none; border-radius: 9px;
   display: grid; place-items: center; font-size: 16px; color: #fff;
   background: linear-gradient(140deg, var(--accent-hi), var(--accent-lo));
   box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35);
 }
-.brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.brand-mark svg { display: block; }
+.brand-mark:hover { filter: brightness(1.08); }
+.brand-text { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; flex: 1; }
+/* Two lines, not a hamburger's three: it folds the sidebar, it does not
+   open a menu. */
+.rail-toggle {
+  flex: none; width: 28px; height: 28px; padding: 0; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-faint); cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.rail-toggle:hover { background: var(--panel-2); color: var(--text); border-color: var(--border); }
 .brand-text strong { font-size: 13.5px; letter-spacing: 0.1px; }
 .brand-text span { font-size: 11px; color: var(--text-faint); }
 
@@ -124,12 +136,11 @@ html, body {
 
 /* The icon rail: the same shape the 760px breakpoint forces, chosen by the
    operator at any width (design-system.md, Layout). */
-.app:is(.is-rail, .drawer-open) .sidebar { width: 62px; flex-basis: 62px; }
-.app:is(.is-rail, .drawer-open) :is(.brand-text, .nav-label, .nav-badge, .legend) { display: none; }
-.app:is(.is-rail, .drawer-open) .sidebar-buttons { flex-direction: column; align-items: center; }
-.app:is(.is-rail, .drawer-open) .nav-item { justify-content: center; }
-/* Folded for the drawer, not by choice: nothing to toggle until it closes. */
-.app.drawer-open #rail-toggle { display: none; }
+.app.is-rail .sidebar { width: 62px; flex-basis: 62px; }
+.app.is-rail :is(.brand-text, .nav-label, .nav-badge, .legend, .rail-toggle) { display: none; }
+.app.is-rail .brand { justify-content: center; padding-left: 0; padding-right: 0; }
+.app.is-rail .sidebar-buttons { flex-direction: column; align-items: center; }
+.app.is-rail .nav-item { justify-content: center; }
 
 /* --- main ------------------------------------------------------------- */
 
@@ -193,7 +204,9 @@ button:disabled { opacity: .5; cursor: not-allowed; filter: none; }
   padding: 13px 15px; cursor: pointer; user-select: none;
 }
 .card-head .chev { color: var(--text-faint); font-size: 11px; transition: transform .15s; flex: none; }
-.card.is-open .chev { transform: rotate(90deg); color: var(--accent); }
+/* Only the card's own chevron: a closed log nested in an open card must
+   still point right, or open and closed look the same. */
+.card.is-open > .card-head .chev { transform: rotate(90deg); color: var(--accent); }
 .card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .card-title .name { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .card-title .desc {
@@ -398,7 +411,8 @@ input:focus, select:focus, textarea:focus {
 
 @media (max-width: 760px) {
   .sidebar { width: 62px; flex-basis: 62px; }
-  .brand-text, .nav-label, .nav-badge, .legend, #rail-toggle { display: none; }
+  .brand-text, .nav-label, .nav-badge, .legend, .rail-toggle { display: none; }
+  .brand { justify-content: center; padding-left: 0; padding-right: 0; }
   .sidebar-buttons { flex-direction: column; align-items: center; }
   .content, .topbar { padding-left: 14px; padding-right: 14px; }
   /* One kernel per row on a narrow screen; the boxes stay readable rather
@@ -745,11 +759,30 @@ a.w-title:hover { color: var(--accent-hi); }
 .drawer-body .pill-row { margin-bottom: 4px; }
 .drawer-body .note { margin: 10px 0; }
 .drawer-body .hint a { color: var(--accent-hi); }
-.drawer .log-rows { max-height: none; }
-/* Arrived since the drawer opened: a thin accent rail, decoration rather
-   than status, so a warn or bad row keeps its own colour on top. */
-.log-row.is-new { box-shadow: inset 2px 0 0 var(--accent); }
-.log-row.is-new.warn, .log-row.is-new.bad { box-shadow: inset 5px 0 0 -2px var(--accent); }
+/* Stacked rows: meta line, summary, then one detail key per line. */
+.d-rows { margin-top: 10px; border-top: 1px solid var(--border-soft); }
+.d-row {
+  padding: 8px 10px 9px; border-bottom: 1px solid var(--border-soft);
+  border-left: 3px solid transparent; min-width: 0;
+}
+.d-row.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, transparent); }
+.d-row.bad { border-left-color: var(--down); background: color-mix(in srgb, var(--down) 9%, transparent); }
+.d-meta {
+  display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline;
+  font-size: 11px; color: var(--text-faint);
+}
+.d-meta .mono { font-size: 11px; font-variant-numeric: tabular-nums; }
+.d-summary { font-size: 12.5px; color: var(--text); margin-top: 3px; overflow-wrap: anywhere; }
+.d-detail {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 1px 10px;
+  margin: 5px 0 0; font-size: 11px;
+}
+.d-detail dt { color: var(--text-faint); }
+.d-detail dd { margin: 0; font-family: var(--mono); color: var(--text-dim); overflow-wrap: anywhere; min-width: 0; }
+/* Arrived since the drawer opened: an accent rail, decoration rather than
+   status, so a warn or bad row keeps its own colour beside it. */
+.d-row.is-new { box-shadow: inset 2px 0 0 var(--accent); }
+.d-row.is-new.warn, .d-row.is-new.bad { box-shadow: inset 5px 0 0 -2px var(--accent); }
 
 /* Arrows are buttons. The hit path is wide and invisible; the selection
    band sits behind the line so the line keeps its status colour. */
@@ -762,3 +795,108 @@ a.w-title:hover { color: var(--accent-hi); }
 .flow-step.is-selected .flow-label { fill: var(--accent-hi); font-weight: 600; }
 .flow-box[data-href] { cursor: pointer; outline: none; }
 .flow-box[data-href]:hover rect, .flow-box[data-href]:focus-visible rect { stroke: var(--accent-line); }
+
+/* --- file preview --------------------------------------------------------- */
+/* The head of a file, as it is: mono, never wrapped (a CSV row wrapped is a
+   different row), a line-number gutter that is not selected with the text,
+   and its own scroll both ways inside the modal. */
+
+.modal.wide { width: min(1100px, 100%); }
+.preview {
+  font: 11.5px/1.55 var(--mono); color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  max-height: 62vh; overflow: auto; padding: 6px 0;
+}
+.preview .pl { display: flex; white-space: pre; min-width: max-content; }
+.preview .pl:hover { background: var(--panel-3); }
+.preview .pn {
+  flex: none; width: calc(var(--gutter, 4ch) + 12px); padding: 0 10px 0 0; text-align: right;
+  color: var(--text-faint); user-select: none; font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--border-soft); margin-right: 10px;
+}
+.preview .pt { padding-right: 14px; }
+
+/* --- docs: the guide -------------------------------------------------------- */
+/* A page to read, not a panel to operate: prose at a reading width, the
+   diagram at 1:1, and colour only where it means the same as everywhere
+   else — purple for the system under test. The three parts each keep one
+   quiet marker (a grey, the accent, and the accent's darker stop) so a
+   step can say which repo it happens in without a legend. */
+
+.guide { max-width: 1060px; }
+.guide section { margin-bottom: 26px; }
+.guide h2 { font-size: 16px; font-weight: 600; margin: 4px 0 6px; }
+.guide h3 { font-size: 13.5px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.guide p, .guide li { font-size: 12.5px; color: var(--text-dim); line-height: 1.55; }
+.guide ul { margin: 4px 0 10px; padding-left: 18px; }
+.guide a { color: var(--accent-hi); }
+.guide-lede { max-width: 78ch; font-size: 13px !important; }
+
+.guide-diagram { overflow-x: auto; margin: 12px 0 6px; }
+.gd { width: 100%; max-width: 1000px; min-width: 760px; height: auto; display: block; }
+.gd-box rect { fill: var(--panel); stroke: var(--border); stroke-width: 1.5; }
+.gd-box.is-sut > rect { fill: color-mix(in srgb, var(--accent) 7%, var(--panel)); stroke: var(--accent-line); stroke-width: 2; }
+.gd-box.is-harness > rect { fill: var(--panel); stroke: var(--accent-line); }
+.gd-box.is-lib > rect { fill: var(--panel-2); stroke: var(--accent-lo); stroke-dasharray: 5 4; }
+.gd-box.is-lab > rect { fill: var(--panel); stroke: var(--border); }
+.gd-box.is-core > rect { fill: var(--panel-2); stroke: var(--text-faint); }
+.gd-title { font: 600 13px var(--sans); fill: var(--text); }
+.gd-box.is-sut > .gd-title { fill: var(--accent-hi); }
+.gd-sub { font: 10.5px var(--sans); fill: var(--text-faint); }
+.gd-note { font: 11px var(--sans); fill: var(--text-dim); }
+.gd-group { font: 600 9.5px var(--sans); fill: var(--text-faint); letter-spacing: .08em; }
+.gd-chip rect { fill: var(--panel-2); stroke: var(--border); }
+.gd-chip text { font: 10.5px var(--mono); fill: var(--text-dim); text-anchor: middle; }
+.gd-chip.lib rect { fill: var(--accent-ghost); stroke: var(--accent-line); }
+.gd-chip.lib text { fill: var(--text); }
+.gd-chip.lab-core rect { stroke: var(--text-faint); }
+.gd-chip.standin rect { fill: transparent; stroke-dasharray: 4 3; }
+.gd-chip.standin text { fill: var(--text-faint); }
+.gd-chip.browser rect { fill: transparent; }
+.gd-arrow line { stroke: var(--accent); stroke-width: 1.6; }
+.gd-arrow polygon { fill: var(--accent); }
+.gd-arrow.is-traffic line { stroke: var(--text-faint); }
+.gd-arrow.is-traffic polygon { fill: var(--text-faint); }
+.gd-arrow.is-setup line { stroke: var(--text-faint); stroke-dasharray: 5 4; }
+.gd-arrow.is-setup polygon { fill: var(--text-faint); }
+.gd-arrow.is-browse line { stroke: var(--text-faint); }
+.gd-arrow.is-browse polygon { fill: var(--text-faint); }
+.gd-label { font: 11px var(--sans); fill: var(--text); text-anchor: middle; }
+.gd-code { font: 10px var(--mono); fill: var(--text-faint); text-anchor: middle; }
+
+.guide-parts, .guide-layouts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+.guide-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; min-width: 0;
+}
+.guide-card-head { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
+.guide-card .w-title { display: block; margin-top: 8px; }
+.guide-card p.mono { color: var(--text); margin: 2px 0 8px; }
+.guide-badge { width: 10px; height: 10px; border-radius: 3px; flex: none; margin-top: 4px; }
+.part-platform.guide-badge, .guide-num.part-platform { background: var(--accent); }
+.part-runner.guide-badge, .guide-num.part-runner { background: var(--accent-lo); }
+.part-lab.guide-badge, .guide-num.part-lab { background: var(--text-faint); }
+
+.guide-cmd {
+  font: 11.5px/1.55 var(--mono); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: var(--radius-sm);
+  padding: 8px 11px; margin: 8px 0;
+}
+
+/* The set-up track: numbered stops on one rail, each saying where it
+   happens, what to type and what you should then see. */
+.guide-steps { list-style: none; margin: 0; padding: 0; position: relative; }
+.guide-steps::before {
+  content: ""; position: absolute; left: 13px; top: 14px; bottom: 14px; width: 2px;
+  background: linear-gradient(180deg, var(--accent-line), var(--border));
+}
+.guide-step { display: flex; gap: 14px; position: relative; padding-bottom: 14px; }
+.guide-num {
+  flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  font: 600 12px var(--mono); color: #fff; box-shadow: 0 0 0 4px var(--bg); z-index: 1;
+}
+.guide-step-body {
+  flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 10px 14px;
+}
+.guide-step-body p { margin: 0; }

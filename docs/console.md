@@ -6,7 +6,9 @@ A control panel for the lab — the thing that turns a set of containers and
 a page of `curl` invocations into something you can hand to someone who
 has not read the repo. Views: **Dashboard** (the home page — the lab at a
 glance, then one run as a sequence diagram), **Vendors**, **Platform**,
-**Verification**, **Banks**, **Merchants**, **Configuration**.
+**Verification**, **Banks**, **Merchants**, **Docs** (how the platform, its
+test harness, the runner library and this lab fit, and how to set them up),
+**Configuration**.
 
 ## What it is, and what it deliberately is not
 
@@ -47,8 +49,9 @@ its detail and controls live:
 
 Links are `#view/card` — `#vendors/b4b` opens the B4B card,
 `#vendors/b4b:payments` its payments log too — so any card can be linked
-to. The sidebar folds to an icon rail from the button at its foot
-(remembered per browser).
+to. The sidebar folds to an icon rail — the two-line button beside the
+title, or the logo itself — and stays as you left it (remembered per
+browser).
 
 Under the widgets, a **sequence diagram of one settlement run**. The platform sits in the middle, the vendors it talks to
 either side, and each hop between them is an arrow that lights as its own
@@ -245,6 +248,17 @@ total, and its last run (root, payouts, when).
   (the first free, seeded one per currency). The platform starts them in
   the same moment, which is how two currencies arrive on a real morning and
   the case a single run never exercises.
+
+**Files from anywhere.** *Upload a file to …* under the table sends any
+file on your machine to the platform, which keeps it in its own directory
+(buddy's runner: `.runs/uploads/`) and lists it with its fixtures — runnable
+if it is a Worldline file, *cannot run* with the reason if not. The bytes
+are streamed through the console and never held by it (capped at
+`CONSOLE_UPLOAD_MAX_MB`, 512); progress shows above the button. **Preview**
+on any row opens the head of the file — the first 100 lines, or 1000 —
+read no further however long the file is. **Remove** forgets an uploaded
+file; the fixtures have none. A platform that declares no `upload_path` or
+`preview_path` gets no such buttons ([plugins.md](plugins.md#settlement)).
 
 A row has no *Run* while its currency has a run in flight (one per
 currency; a second is the platform's `409`). A file whose MIDs have no
@@ -573,6 +587,7 @@ send you debugging the wrong thing for an hour:
 | `CONSOLE_BC_DELIVERY_CONFIG` | `config/banking-circle.json` | the delivery table to display |
 | `CONSOLE_KEYS_DIR` | `keys` | the lab's keys directory, for the connect-your-platform downloads |
 | `CONSOLE_BC_INTERNAL_URL` | `http://127.0.0.1:8095` | Banking Circle's internal bridge, for *Fund safeguarding accounts* |
+| `CONSOLE_UPLOAD_MAX_MB` | `512` | the largest settlement file the console passes on to a platform |
 | `CONSOLE_URL_CLOCK` | `http://127.0.0.1:8096` | the lab clock, for the clock card and `/api/clock` |
 | `CA_FILE`, `CLIENT_CERT`, `CLIENT_KEY` | `keys/certs/…` | mTLS material for Banking Circle |
 | `B4B_JWT_PRIVATE_KEY_PATH`, `B4B_JWT_KEY_ID` | `keys/b4b-keys/private.pem`, `b4b-mock-1` | signs the bearer token for beneficiary registration |

@@ -314,12 +314,18 @@ spelled out in words somewhere in the expanded view.
   (`.brand-text, .nav-label, .nav-badge, .legend { display: none }`) and
   horizontal padding drops to 14px. That is the only breakpoint. These are
   desktop tools; a phone layout would be a different product.
-- **The operator can fold the sidebar to that rail at any width.** One
-  `.ghost.small` button in the sidebar foot, labelled with the action
-  (`« Collapse` / `»`), and the choice remembered per browser
+- **The operator can fold the sidebar to that rail at any width**, and
+  only the operator does — nothing folds it on their behalf. Two controls,
+  both in the brand row: a two-line button at its right edge (two lines,
+  not a hamburger's three: it folds the sidebar, it opens no menu), and the
+  brand mark itself, which is the only thing left to click once folded.
+  Both carry the action as their `title` ("Collapse the sidebar" /
+  "Expand the sidebar"). The choice is remembered per browser
   (`localStorage`, in `try/catch` like the theme). Folded, every nav item
-  keeps its glyph and badge-less `title` tooltip, so nothing becomes
-  unreachable — the diagram gets the width, not a different app.
+  keeps its glyph and its `title` tooltip, so nothing becomes unreachable.
+- **The brand mark is drawn, not typed.** An inline SVG diamond in the
+  gradient tile: a font's `◈` sits on the font's baseline and never quite
+  centres in a 32px square.
 
 Every wide thing (tables, code, diagrams) scrolls inside its own
 `.table-scroll { overflow-x: auto }`. The page body never scrolls sideways.
@@ -372,7 +378,10 @@ Rules:
   background poll re-render does not collapse what you are reading.
 - Border goes `--accent-line` on both `:hover` and `.is-open`. Hover and
   open are the same visual affordance.
-- The chevron rotates 90°, 150ms.
+- The chevron points right when closed and down when open (90°, 150ms).
+  Only a card's *own* chevron turns — the rule is
+  `.card.is-open > .card-head .chev` — or a closed card nested in an open
+  one points down too, and open and closed look the same.
 
 **Accessibility:** the head must be reachable and operable from the
 keyboard — `tabindex="0"`, `role="button"`, `aria-expanded`, and Enter/Space
@@ -485,10 +494,14 @@ refreshed every second while the drawer is open.
   animating beside it, the poll does not pause, and another arrow can be
   clicked to switch the drawer to it. `Escape` or the `×` closes it. Width
   `min(420px, 42%)`, `--panel`, a left border carrying the sidebar's accent
-  gradient, full height below the topbar, its own scroll. While it is open
-  the sidebar folds to its rail and unfolds when it closes: the diagram
-  beside it needs the width, and shrunk any further its labels stop being
-  readable.
+  gradient, full height below the topbar, its own scroll. Fold the
+  sidebar if the diagram beside it needs the width.
+- **Rows are stacked, not columns.** The activity panel's four-column row
+  does not fit 420px — the summary column collapses to a letter a line. In
+  the drawer a row is a meta line (time, how long ago, op, peer — small,
+  faint, wrapping), then the summary at full width, then each detail key on
+  its own line with long values broken anywhere. Times are `HH:MM:SS` plus
+  "12s ago"; the date only when it is not today.
 - **The selected arrow is marked in the identity colour** — its label goes
   accent and a wide `--accent-ghost` band sits behind its line — because
   selection is decoration. The line itself keeps its status colour.
@@ -531,6 +544,28 @@ A platform can ask for both in its descriptor (`stand_ins`,
 [plugins.md](plugins.md)); the console applies that when the platform
 registers or changes its wishes, never on a renewal — so a button pressed
 here is not undone ten seconds later. Every card says who set it last.
+
+### Guide — the Docs view
+
+A page to read inside a tool to operate: how the parts of the system fit,
+and how to stand them up. It is the one view where prose leads.
+
+- **A diagram first**, hand-drawn SVG on the tokens like the sequence
+  diagram — never an image, which would be wrong in one of the themes.
+  The system under test is in the identity colour, as on the Dashboard;
+  running traffic is a solid line, set-up a dashed one; every arrow is
+  labelled with what it does and, in mono beneath, the call that does it.
+- **One card per part**: what it is, what it needs, where it lives, the
+  command, and what you should see afterwards — linked to the view that
+  shows it.
+- **The set-up track**: numbered stops on a single rail, each naming the
+  part it happens in (a small marker in that part's colour: accent for the
+  platform, the accent's dark stop for the library, grey for the lab),
+  the command in a mono block, and the check.
+- **Say what is true now** in one line at the top, from the live overview:
+  how many services answer and whether a platform is registered — the
+  guide's step two is not news to someone whose platform is already here.
+- Reading width: `max-width` on the page, `78ch` on its lede.
 
 ### Sequence diagram
 
@@ -844,6 +879,27 @@ verbatim (path written, byte count, rejection reason).
 
 The console never writes a bind-mount itself. The button is exactly one
 `POST` a human could make with `curl --data-binary`.
+
+**In a view that polls, the picker is made on the spot.** A re-render
+replaces the DOM, and a file chosen in an `<input type="file">` cannot be
+put back into its replacement — so the button ("Upload a file to …")
+creates a picker, the upload starts on the choice, and the progress
+("43% of 120 MB") is held in app state and drawn as a `.note` above the
+button, where every re-render draws it again. Upload with
+`XMLHttpRequest`: `fetch` cannot report upload progress, and a big file
+with no progress looks like a hung button. Bytes are streamed end to end;
+nothing in between holds the whole file.
+
+### File preview
+
+A **Preview** button on a file's row opens the head of the file in a wide
+modal (`min(1100px, 100%)`): mono, never wrapped — a CSV row wrapped is a
+different row — with a line-number gutter that is not selected with the
+text, scrolling both ways inside the modal. It shows the first 100 lines,
+and offers the first 1000; never more, and the head says so: "The first
+100 lines of 214.3 MB — the rest is not read, however long the file is."
+A line cut short says that too. The server reads only as far as it
+returns, so a million-line file previews as fast as a short one.
 
 ### Note
 

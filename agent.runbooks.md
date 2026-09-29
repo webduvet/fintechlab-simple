@@ -403,6 +403,12 @@ long to appear, and the panel refreshes every few seconds.
 
 ## Things that look broken and are not
 
+- **The runner's balance check fails with Banking Circle `401` right after
+  you rebuilt the console:** with podman-compose 1.0.6,
+  `podman-compose up -d --no-deps console` still recreates the services the
+  console depends on — Banking Circle, B4B, worldline, the bank — and they
+  keep tokens and subscriptions in memory. Restart the runner after any
+  console rebuild, as after any lab restart.
 - **Every runner process dies at start with "@fintechlab/runner is not
   linked":** the link script has not run — `bash init/link-lab-runner.sh`.
 - **Mailer `Service Unavailable` errors** in the runner log: the report
