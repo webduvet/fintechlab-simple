@@ -59,25 +59,36 @@ func ParseBamboraCSV(r io.Reader) (*ParsedFile, error) {
 		return nil, fmt.Errorf("worldline: read settlement csv: %w", err)
 	}
 
+	// A file this lab wrote before it matched the real format (ST/BT record
+	// types) carries amounts in minor units; the real format carries major
+	// units. The unit is decided once, from the file's own settlement row.
+	amounts := majorUnitAmounts
+	for _, row := range rows {
+		if len(row) > 1 && row[1] == legacyBamboraRecordTypeSettlement {
+			amounts = minorUnitAmounts
+			break
+		}
+	}
+
 	f := &ParsedFile{}
 	var batch *BamboraBatch
 	for i, row := range rows {
 		switch recordTypeOf(row) {
 		case bamboraRecordTypeSettlement:
-			m, err := parseMetaRow(row)
+			m, err := parseMetaRow(row, amounts)
 			if err != nil {
 				return nil, fmt.Errorf("worldline: settlement row %d: %w", i+1, err)
 			}
 			f.Meta = m
 		case bamboraRecordTypeBatch:
-			b, err := parseBatchRow(row)
+			b, err := parseBatchRow(row, amounts)
 			if err != nil {
 				return nil, fmt.Errorf("worldline: batch row %d: %w", i+1, err)
 			}
 			f.Batches = append(f.Batches, b)
 			batch = &f.Batches[len(f.Batches)-1]
 		case bamboraRecordTypeTXER:
-			t, err := parseTXERRow(row)
+			t, err := parseTXERRow(row, amounts)
 			if err != nil {
 				return nil, fmt.Errorf("worldline: TXER row %d: %w", i+1, err)
 			}
@@ -86,7 +97,7 @@ func ParseBamboraCSV(r io.Reader) (*ParsedFile, error) {
 			}
 			batch.Transactions = append(batch.Transactions, t)
 		case bamboraRecordTypeCB:
-			c, err := parseCBRow(row)
+			c, err := parseCBRow(row, amounts)
 			if err != nil {
 				return nil, fmt.Errorf("worldline: CB row %d: %w", i+1, err)
 			}
@@ -107,10 +118,12 @@ func recordTypeOf(row []string) string {
 		return ""
 	}
 	switch row[0] {
-	case bamboraRecordTypeBatch, bamboraRecordTypeTXER, bamboraRecordTypeCB:
+	case bamboraRecordTypeBatch, legacyBamboraRecordTypeBatch:
+		return bamboraRecordTypeBatch
+	case bamboraRecordTypeTXER, bamboraRecordTypeCB:
 		return row[0]
 	}
-	if row[1] == bamboraRecordTypeSettlement {
+	if row[1] == bamboraRecordTypeSettlement || row[1] == legacyBamboraRecordTypeSettlement {
 		return bamboraRecordTypeSettlement
 	}
 	return ""
@@ -125,9 +138,68 @@ func field(row []string, i int) string {
 	return strings.TrimSpace(row[i])
 }
 
-// intField parses a minor-unit amount or count. An empty cell is 0; a
-// non-numeric one is an error, because silently reading a corrupt amount
-// as zero is how a merchant gets underpaid.
+// amountParser turns one amount cell into minor units.
+type amountParser func(s, name string) (int64, error)
+
+// majorUnitAmounts reads the real format's major units -- "141.22", "20637",
+// "-99.00", "0.5" -- into minor units with integer arithmetic. More than two
+// decimal places is an error rather than a rounding: a cent that silently
+// appears or disappears is a merchant paid the wrong amount.
+func majorUnitAmounts(s, name string) (int64, error) {
+	negative := strings.HasPrefix(s, "-")
+	digits := strings.TrimPrefix(s, "-")
+	whole, frac, _ := strings.Cut(digits, ".")
+	frac = strings.TrimRight(frac, "0")
+	if whole == "" || len(frac) > 2 || !allDigits(whole) || !allDigits(frac) {
+		return 0, fmt.Errorf("%s = %q is not an amount with at most two decimals", name, s)
+	}
+	units, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s = %q is out of range", name, s)
+	}
+	cents := int64(0)
+	if frac != "" {
+		frac += strings.Repeat("0", 2-len(frac))
+		cents, _ = strconv.ParseInt(frac, 10, 64)
+	}
+	minor := units*100 + cents
+	if negative {
+		minor = -minor
+	}
+	return minor, nil
+}
+
+// minorUnitAmounts reads this lab's pre-V2.10 files, which wrote integer
+// minor units.
+func minorUnitAmounts(s, name string) (int64, error) {
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s = %q is not an integer", name, s)
+	}
+	return v, nil
+}
+
+func allDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// amountField parses an amount cell. An empty cell is 0; a non-numeric one
+// is an error, because silently reading a corrupt amount as zero is how a
+// merchant gets underpaid.
+func amountField(row []string, i int, name string, parse amountParser) (int64, error) {
+	s := field(row, i)
+	if s == "" {
+		return 0, nil
+	}
+	return parse(s, name)
+}
+
+// intField parses a count. An empty cell is 0; a non-numeric one is an error.
 func intField(row []string, i int, name string) (int64, error) {
 	s := field(row, i)
 	if s == "" {
@@ -140,8 +212,8 @@ func intField(row []string, i int, name string) (int64, error) {
 	return v, nil
 }
 
-func parseMetaRow(row []string) (BamboraMeta, error) {
-	amount, err := intField(row, 2, "SETTLEMENT_AMOUNT")
+func parseMetaRow(row []string, amounts amountParser) (BamboraMeta, error) {
+	amount, err := amountField(row, 2, "SETTLEMENT_AMOUNT", amounts)
 	if err != nil {
 		return BamboraMeta{}, err
 	}
@@ -160,12 +232,12 @@ func parseMetaRow(row []string) (BamboraMeta, error) {
 	}, nil
 }
 
-func parseBatchRow(row []string) (BamboraBatch, error) {
-	net, err := intField(row, 4, "NET_AMOUNT")
+func parseBatchRow(row []string, amounts amountParser) (BamboraBatch, error) {
+	net, err := amountField(row, 4, "NET_AMOUNT", amounts)
 	if err != nil {
 		return BamboraBatch{}, err
 	}
-	settled, err := intField(row, 6, "SETTLEMENT_AMOUNT")
+	settled, err := amountField(row, 6, "SETTLEMENT_AMOUNT", amounts)
 	if err != nil {
 		return BamboraBatch{}, err
 	}
@@ -185,16 +257,16 @@ func parseBatchRow(row []string) (BamboraBatch, error) {
 	}, nil
 }
 
-func parseTXERRow(row []string) (BamboraTransaction, error) {
-	amount, err := intField(row, 9, "TRANSACTION_AMOUNT")
+func parseTXERRow(row []string, amounts amountParser) (BamboraTransaction, error) {
+	amount, err := amountField(row, 9, "TRANSACTION_AMOUNT", amounts)
 	if err != nil {
 		return BamboraTransaction{}, err
 	}
-	settled, err := intField(row, 12, "SETTLEMENT_AMOUNT")
+	settled, err := amountField(row, 12, "SETTLEMENT_AMOUNT", amounts)
 	if err != nil {
 		return BamboraTransaction{}, err
 	}
-	cashback, err := intField(row, 26, "CASHBACK_AMOUNT")
+	cashback, err := amountField(row, 26, "CASHBACK_AMOUNT", amounts)
 	if err != nil {
 		return BamboraTransaction{}, err
 	}
@@ -230,16 +302,16 @@ func parseTXERRow(row []string) (BamboraTransaction, error) {
 	}, nil
 }
 
-func parseCBRow(row []string) (BamboraChargeback, error) {
-	amount, err := intField(row, 5, "DISPUTE_TRANSACTION_AMOUNT")
+func parseCBRow(row []string, amounts amountParser) (BamboraChargeback, error) {
+	amount, err := amountField(row, 5, "DISPUTE_TRANSACTION_AMOUNT", amounts)
 	if err != nil {
 		return BamboraChargeback{}, err
 	}
-	settled, err := intField(row, 7, "DISPUTE_SETTLEMENT_AMOUNT")
+	settled, err := amountField(row, 7, "DISPUTE_SETTLEMENT_AMOUNT", amounts)
 	if err != nil {
 		return BamboraChargeback{}, err
 	}
-	fee, err := intField(row, 11, "DISPUTE_FEE")
+	fee, err := amountField(row, 11, "DISPUTE_FEE", amounts)
 	if err != nil {
 		return BamboraChargeback{}, err
 	}

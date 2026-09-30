@@ -81,15 +81,15 @@ func TestGenerateBamboraMultiSectionStructure(t *testing.T) {
 	if lines[0] != wantMetaHeader {
 		t.Fatalf("line 0 = %q, want %q", lines[0], wantMetaHeader)
 	}
-	if !strings.HasPrefix(lines[1], `"1","ST","15000","EUR",`) {
+	if !strings.HasPrefix(lines[1], `"V2.10","Settlement","150.00","EUR",`) {
 		t.Fatalf("line 1 (settlement row) = %q", lines[1])
 	}
 	wantBatchHeader := `"RECORD_TYPE","BAMBORA_MID","BATCH_REF","PAYREF_EXTENDED","NET_AMOUNT","BATCH_CURRENCY","SETTLEMENT_AMOUNT","SETTLEMENT_CURRENCY","NUMBER_OF_TRANS"`
 	if lines[2] != wantBatchHeader {
 		t.Fatalf("line 2 = %q, want %q", lines[2], wantBatchHeader)
 	}
-	if !strings.HasPrefix(lines[3], `"BT",`) {
-		t.Fatalf("line 3 (batch row) = %q, want RECORD_TYPE BT", lines[3])
+	if !strings.HasPrefix(lines[3], `"Batch",`) || !strings.Contains(lines[3], `"150.00"`) {
+		t.Fatalf("line 3 (batch row) = %q, want RECORD_TYPE Batch and a decimal amount", lines[3])
 	}
 	wantTXERHeader := `"RECORD_TYPE","BAMBORA_MID","SUBMERCHANT_ID","BATCH_REF","TRANSACTION_REF","BAMBORA_REF","ADDITIONAL_REF_1","ADDITIONAL_REF_2","TRANSACTION_TYPE","TRANSACTION_AMOUNT","TRANSACTION_CURRENCY","FX_RATE","SETTLEMENT_AMOUNT","SETTLEMENT_CURRENCY","CARD_SCHEME_NAME","CARD_USAGE","CARD_CATEGORY","INTERCHANGE_DOMAIN","COUNTRY_MERCHANT","COUNTRY_ISSUER","MCC","ECOM_SECURITY_LEVEL","ADDITIONAL_REF_3","CARD_NUMBER_TRUNCATED","TRANSACTION_DATE","TRANSACTION_TIME","CASHBACK_AMOUNT","PAYREF_EXTENDED","TERMINALID"`
 	if lines[4] != wantTXERHeader {
@@ -185,8 +185,8 @@ func TestGenerateBamboraEmptyLedgerStillWritesHeaders(t *testing.T) {
 
 func TestBamboraOptionsDefaults(t *testing.T) {
 	f := GenerateBambora(sampleBamboraLedger(), "GB00SIM0000000000003", "2026-09-01", "2026-09-03", BamboraOptions{})
-	if f.Meta.VersionNumber != "1" {
-		t.Fatalf("VersionNumber default = %q, want %q", f.Meta.VersionNumber, "1")
+	if f.Meta.VersionNumber != "V2.10" {
+		t.Fatalf("VersionNumber default = %q, want %q", f.Meta.VersionNumber, "V2.10")
 	}
 	if f.Meta.ValueDate != "2026-09-03" {
 		t.Fatalf("ValueDate default = %q, want toDate", f.Meta.ValueDate)
@@ -202,5 +202,117 @@ func TestBamboraOptionsDefaults(t *testing.T) {
 	})
 	if f2.Meta.ValueDate != "2026-09-05" || f2.Meta.PaymentReference != "custom-ref" || f2.Meta.VersionNumber != "2" {
 		t.Fatalf("options overrides not applied: %+v", f2.Meta)
+	}
+}
+
+// buddySampleExcerpt is the head of buddy's Worldline sample
+// (apps/settle-integration-testing/support/fixtures/worldline-sample.csv) --
+// the format this lab renders and buddy parses. Synthetic data only.
+const buddySampleExcerpt = `VERSION_NUMBER,RECORD_TYPE,SETTLEMENT_AMOUNT,SETTLEMENT_CURRENCY,VALUE_DATE,NUMBER_OF_ITEMS,TO_ACCOUNT,PAYMENT_REFERENCE
+V2.10,Settlement,6660.27,EUR,2024-05-01,0,acc124,PaymentReferenceXYZ
+RECORD_TYPE,BAMBORA_MID,BATCH_REF,PAYREF_EXTENDED,NET_AMOUNT,BATCH_CURRENCY,SETTLEMENT_AMOUNT,SETTLEMENT_CURRENCY,NUMBER_OF_TRANS
+Batch,64567892,0,,20637,EUR,20637,EUR,7
+RECORD_TYPE,BAMBORA_MID,SUBMERCHANT_ID,BATCH_REF,TRANSACTION_REF,BAMBORA_REF,ADDITIONAL_REF_1,ADDITIONAL_REF_2,TRANSACTION_TYPE,TRANSACTION_AMOUNT,TRANSACTION_CURRENCY,FX_RATE,SETTLEMENT_AMOUNT,SETTLEMENT_CURRENCY,CARD_SCHEME_NAME,CARD_USAGE,CARD_CATEGORY,INTERCHANGE_DOMAIN,COUNTRY_MERCHANT,COUNTRY_ISSUER,MCC,ECOM_SECURITY_LEVEL,ADDITIONAL_REF_3,CARD_NUMBER_TRUNCATED,TRANSACTION_DATE,TRANSACTION_TIME,CASHBACK_AMOUNT,PAYREF_EXTENDED,TERMINALID
+TXER,64567892,submten,0,240430000505,x,Order123,5,Sale with cash back,917.00,EUR,1,917.00,EUR,Visa,Debit,Consumer,Intraregional,528,250,8398,5,,411111xxxxxx1111,2024-04-30,8.0:28,0.00,,6528154
+TXER,64567892,submten,0,240430000506,x,Order123,5,Sale,0.5,EUR,1,0.5,EUR,Mastercard,Credit,Commercial,Intraregional,528,250,8398,6,,511111xxxxxx1111,2024-04-30,8.0000000,0.00,,6528154
+RECORD_TYPE,BAMBORA_MID,SUBMERCHANT_ID,ORIGINAL_TRANSACTION_REF,BAMBORA_REF,DISPUTE_TRANSACTION_AMOUNT,DISPUTE_CURRENCY,DISPUTE_SETTLEMENT_AMOUNT,DISPUTE_SETTLEMENT_CURRENCY,DISPUTE_REASON_CODE,DISPUTE_REGISTRATION_DATE,DISPUTE_FEE,DISPUTE_FEE_CURRENCY,ORIGINAL_TRANSACTION_ADDITIONAL_REF_1
+CB,64567891,1,101812863316,V2024122-911111,99.00,EUR,-99.00,EUR,13.5,05-01-24,0.00,EUR,Order123
+`
+
+func TestParseBuddySampleReadsMajorUnits(t *testing.T) {
+	f, err := ParseBamboraCSV(strings.NewReader(buddySampleExcerpt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Meta.SettlementAmount != 666027 || f.Meta.VersionNumber != "V2.10" {
+		t.Fatalf("meta = %+v, want 666027 minor units and V2.10", f.Meta)
+	}
+	if len(f.Batches) != 1 || f.Batches[0].NetAmount != 2063700 {
+		t.Fatalf("batches = %+v, want one batch of 2063700 minor units (a whole-unit 20637)", f.Batches)
+	}
+	txns := f.Batches[0].Transactions
+	if len(txns) != 2 || txns[0].SettlementAmount != 91700 || txns[1].SettlementAmount != 50 {
+		t.Fatalf("transactions = %+v, want 91700 and 50 minor units", txns)
+	}
+	if len(f.Chargebacks) != 1 || f.Chargebacks[0].DisputeSettlementAmount != -9900 {
+		t.Fatalf("chargebacks = %+v, want one of -9900 minor units", f.Chargebacks)
+	}
+}
+
+func TestGeneratedFileMatchesBuddySampleVocabulary(t *testing.T) {
+	f := GenerateSettlementFile(sampleBamboraLedger(), "EUR", "2026-09-01", "2026-09-03", BamboraOptions{})
+	categories := map[string]bool{"Consumer": true, "Commercial": true}
+	levels := map[string]bool{"0": true, "1": true, "2": true, "5": true, "6": true, "7": true}
+	for _, b := range f.Batches {
+		for _, txn := range b.Transactions {
+			if !categories[txn.CardCategory] {
+				t.Fatalf("CARD_CATEGORY %q is not Consumer/Commercial", txn.CardCategory)
+			}
+			if !levels[txn.EcomSecurityLevel] {
+				t.Fatalf("ECOM_SECURITY_LEVEL %q is not a numeric indicator", txn.EcomSecurityLevel)
+			}
+		}
+	}
+}
+
+func TestRefundBecomesANegativeRow(t *testing.T) {
+	ledger := append(sampleBamboraLedger(), Transaction{
+		MID: "GB00SIM0000000000003", Currency: "EUR", AmountCents: -1234, Date: "2026-09-03", Type: "Refund",
+	})
+	f := GenerateBambora(ledger, "GB00SIM0000000000003", "2026-09-01", "2026-09-03", BamboraOptions{})
+
+	if f.Meta.NumberOfItems != 3 || f.Meta.SettlementAmount != 15000-1234 {
+		t.Fatalf("meta = %+v, want 3 items netting to %d", f.Meta, 15000-1234)
+	}
+	var buf bytes.Buffer
+	if err := f.WriteCSV(&buf); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `"Refund","-12.34","EUR","1","-12.34"`) {
+		t.Fatalf("expected a refund row with -12.34, got:\n%s", buf.String())
+	}
+}
+
+func TestRenderParseRoundTripKeepsEveryCent(t *testing.T) {
+	ledger := []Transaction{
+		{MID: "5", Currency: "EUR", AmountCents: 1, Date: "2026-09-03"},
+		{MID: "5", Currency: "EUR", AmountCents: 100, Date: "2026-09-03"},
+		{MID: "5", Currency: "EUR", AmountCents: 1234567, Date: "2026-09-03"},
+		{MID: "6", Currency: "EUR", AmountCents: -250, Date: "2026-09-03", Type: "Refund"},
+	}
+	f := GenerateSettlementFile(ledger, "EUR", "2026-09-03", "2026-09-03", BamboraOptions{})
+	var buf bytes.Buffer
+	if err := f.WriteCSV(&buf); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseBamboraCSV(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payouts := parsed.PayoutsByMID()
+	if payouts["5"] != 1234668 || payouts["6"] != -250 || parsed.Meta.SettlementAmount != 1234418 {
+		t.Fatalf("payouts = %v, meta = %d; want 5:1234668 6:-250 total 1234418", payouts, parsed.Meta.SettlementAmount)
+	}
+}
+
+func TestParseLegacyFileKeepsMinorUnits(t *testing.T) {
+	legacy := `"VERSION_NUMBER","RECORD_TYPE","SETTLEMENT_AMOUNT","SETTLEMENT_CURRENCY","VALUE_DATE","NUMBER_OF_ITEMS","TO_ACCOUNT","PAYMENT_REFERENCE"
+"1","ST","2923490","EUR","2026-09-29","1","ACC","REF"
+"RECORD_TYPE","BAMBORA_MID","BATCH_REF","PAYREF_EXTENDED","NET_AMOUNT","BATCH_CURRENCY","SETTLEMENT_AMOUNT","SETTLEMENT_CURRENCY","NUMBER_OF_TRANS"
+"BT","MID1","B1","REF","2923490","EUR","2923490","EUR","1"
+`
+	f, err := ParseBamboraCSV(strings.NewReader(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Meta.SettlementAmount != 2923490 || len(f.Batches) != 1 || f.Batches[0].NetAmount != 2923490 {
+		t.Fatalf("legacy amounts must stay minor units: meta %+v batches %+v", f.Meta, f.Batches)
+	}
+}
+
+func TestParseRejectsAThirdDecimal(t *testing.T) {
+	bad := strings.Replace(buddySampleExcerpt, "6660.27", "6660.275", 1)
+	if _, err := ParseBamboraCSV(strings.NewReader(bad)); err == nil {
+		t.Fatal("expected an error for an amount with three decimals")
 	}
 }

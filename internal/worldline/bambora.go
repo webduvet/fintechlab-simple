@@ -27,7 +27,11 @@ import (
 // its own chargeback fields to 0: there is no source data for them.
 
 // BamboraMeta is the file-level "Settlement" section: exactly one row per
-// file, RECORD_TYPE "ST".
+// file, RECORD_TYPE "Settlement".
+//
+// Amounts are held in minor units here and written to the file in major
+// units with two decimals ("141.22"), as the Worldline sample buddy parses
+// (apps/settle-integration-testing/support/fixtures/worldline-sample.csv).
 type BamboraMeta struct {
 	VersionNumber      string
 	SettlementAmount   int64 // minor units
@@ -38,7 +42,7 @@ type BamboraMeta struct {
 	PaymentReference   string
 }
 
-// BamboraBatch is one "Batch" section row (RECORD_TYPE "BT"); a file may
+// BamboraBatch is one "Batch" section row (RECORD_TYPE "Batch"); a file may
 // repeat this section, each followed by its own TXER header + rows.
 type BamboraBatch struct {
 	BamboraMID         string // acquiring-side batch id; NOT a merchant key, see ADDITIONAL_REF_2 below
@@ -136,7 +140,7 @@ type BamboraOptions struct {
 	// PaymentReference is the Settlement section's PAYMENT_REFERENCE.
 	// Defaults to a deterministic reference built from merchantID and toDate.
 	PaymentReference string
-	// VersionNumber is the Settlement section's VERSION_NUMBER. Defaults to "1".
+	// VersionNumber is the Settlement section's VERSION_NUMBER. Defaults to "V2.10".
 	VersionNumber string
 	// ToAccount is the Settlement section's TO_ACCOUNT: the account the
 	// lump sum is paid into. For a whole-file cut that is the platform's
@@ -158,12 +162,27 @@ var (
 	bamboraCardSchemes        = []string{"Visa", "Mastercard", "AMEX"}
 	bamboraCardSchemeBINs     = []string{"411111", "555555", "371449"}
 	bamboraCardUsages         = []string{"Debit", "Credit"}
-	bamboraCardCategories     = []string{"Classic", "Gold", "Platinum"}
+	bamboraCardCategories     = []string{"Consumer", "Commercial"}
 	bamboraInterchangeDomains = []string{"Domestic", "Intraregional", "Interregional"}
 	bamboraCountries          = []string{"GB", "DE", "FR", "NL", "IE"}
 	bamboraMCCs               = []string{"5411", "5812", "5999", "7995"}
-	bamboraEcomSecurityLevels = []string{"3DS", "SSL", "NONE"}
+	// ECOM_SECURITY_LEVEL is a numeric electronic-commerce indicator in the
+	// real file, not a protocol name; these are the values the sample carries.
+	bamboraEcomSecurityLevels = []string{"0", "1", "2", "5", "6", "7"}
 )
+
+// bamboraVersion is the file format version the real Worldline file carries.
+const bamboraVersion = "V2.10"
+
+// settles reports whether t becomes a TXER row: every sale, and a refund,
+// which Worldline settles as a negative row. Any other negative entry (a
+// debit leg of this lab's ledger) is not something the acquirer settles.
+func settles(t Transaction) bool {
+	if t.AmountCents > 0 {
+		return true
+	}
+	return t.AmountCents < 0 && strings.EqualFold(t.Type, "Refund")
+}
 
 // bamboraSeed derives a deterministic 64-bit seed from parts (never
 // time.Now/math/rand): same parts always produce the same seed, so
@@ -196,7 +215,7 @@ func GenerateBambora(txns []Transaction, merchantID, fromDate, toDate string, op
 	}
 	version := opts.VersionNumber
 	if version == "" {
-		version = "1"
+		version = bamboraVersion
 	}
 	paymentRef := opts.PaymentReference
 	if paymentRef == "" {
@@ -214,7 +233,7 @@ func GenerateBambora(txns []Transaction, merchantID, fromDate, toDate string, op
 		if t.Date < fromDate || t.Date > toDate {
 			continue
 		}
-		if t.AmountCents <= 0 {
+		if !settles(t) {
 			continue
 		}
 		if opts.Currency != "" && !strings.EqualFold(t.Currency, opts.Currency) {
@@ -285,7 +304,7 @@ func GenerateSettlementFile(txns []Transaction, currency, fromDate, toDate strin
 	seen := map[string]bool{}
 	var mids []string
 	for _, t := range txns {
-		if t.Date < fromDate || t.Date > toDate || t.AmountCents <= 0 {
+		if t.Date < fromDate || t.Date > toDate || !settles(t) {
 			continue
 		}
 		if currency != "" && !strings.EqualFold(t.Currency, currency) {
@@ -304,7 +323,7 @@ func GenerateSettlementFile(txns []Transaction, currency, fromDate, toDate strin
 	}
 	version := opts.VersionNumber
 	if version == "" {
-		version = "1"
+		version = bamboraVersion
 	}
 	toAccount := opts.ToAccount
 	if toAccount == "" {
@@ -387,7 +406,7 @@ func bamboraTransaction(merchantID string, e Transaction, idx int) BamboraTransa
 		TransactionType:     txType,
 		TransactionAmount:   e.AmountCents,
 		TransactionCurrency: e.Currency,
-		FXRate:              "1.000000", // this lab never models cross-currency settlement
+		FXRate:              "1", // this lab never models cross-currency settlement
 		SettlementAmount:    e.AmountCents,
 		SettlementCurrency:  e.Currency,
 		CardSchemeName:      pick(e.CardSchemeName, bamboraCardSchemes[schemeIdx]),
@@ -450,16 +469,30 @@ var (
 	}
 )
 
-// Record-type codes. TXER and CB are literal codes given verbatim in the
-// spec; ST and BT are this lab's own choice of short code for the
-// Settlement/Batch sections (the spec spells those two out in prose
-// rather than naming a literal RECORD_TYPE value).
+// Record-type codes, as the real file carries them: the Settlement and Batch
+// sections spell their names out. This lab used to write its own short codes
+// ST/BT, which buddy's parser does not recognise; ParseBamboraCSV still
+// reads them so an archived file from that era stays readable.
 const (
-	bamboraRecordTypeSettlement = "ST"
-	bamboraRecordTypeBatch      = "BT"
-	bamboraRecordTypeTXER       = "TXER"
-	bamboraRecordTypeCB         = "CB"
+	bamboraRecordTypeSettlement       = "Settlement"
+	bamboraRecordTypeBatch            = "Batch"
+	bamboraRecordTypeTXER             = "TXER"
+	bamboraRecordTypeCB               = "CB"
+	legacyBamboraRecordTypeSettlement = "ST"
+	legacyBamboraRecordTypeBatch      = "BT"
 )
+
+// formatMajorUnits writes a minor-unit amount in major units with two
+// decimals: 14122 -> "141.22", -1234 -> "-12.34", 0 -> "0.00". Integer
+// arithmetic only; an amount never passes through a float.
+func formatMajorUnits(minor int64) string {
+	sign := ""
+	if minor < 0 {
+		sign = "-"
+		minor = -minor
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, minor/100, minor%100)
+}
 
 // quoteBamboraField wraps s in double quotes, doubling any embedded quote
 // -- standard CSV escaping -- matching section 1's "Values are `\"quoted\"`."
@@ -480,7 +513,7 @@ func bamboraMetaRow(m BamboraMeta) []string {
 	return []string{
 		m.VersionNumber,
 		bamboraRecordTypeSettlement,
-		strconv.FormatInt(m.SettlementAmount, 10),
+		formatMajorUnits(m.SettlementAmount),
 		m.SettlementCurrency,
 		m.ValueDate,
 		strconv.Itoa(m.NumberOfItems),
@@ -495,9 +528,9 @@ func bamboraBatchRow(b BamboraBatch) []string {
 		b.BamboraMID,
 		b.BatchRef,
 		b.PayrefExtended,
-		strconv.FormatInt(b.NetAmount, 10),
+		formatMajorUnits(b.NetAmount),
 		b.BatchCurrency,
-		strconv.FormatInt(b.SettlementAmount, 10),
+		formatMajorUnits(b.SettlementAmount),
 		b.SettlementCurrency,
 		strconv.Itoa(b.NumberOfTrans),
 	}
@@ -514,10 +547,10 @@ func bamboraTXERRow(t BamboraTransaction) []string {
 		t.AdditionalRef1,
 		t.AdditionalRef2,
 		t.TransactionType,
-		strconv.FormatInt(t.TransactionAmount, 10),
+		formatMajorUnits(t.TransactionAmount),
 		t.TransactionCurrency,
 		t.FXRate,
-		strconv.FormatInt(t.SettlementAmount, 10),
+		formatMajorUnits(t.SettlementAmount),
 		t.SettlementCurrency,
 		t.CardSchemeName,
 		t.CardUsage,
@@ -531,7 +564,7 @@ func bamboraTXERRow(t BamboraTransaction) []string {
 		t.CardNumberTruncated,
 		t.TransactionDate,
 		t.TransactionTime,
-		strconv.FormatInt(t.CashbackAmount, 10),
+		formatMajorUnits(t.CashbackAmount),
 		t.PayrefExtended,
 		t.TerminalID,
 	}
@@ -544,13 +577,13 @@ func bamboraCBRow(c BamboraChargeback) []string {
 		c.SubmerchantID,
 		c.OriginalTransactionRef,
 		c.BamboraRef,
-		strconv.FormatInt(c.DisputeTransactionAmount, 10),
+		formatMajorUnits(c.DisputeTransactionAmount),
 		c.DisputeCurrency,
-		strconv.FormatInt(c.DisputeSettlementAmount, 10),
+		formatMajorUnits(c.DisputeSettlementAmount),
 		c.DisputeSettlementCurrency,
 		c.DisputeReasonCode,
 		c.DisputeRegistrationDate,
-		strconv.FormatInt(c.DisputeFee, 10),
+		formatMajorUnits(c.DisputeFee),
 		c.DisputeFeeCurrency,
 		c.OriginalTransactionAdditionalRef1,
 	}

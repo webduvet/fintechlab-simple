@@ -46,7 +46,10 @@ TXER        (N per batch):  RECORD_TYPE,BAMBORA_MID,SUBMERCHANT_ID,BATCH_REF,TRA
 CB          (trailing, file-wide): RECORD_TYPE,BAMBORA_MID,SUBMERCHANT_ID,ORIGINAL_TRANSACTION_REF,BAMBORA_REF,DISPUTE_TRANSACTION_AMOUNT,DISPUTE_CURRENCY,DISPUTE_SETTLEMENT_AMOUNT,DISPUTE_SETTLEMENT_CURRENCY,DISPUTE_REASON_CODE,DISPUTE_REGISTRATION_DATE,DISPUTE_FEE,DISPUTE_FEE_CURRENCY,ORIGINAL_TRANSACTION_ADDITIONAL_REF_1
 ```
 
-Values are `"quoted"`. `TRANSACTION_TYPE` observed: `Sale`, `Sale with Cash
+Values are `"quoted"`. Record types are spelled out: `Settlement`, `Batch`,
+`TXER`, `CB`. Amounts are major units with two decimals (`141.22`), version
+`V2.10`, `CARD_CATEGORY` is `Consumer` or `Commercial`, `ECOM_SECURITY_LEVEL`
+is a numeric indicator (`0`–`9`). `TRANSACTION_TYPE` observed: `Sale`, `Sale with Cash
 Back`. Card scheme values observed: `Visa`, `Mastercard`, `AMEX`.
 `INTERCHANGE_DOMAIN`: `Domestic`, `Intraregional`, `Interregional`.
 
