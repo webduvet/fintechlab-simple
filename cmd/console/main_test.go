@@ -1216,3 +1216,20 @@ func TestTheClockDoesNotMoveUnderAWallClockPlatform(t *testing.T) {
 		t.Fatalf("under a wall-clock platform = %d %s after %d calls, want the console's own 409 and no call", w.Code, w.Body, moves)
 	}
 }
+
+// TestEveryAnswerNamesThePageItServes: a tab left open across a rebuild runs
+// the page it loaded, so the page compares this header with the one it first
+// saw. The page and the API must carry the same value, and it must not move
+// between requests to the same build.
+func TestEveryAnswerNamesThePageItServes(t *testing.T) {
+	a := testApp(t, nil)
+	builds := map[string]bool{}
+	for _, path := range []string{"/", "/app.js", "/health"} {
+		w := httptest.NewRecorder()
+		a.routes().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		builds[w.Header().Get("X-Console-Build")] = true
+	}
+	if len(builds) != 1 || builds[""] {
+		t.Fatalf("X-Console-Build across the page and the API: %v", builds)
+	}
+}

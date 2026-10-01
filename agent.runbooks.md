@@ -225,6 +225,31 @@ currency, not the root's. Alone, an EUR run makes 6 payouts (5 merchants +
 Infinite); together it makes 5 and the GBP root 7. The sweep resolves them
 all either way.
 
+### Many merchants: generated test data
+
+The fixtures are ten outlets. The runner generates more — merchants boarded
+into both databases (25% IE/EUR, 75% UK/GBP; 75% one outlet, 20% two, 5%
+three to ten; MIDs `7xxxxxxx`) and a Worldline file per currency paying
+every one of them, with refunds, ~0.1% chargebacks and some reversed. The
+rules are buddy's `infinite-local-runner/README.md`, *Generated merchants and
+settlement files*. On the card they are **Seed merchants** and **Create
+settlement file**, each a form; headless, the same two calls:
+
+```sh
+curl -s -X POST localhost:3109/sim/seed -d '{"merchants":200,"mode":"reseed"}'     # add | reseed | remove
+curl -s -X POST localhost:3109/sim/settlement-file -d '{"transactions":20000}'     # "currency":"GBP", "dir":"…"
+# both answer 202; each lands in the runner's test-data log a few seconds later
+curl -s localhost:3109/sim/activity | python3 -c "
+import json,sys
+for l in json.load(sys.stdin)['logs']:
+    if l['name'] == 'test-data': [print(e['status'], e['summary']) for e in l['events'][:3]]"
+# the files are rows in /sim/files (…_payfac_ER_GBP.csv), run them like any other
+curl -s -X POST localhost:3109/sim/run -d '{"files":["<stamp>_payfac_ER_GBP.csv","<stamp>_payfac_ER_EUR.csv"]}'
+```
+
+Both refuse with `409` while a settlement runs, and a run refuses while
+test data is being made.
+
 ## Run the BC payment reconciliation sweep
 
 It picks up sweep stages at least an hour old **by the lab clock**, so

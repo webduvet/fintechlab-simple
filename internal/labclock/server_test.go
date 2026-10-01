@@ -70,6 +70,25 @@ func TestPinAndAdvanceAreOffsetsFromTheRealClock(t *testing.T) {
 	}
 }
 
+// TestOffsetIsWholeMilliseconds: the real clock carries nanoseconds, so an
+// offset worked out from it does too — and a JavaScript follower adds
+// offset_ms to Date.now(). A fractional Date.now() crashed buddy's
+// orchestrator (PostHog's uuidv7 refuses it), so the offset is whole
+// milliseconds in every mode.
+func TestOffsetIsWholeMilliseconds(t *testing.T) {
+	now := mustTime(t, "2026-09-27T12:00:00Z").Add(766812 * time.Nanosecond)
+	s := testServer(t, &now)
+	for _, req := range []Request{{At: "2026-09-25T09:00:00Z"}, {Advance: "1h"}, {Mode: ModeAutoBusinessDay}} {
+		st, err := s.Move(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.OffsetMs != float64(int64(st.OffsetMs)) {
+			t.Errorf("%+v: offset_ms %v is not whole milliseconds", req, st.OffsetMs)
+		}
+	}
+}
+
 // TestAutoBusinessDayIsRecomputedNotStored: on a weekend the auto mode lands
 // on Friday evening, and once the real clock reaches Monday the offset is
 // back to zero without anyone moving it.

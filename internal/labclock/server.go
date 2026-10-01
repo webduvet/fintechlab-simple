@@ -151,14 +151,19 @@ func (s *Server) mostRecentBusinessDay(from time.Time) (time.Time, bool) {
 }
 
 // offsetLocked is the offset in force now. Caller holds s.mu.
+//
+// Whole milliseconds, always: a follower in JavaScript adds offset_ms to
+// Date.now(), and a pinned clock worked out from time.Now() carries
+// nanoseconds. A fractional Date.now() is something no library expects —
+// PostHog's uuidv7 throws on it and took buddy's orchestrator down.
 func (s *Server) offsetLocked() time.Duration {
 	switch s.mode {
 	case ModePinned:
-		return s.offset
+		return s.offset.Round(time.Millisecond)
 	case ModeAutoBusinessDay:
 		real := s.wall()
 		if target, ok := s.mostRecentBusinessDay(real); ok {
-			return target.Sub(real)
+			return target.Sub(real).Round(time.Millisecond)
 		}
 	}
 	return 0

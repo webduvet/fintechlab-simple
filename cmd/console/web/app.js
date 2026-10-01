@@ -76,6 +76,7 @@ async function api(method, path, body) {
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  noticeBuild(res.headers.get('X-Console-Build'));
   const text = await res.text();
   let parsed = null;
   try { parsed = text ? JSON.parse(text) : null; } catch (_) { /* keep the raw text */ }
@@ -86,6 +87,23 @@ async function api(method, path, body) {
     throw new Error(msg);
   }
   return parsed;
+}
+
+/* This page is the console it was loaded from. After a rebuild an open tab
+   keeps running the old one — its buttons post what the old console posted —
+   so every answer names the page the console now serves (X-Console-Build),
+   and a page that is no longer it says so instead of carrying on quietly. */
+let loadedBuild = null;
+function noticeBuild(build) {
+  if (!build) return;
+  if (loadedBuild === null) { loadedBuild = build; return; }
+  const el = $('#stale');
+  if (build === loadedBuild || !el.hidden) return;
+  el.innerHTML = `This page is older than the console serving it — it was rebuilt since you opened it,
+    and buttons here may not do what the new one does.
+    <button class="btn small" type="button" id="stale-reload">Reload</button>`;
+  el.hidden = false;
+  $('#stale-reload').addEventListener('click', () => location.reload());
 }
 
 function toast(title, body, kind = '') {
@@ -423,11 +441,22 @@ function platformTime(iso) {
 }
 
 // "1–5" for a run of consecutive MIDs, the list otherwise.
+/* MIDs as a reader wants them: runs of three or more as a range, and a
+   file paying hundreds of outlets as its first few and a count — a cell
+   holding every one of them is a cell nobody reads. */
 function midList(mids) {
   const list = mids || [];
-  const nums = list.map(Number);
-  const consecutive = list.length > 2 && nums.every((n, i) => Number.isInteger(n) && (i === 0 || n === nums[i - 1] + 1));
-  return consecutive ? `${list[0]}–${list[list.length - 1]}` : list.join(', ');
+  const parts = [];
+  for (let i = 0; i < list.length;) {
+    let j = i;
+    while (j + 1 < list.length && /^\d+$/.test(list[j + 1]) && Number(list[j + 1]) === Number(list[j]) + 1) j++;
+    parts.push(j - i >= 2 ? `${list[i]}–${list[j]}` : list.slice(i, j + 1).join(', '));
+    i = j + 1;
+  }
+  const MAX = 6;
+  return parts.length > MAX
+    ? `${parts.slice(0, MAX).join(', ')}, … (${list.length} MIDs)`
+    : parts.join(', ');
 }
 
 /* Who Banking Circle will call, and about what.
@@ -2491,13 +2520,25 @@ const ACTIONS = {
   },
 
   /* A button a platform declared: one call to the path it declared, the
-     toast in the platform's own words. */
+     toast in the platform's own words. One that declares fields asks for
+     them first, in a modal (design-system.md, Action form). */
   'plugin-action': async (d) => {
-    const s = ((state.data.overview || {}).services || []).find((x) => x.id === d.id);
-    const act = s && s.plugin && (s.plugin.actions || []).find((a) => a.id === d.act);
-    if (!act) throw new Error(`${d.id} no longer declares ${d.act}`);
+    const act = declaredAction(d.id, d.act);
+    if ((act.fields || []).length) {
+      openActionForm(d.id, act);
+      return;
+    }
     if (act.confirm && !confirm(act.confirm)) return;
     const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, {});
+    toast(act.label, (r && (r.note || r.output)) || act.note || r, 'good');
+  },
+
+  'plugin-action-submit': async (d, btn) => {
+    const act = declaredAction(d.id, d.act);
+    const body = actionFormBody(act.fields || [], fieldsIn(btn.closest('.modal')));
+    if (act.confirm && !confirm(act.confirm)) return;
+    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/actions/${encodeURIComponent(d.act)}`, body);
+    closeModal();
     toast(act.label, (r && (r.note || r.output)) || act.note || r, 'good');
   },
 
@@ -2671,6 +2712,71 @@ function openMerchantModal() {
   $('#modal-cancel').addEventListener('click', closeModal);
   bindActions($('#modal'));
   $('#modal').querySelector('[data-field="legal_name"]').focus();
+}
+
+/* The action a plugin declares now, not the one it declared when the page
+   was drawn: a descriptor can change under an open card. */
+function declaredAction(id, actionId) {
+  const s = ((state.data.overview || {}).services || []).find((x) => x.id === id);
+  const act = s && s.plugin && (s.plugin.actions || []).find((a) => a.id === actionId);
+  if (!act) throw new Error(`${id} no longer declares ${actionId}`);
+  return act;
+}
+
+/* An action's form, drawn from its declared fields and nothing else. The
+   plugin's words are text, escaped like any peer's. */
+function openActionForm(id, act) {
+  const input = (f) => {
+    const dflt = f.default === undefined || f.default === null ? '' : String(f.default);
+    if (f.type === 'select') {
+      return `<select data-field="${esc(f.id)}" aria-label="${esc(f.label)}">${(f.options || []).map((o) =>
+        `<option value="${esc(o.value)}"${o.value === dflt ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+    }
+    if (f.type === 'number') {
+      return `<input type="number" data-field="${esc(f.id)}" value="${esc(dflt)}" aria-label="${esc(f.label)}"
+        ${f.min !== undefined ? `min="${esc(String(f.min))}"` : ''} ${f.max !== undefined ? `max="${esc(String(f.max))}"` : ''}>`;
+    }
+    return `<input data-field="${esc(f.id)}" value="${esc(dflt)}" placeholder="${esc(f.placeholder || '')}" aria-label="${esc(f.label)}">`;
+  };
+  const hints = act.fields.filter((f) => f.hint);
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2>${esc(act.label)}</h2>
+      ${act.note ? `<p>${esc(act.note)}</p>` : ''}
+    </div>
+    <div class="modal-body">
+      <div class="form">${act.fields.map((f) =>
+        `<div class="field${f.type === 'text' ? ' wide' : ''}"><label>${esc(f.label)}</label>${input(f)}</div>`).join('')}
+      </div>
+      ${hints.map((f) => `<p class="hint"><b>${esc(f.label)}</b> — ${esc(f.hint)}</p>`).join('')}
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="modal-cancel">Cancel</button>
+      <button class="btn" data-action="plugin-action-submit" data-id="${esc(id)}" data-act="${esc(act.id)}">${esc(act.label)}</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  $('#modal-cancel').addEventListener('click', closeModal);
+  bindActions($('#modal'));
+  const first = $('#modal').querySelector('[data-field]');
+  if (first) first.focus();
+}
+
+/* The JSON body an action form sends: numbers as numbers, empty fields
+   left out, and a number outside its declared range refused here, where
+   the operator can still fix it. */
+function actionFormBody(fields, values) {
+  const body = {};
+  for (const f of fields) {
+    const raw = values[f.id];
+    if (raw === undefined || raw === '') continue;
+    if (f.type !== 'number') { body[f.id] = raw; continue; }
+    const n = Number(raw);
+    if (!Number.isFinite(n)) throw new Error(`${f.label} must be a number.`);
+    if (f.min !== undefined && n < f.min) throw new Error(`${f.label} is at least ${f.min}.`);
+    if (f.max !== undefined && n > f.max) throw new Error(`${f.label} is at most ${f.max}.`);
+    body[f.id] = n;
+  }
+  return body;
 }
 
 function closeModal() {

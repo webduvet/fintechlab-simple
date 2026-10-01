@@ -10,9 +10,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"embed"
+	"encoding/hex"
 	"io/fs"
 	"log"
 	"net/http"
@@ -191,8 +193,41 @@ func (a *app) routes() http.Handler {
 	if err != nil {
 		log.Fatalf("console: embedded assets: %v", err)
 	}
-	mux.Handle("GET /", http.FileServer(http.FS(sub)))
-	return mux
+	// Embedded files carry no modification time, so a browser has nothing to
+	// revalidate against and can keep last build's app.js after a rebuild.
+	// no-cache makes it ask every time; the assets are a few hundred KB, local.
+	static := http.FileServer(http.FS(sub))
+	mux.Handle("GET /", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache")
+		static.ServeHTTP(w, r)
+	}))
+	// no-cache only reaches the next load. A tab left open across a rebuild
+	// keeps running the page it loaded — buttons that post what an older
+	// console posted — so every answer names the page this console serves,
+	// and the page says so when it is no longer that one.
+	build := webBuild(sub)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Console-Build", build)
+		mux.ServeHTTP(w, r)
+	})
+}
+
+// webBuild identifies the embedded page: a hash of every file under web/.
+func webBuild(web fs.FS) string {
+	h := sha256.New()
+	_ = fs.WalkDir(web, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := fs.ReadFile(web, path)
+		if err != nil {
+			return err
+		}
+		h.Write([]byte(path))
+		h.Write(b)
+		return nil
+	})
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
 // clientFor picks the HTTP client for a service. Banking Circle's

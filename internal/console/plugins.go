@@ -50,6 +50,34 @@ type PluginAction struct {
 	Confirm string `json:"confirm,omitempty"`
 	// Note is the toast when the platform's answer carries none.
 	Note string `json:"note,omitempty"`
+	// Fields are inputs asked for before the call, in a form in a modal;
+	// the call's JSON body is {"<field id>": value}. The console draws
+	// them from this list and nothing else (design-system.md, Action form).
+	Fields []ActionField `json:"fields,omitempty"`
+}
+
+// ActionField is one input of an action's form.
+type ActionField struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Type is "number", "text" or "select".
+	Type string `json:"type"`
+	// Default is a number for a number field, text otherwise.
+	Default any      `json:"default,omitempty"`
+	Min     *float64 `json:"min,omitempty"`
+	Max     *float64 `json:"max,omitempty"`
+	// Placeholder is shown in an empty text field.
+	Placeholder string `json:"placeholder,omitempty"`
+	// Options are a select's choices.
+	Options []ActionOption `json:"options,omitempty"`
+	// Hint is a sentence under the form: what the field changes.
+	Hint string `json:"hint,omitempty"`
+}
+
+// ActionOption is one choice of a select field.
+type ActionOption struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
 }
 
 // PluginSettlement is a platform that settles Worldline files: the three
@@ -138,8 +166,65 @@ var (
 	pluginID  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 	actionID  = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,40}$`)
 	logName   = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,40}$`)
+	fieldID   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,40}$`)
 	maxAction = 8
+	maxFields = 6
+	maxOption = 20
 )
+
+// validFields checks one action's form: the console draws it, so a field
+// it cannot draw is refused here rather than rendered as nothing.
+func validFields(action string, fields []ActionField) error {
+	if len(fields) > maxFields {
+		return badPlugin("action %s: at most %d fields", action, maxFields)
+	}
+	seen := map[string]bool{}
+	for _, f := range fields {
+		if !fieldID.MatchString(f.ID) || seen[f.ID] {
+			return badPlugin("action %s: field id %q must be unique, lower-case letters, digits and underscores", action, f.ID)
+		}
+		seen[f.ID] = true
+		if strings.TrimSpace(f.Label) == "" {
+			return badPlugin("action %s field %s needs a label", action, f.ID)
+		}
+		switch f.Type {
+		case "number":
+			if f.Default != nil {
+				if _, ok := f.Default.(float64); !ok {
+					return badPlugin("action %s field %s: default must be a number", action, f.ID)
+				}
+			}
+			if f.Min != nil && f.Max != nil && *f.Min > *f.Max {
+				return badPlugin("action %s field %s: min is above max", action, f.ID)
+			}
+		case "text":
+			if f.Default != nil {
+				if _, ok := f.Default.(string); !ok {
+					return badPlugin("action %s field %s: default must be text", action, f.ID)
+				}
+			}
+		case "select":
+			if len(f.Options) == 0 || len(f.Options) > maxOption {
+				return badPlugin("action %s field %s: a select needs 1 to %d options", action, f.ID, maxOption)
+			}
+			found := f.Default == nil
+			for _, o := range f.Options {
+				if strings.TrimSpace(o.Label) == "" {
+					return badPlugin("action %s field %s: every option needs a value and a label", action, f.ID)
+				}
+				if f.Default == o.Value {
+					found = true
+				}
+			}
+			if !found {
+				return badPlugin("action %s field %s: default %v is not one of its options", action, f.ID, f.Default)
+			}
+		default:
+			return badPlugin("action %s field %s: type %q — number, text or select", action, f.ID, f.Type)
+		}
+	}
+	return nil
+}
 
 func badPlugin(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrBadPlugin, fmt.Sprintf(format, args...))
@@ -213,6 +298,9 @@ func (p *Plugin) validate(static func(string) bool) error {
 			return badPlugin("action %s: method %q — actions change something, so POST, PUT or DELETE", a.ID, a.Method)
 		}
 		if err := pluginPath("action "+a.ID+" path", a.Path, true); err != nil {
+			return err
+		}
+		if err := validFields(a.ID, a.Fields); err != nil {
 			return err
 		}
 	}

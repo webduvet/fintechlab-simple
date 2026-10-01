@@ -409,7 +409,8 @@ components on this page and nothing else.
   and nowhere else. `primary: true` makes one of them the card's `.btn`
   (still at most one); the rest are `.ghost`. `confirm` is asked first, in
   the plugin's words. The toast is the platform's own answer — its `note`,
-  or the whole body.
+  or the whole body. A button that declares `fields` opens an *Action
+  form* first (below).
 - **Say how the registration stands.** A *Registered* row in the `.kv`:
   live, *lapsed* (stopped renewing) or *stopped* (said goodbye), and when.
   A lapsed or stopped platform is **grey, not red** — it is not a lab
@@ -868,6 +869,28 @@ input:focus, select:focus, textarea:focus,
 Textareas are mono, `min-height: 120px`, `resize: vertical` — they hold
 JSON.
 
+### Action form — inputs a plugin asks for
+
+A plugin's button that needs input (how many merchants, which directory)
+declares `fields` ([plugins.md](plugins.md#action-fields)), and the console
+draws them — a plugin never brings its own form. The button opens a
+**Modal**: the action's label as the title, its `note` under it, one `.form`
+row of `.field`s in declared order (a `text` field is `.wide`), each
+field's `hint` as a `.hint` line naming the field, and the foot's `.btn`
+repeating the action's label — the operator confirms the thing they
+clicked, not "Submit".
+
+- Three input types and no more: `number` (`<input type="number">` with the
+  declared `min`/`max`), `text`, `select`. Anything else is refused at
+  registration, so a form never renders with a field missing.
+- Defaults are filled in; the operator should be able to press the button
+  straight away and get the plugin's ordinary case.
+- A number outside its range is refused in a toast before any call, and the
+  modal stays open with what was typed. The platform's own `400` does the
+  same, verbatim.
+- The poll is already paused while a modal is open, so a re-render never
+  eats a half-typed value.
+
 ### File field
 
 Native `<input type="file">`. No dropzone, no library, no drag overlay.
@@ -1090,6 +1113,19 @@ for twenty minutes because the UI showed them an empty list and let them
 assume it meant nothing happened.
 
 ---
+
+### 11. A page that outlived its server says so
+
+A single-page app loads its script once. After the server is rebuilt, a tab
+left open keeps running the old page: its buttons post what the old server
+expected, quietly — an action form that used to ask first now fires at
+once. `Cache-Control: no-cache` on the assets only helps the *next* load.
+
+So every answer carries `X-Console-Build` (a hash of the embedded page). The
+page remembers the first one it sees and, when an answer names another,
+shows a `.note.warn` under the header — "This page is older than the console
+serving it" — with a **Reload** button. It does not reload by itself: the
+operator may be halfway through something.
 
 ## Voice
 

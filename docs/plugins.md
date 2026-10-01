@@ -102,10 +102,46 @@ does not have, the component goes into
 | `confirm` | asked first, in these words |
 | `note` | the toast when the platform's answer has no `note` of its own |
 
+| `fields` | inputs asked for first, in a form — below |
+
 The button calls `POST /api/plugins/{id}/actions/{action}`; the console
 forwards the body to `method base_url+path` and answers with the platform's
 status and body, verbatim. Buttons show only while the platform is up. At
 most eight.
+
+#### Action fields
+
+An action that needs input declares it, and the button opens a form in a
+modal instead of calling at once:
+
+```json
+{"id": "seed", "label": "Seed merchants", "path": "/sim/seed",
+ "fields": [
+   {"id": "merchants", "label": "Merchants", "type": "number", "default": 50, "min": 1, "max": 5000},
+   {"id": "mode", "label": "Existing merchants", "type": "select", "default": "add",
+    "options": [{"value": "add", "label": "Keep, add more"}, {"value": "reseed", "label": "Replace"}]},
+   {"id": "dir", "label": "Write to", "type": "text", "placeholder": ".runs/generated",
+    "hint": "a directory on the platform's machine"}
+ ]}
+```
+
+| Field | |
+| --- | --- |
+| `id` | required; lower-case letters, digits, underscores; unique in the action. The key in the body |
+| `label` | required |
+| `type` | `number`, `text` or `select` |
+| `default` | a number for `number`, text otherwise; a select's must be one of its options |
+| `min`, `max` | `number` only |
+| `placeholder` | `text` only |
+| `options` | `select` only: 1–20 `{"value", "label"}` |
+| `hint` | a sentence under the form, naming the field |
+
+At most six. The form's submit is the action's label; `confirm`, if any, is
+asked after the form. The body is `{"merchants": 50, "mode": "add"}` —
+numbers as numbers, a field left empty left out, a number outside
+`min`/`max` refused before anything is sent. What the values mean is the
+platform's business: it validates them itself and answers `400` with its
+reason, which the console shows verbatim.
 
 ### Settlement
 
@@ -229,7 +265,8 @@ vendor follows its offset, so a payout booked "on Monday" by the platform
 books on Monday at the bank.
 
 - **`"clock": "follows"`** — the platform polls `GET /clock` and applies
-  `offset_ms` to its own business time (buddy's runner writes it to the
+  `offset_ms` (always whole milliseconds, so `Date.now()` plus it is still
+  an integer) to its own business time (buddy's runner writes it to the
   file its clock shim, `@fintechlab/runner/clock-shim`, watches). Only the offset changes hands, so a
   follower anywhere is right to within its poll.
 - **`"clock": "wall"`** — the platform cannot be moved (a deployed stack).

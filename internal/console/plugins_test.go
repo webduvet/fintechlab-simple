@@ -1,7 +1,9 @@
 package console
 
 import (
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,5 +89,45 @@ func TestABadDescriptorSaysWhy(t *testing.T) {
 	_, err := (&Catalogue{}).Register(p)
 	if !errors.Is(err, ErrBadPlugin) {
 		t.Fatalf("duplicate action id: %v", err)
+	}
+}
+
+// TestActionFieldsAreCheckedAsTheyArriveOnTheWire: a form the console could
+// not draw is refused at registration, naming the field, rather than drawn
+// as nothing. Decoded from JSON, because that is where a default's type is
+// decided.
+func TestActionFieldsAreCheckedAsTheyArriveOnTheWire(t *testing.T) {
+	decode := func(fields string) Plugin {
+		p := plugin("p1")
+		var a PluginAction
+		raw := `{"id":"seed","label":"Seed","path":"/sim/seed","fields":` + fields + `}`
+		if err := json.Unmarshal([]byte(raw), &a); err != nil {
+			t.Fatal(err)
+		}
+		p.Actions = append(p.Actions, a)
+		return p
+	}
+	good := decode(`[
+		{"id":"merchants","label":"Merchants","type":"number","default":50,"min":1,"max":5000},
+		{"id":"dir","label":"Write to","type":"text","placeholder":".runs/generated"},
+		{"id":"mode","label":"Mode","type":"select","default":"add",
+		 "options":[{"value":"add","label":"Add"},{"value":"reseed","label":"Reseed"}]}]`)
+	if _, err := (&Catalogue{}).Register(good); err != nil {
+		t.Fatalf("good fields refused: %v", err)
+	}
+	for fields, want := range map[string]string{
+		`[{"id":"Bad-Id","label":"x","type":"text"}]`:                                                  `field id "Bad-Id"`,
+		`[{"id":"a","label":"","type":"text"}]`:                                                        "field a needs a label",
+		`[{"id":"a","label":"A","type":"number","default":"ten"}]`:                                     "default must be a number",
+		`[{"id":"a","label":"A","type":"number","min":5,"max":1}]`:                                     "min is above max",
+		`[{"id":"a","label":"A","type":"select","options":[]}]`:                                        "a select needs 1 to 20 options",
+		`[{"id":"a","label":"A","type":"select","default":"z","options":[{"value":"y","label":"Y"}]}]`: "default z is not one of its options",
+		`[{"id":"a","label":"A","type":"date"}]`:                                                       `type "date"`,
+		`[{"id":"a","label":"A","type":"text"},{"id":"a","label":"B","type":"text"}]`:                  `field id "a" must be unique`,
+	} {
+		_, err := (&Catalogue{}).Register(decode(fields))
+		if !errors.Is(err, ErrBadPlugin) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: got %v, want %q", fields, err, want)
+		}
 	}
 }
