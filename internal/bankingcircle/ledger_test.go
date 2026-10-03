@@ -3,6 +3,9 @@ package bankingcircle
 import (
 	"errors"
 	"testing"
+	"time"
+
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 )
 
 func TestLedgerMoveSuccess(t *testing.T) {
@@ -249,4 +252,44 @@ func TestAccountIDForIsStableAndPassesThrough(t *testing.T) {
 	if got := AccountIDFor(SGAAccountEUR); got != SGAAccountEUR {
 		t.Errorf("AccountIDFor(%s) = %s, want it unchanged", SGAAccountEUR, got)
 	}
+}
+
+// TestBalancesSplitIntoTheDaysOpeningAndItsMovement: Banking Circle reports a
+// balance as beginOfDayAmount plus intraDayAmount, and a platform sums them.
+// The lab used to put the whole balance in both, so a safeguarding account
+// funded with X read as 2X and a balance check passed on half the money.
+func TestBalancesSplitIntoTheDaysOpeningAndItsMovement(t *testing.T) {
+	defer labclock.Set(0)
+	l := NewLedger()
+	acct, err := l.GetOrCreate("00000000-0000-4000-8000-0000000005a1", "EUR")
+	if err != nil {
+		t.Fatal(err)
+	}
+	day := func() string { return FinancialDay(labclock.Now()) }
+	check := func(wantOpen, wantMoved int64) {
+		t.Helper()
+		a, err := l.Get(acct.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		open, moved := a.DayAmounts(day())
+		if open != wantOpen || moved != wantMoved || open+moved != a.cents {
+			t.Fatalf("open=%d moved=%d balance=%d, want open=%d moved=%d", open, moved, a.cents, wantOpen, wantMoved)
+		}
+	}
+	check(0, 0)
+	if _, err := l.Credit(acct.ID, 959594374); err != nil {
+		t.Fatal(err)
+	}
+	check(0, 959594374) // funded today: all of it moved today
+	if _, err := l.Credit(acct.ID, 100); err != nil {
+		t.Fatal(err)
+	}
+	check(0, 959594474)
+	labclock.Set(24 * time.Hour) // the next day: yesterday's balance is the opening
+	check(959594474, 0)
+	if _, err := l.Credit(acct.ID, 50); err != nil {
+		t.Fatal(err)
+	}
+	check(959594474, 50)
 }

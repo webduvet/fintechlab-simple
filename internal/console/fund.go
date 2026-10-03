@@ -87,7 +87,8 @@ func intraDayBalance(ctx context.Context, client *http.Client, base, account str
 	}
 	var body struct {
 		Balances []struct {
-			IntraDayAmount string `json:"intraDayAmount"`
+			BeginOfDayAmount string `json:"beginOfDayAmount"`
+			IntraDayAmount   string `json:"intraDayAmount"`
 		} `json:"balances"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
@@ -96,7 +97,16 @@ func intraDayBalance(ctx context.Context, client *http.Client, base, account str
 	if len(body.Balances) == 0 {
 		return 0, nil
 	}
-	return strconv.ParseFloat(body.Balances[0].IntraDayAmount, 64)
+	// The balance is the day's opening plus what has moved since.
+	open, err := strconv.ParseFloat(body.Balances[0].BeginOfDayAmount, 64)
+	if err != nil {
+		return 0, fmt.Errorf("balance of %s: beginOfDayAmount: %w", account, err)
+	}
+	moved, err := strconv.ParseFloat(body.Balances[0].IntraDayAmount, 64)
+	if err != nil {
+		return 0, fmt.Errorf("balance of %s: intraDayAmount: %w", account, err)
+	}
+	return open + moved, nil
 }
 
 func credit(ctx context.Context, client *http.Client, base, currency, amount string) error {

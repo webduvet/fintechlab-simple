@@ -754,6 +754,14 @@ Rules, and they are the whole component:
   answers `501` — the same rule as everything else here: never offer what
   the backend cannot do.
 
+
+**Steps.** An event may carry `steps` (a run's stages, say). They are drawn
+under the event's summary and detail as a compact `.steps` table — *Step*
+(mono, with its `note` as a `.hint` under it), *Status* (a pill: `done`,
+amber `running`, red `bad`), *Started*, *Finished*, and *Took*, right-aligned
+in tabular figures at the precision it deserves (950 ms, 16.1 s, 2 m 43 s).
+The emitter's times are on its own clock, so *Took* is the column to read.
+
 ### Download
 
 A file the operator takes away — an `.env`, a certificate, a key — is a
@@ -1019,7 +1027,11 @@ throws the operator's input away.
 And preserve, across every re-render:
 
 - **which cards are open** (state keyed `view:id`),
-- **scroll position** (`const y = content.scrollTop; … content.scrollTop = y`).
+- **scroll position** (`const y = content.scrollTop; … content.scrollTop = y`),
+  and the same for every box that scrolls on its own — a log's rows — which
+  carries `data-keep-scroll="<its card key>"` and is put back where it was.
+  Without it, reading half-way down a log meant being thrown back to its
+  first row on every poll.
 
 A page that jumps to the top while you are reading a table is a page you
 close.

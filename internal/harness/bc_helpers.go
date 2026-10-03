@@ -48,10 +48,19 @@ func bcReadBalance(ctx context.Context, env *Env, hdr map[string]string, account
 		}
 		if results, ok := body["result"].([]any); ok && len(results) > 0 {
 			if m, ok := results[0].(map[string]any); ok {
-				for _, k := range []string{"intraDayAmount", "beginOfDayAmount"} {
+				// The balance is the day's opening plus what has moved since.
+				var total int64
+				found := false
+				for _, k := range []string{"beginOfDayAmount", "intraDayAmount"} {
 					if s, ok := m[k].(string); ok && s != "" {
-						return s, status, nil
+						if n, err := money.Parse(s); err == nil {
+							total += n
+							found = true
+						}
 					}
+				}
+				if found {
+					return money.Format(total), status, nil
 				}
 			}
 		}

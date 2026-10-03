@@ -46,6 +46,21 @@ type Event struct {
 	Summary string            `json:"summary"`
 	Status  string            `json:"status"`
 	Detail  map[string]string `json:"detail,omitempty"`
+	// Steps break a long event into its parts — a settlement run into its
+	// stages — each with its own status and times. The console draws them
+	// as a table under the event (design-system.md, Activity panel).
+	Steps []Step `json:"steps,omitempty"`
+}
+
+// Step is one part of an event. Status is an event status, or "running"
+// for a step that has started and not finished. Times are RFC 3339; a step
+// without FinishedAt is still going (or never finished).
+type Step struct {
+	Name       string     `json:"name"`
+	Status     string     `json:"status"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Note       string     `json:"note,omitempty"`
 }
 
 // Log is a fixed-size ring of events, safe for concurrent use.

@@ -225,6 +225,21 @@ activity log whose total is the diagram's *runs*.
 
 `status` is `ok`, `warn` or `bad`; `at` is wall-clock time.
 
+An event that has parts — a settlement run and its stages — may carry
+`steps`, which the console draws as a table under it:
+
+```json
+"steps": [{"name": "SETTLEMENT_FILE_INGESTION", "status": "ok",
+           "started_at": "2026-10-01T00:15:11.083Z", "finished_at": "2026-10-01T00:15:27.140Z"},
+          {"name": "BC_ACCOUNT_BALANCE_CHECK", "status": "running",
+           "started_at": "2026-10-01T00:15:35.425Z", "note": "waiting on funding"}]
+```
+
+A step's `status` is an event status or `running`; `finished_at` is absent
+while it runs. The times are the emitter's own clock — a platform that
+follows the lab clock stamps them on that — so the panel shows how long
+each took rather than lining them up with the event's `at`.
+
 ### Stand-ins
 
 The lab's **stand-ins** played the platform's part before one plugged in:

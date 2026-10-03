@@ -14,7 +14,9 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
 )
 
@@ -28,6 +30,35 @@ type Account struct {
 	Currency string `json:"currency"`
 	Balance  string `json:"balance"` // decimal string, see internal/money
 	cents    int64
+	// The balance at the start of openDay, taken at the account's first
+	// movement that day: what Banking Circle reports as beginOfDayAmount,
+	// with the day's net movement as intraDayAmount. A platform reads its
+	// balance as the two summed (buddy's SGA balance check does), so
+	// reporting the whole balance in both counted every euro twice.
+	openDay   string
+	openCents int64
+}
+
+// FinancialDay is the date a balance belongs to, on the lab clock.
+func FinancialDay(t time.Time) string { return t.Format("2006-01-02") }
+
+// DayAmounts are the account's beginOfDay and intraDay amounts, in cents,
+// on day: the balance it opened the day with, and what has moved since.
+// They always sum to the balance.
+func (a Account) DayAmounts(day string) (open, intraday int64) {
+	if a.openDay != day {
+		return a.cents, 0
+	}
+	return a.openCents, a.cents - a.openCents
+}
+
+// opening records the balance at the start of today, before the first
+// movement of the day changes it. Caller holds the ledger lock.
+func (a *Account) opening() {
+	day := FinancialDay(labclock.Now())
+	if a.openDay != day {
+		a.openDay, a.openCents = day, a.cents
+	}
 }
 
 // Ledger is a tiny in-memory account store, same shape as cmd/bank's store.
@@ -160,6 +191,8 @@ func (l *Ledger) Move(fromID, toID string, cents int64) (from, to *Account, err 
 	if f.cents < cents {
 		return nil, nil, ErrInsufficientFunds
 	}
+	f.opening()
+	t.opening()
 	f.cents -= cents
 	t.cents += cents
 	f.Balance = money.Format(f.cents)
@@ -179,6 +212,7 @@ func (l *Ledger) Credit(toID string, cents int64) (*Account, error) {
 	if !ok {
 		return nil, ErrAccountNotFound
 	}
+	t.opening()
 	t.cents += cents
 	t.Balance = money.Format(t.cents)
 	cp := *t

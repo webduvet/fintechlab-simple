@@ -924,7 +924,7 @@ function logPanel(s, log) {
 
   const body = open ? `<div class="card-body">
       ${log.note ? `<div class="note">${esc(log.note)}</div>` : ''}
-      ${events.length ? `<div class="log-rows">${events.map(logRow).join('')}</div>
+      ${events.length ? `<div class="log-rows" data-keep-scroll="${esc(id)}">${events.map(logRow).join('')}</div>
         ${log.total > events.length ? `<div class="log-foot">Showing the last ${events.length} of ${log.total}. Older calls have scrolled out of the service's buffer.</div>` : ''}`
       : `<div class="empty">${esc(emptyLogHint(s, log.name))}</div>`}
     </div>` : '';
@@ -950,6 +950,7 @@ function logRow(e) {
     <span class="log-main">
       <span class="log-summary">${esc(e.summary || '')}</span>
       ${keys.length ? `<span class="log-detail">${keys.map((k) => `${esc(k)}=${esc(detail[k])}`).join('  ')}</span>` : ''}
+      ${(e.steps || []).length ? stepsTable(e.steps) : ''}
     </span>
     <span class="log-peer">${esc(e.peer || '')}</span>
   </div>`;
@@ -975,6 +976,40 @@ function emptyLogHint(s, logName) {
 }
 
 function isUp(s) { return !!(s.status && s.status.state === 'up'); }
+
+/* An event's steps (a settlement run's stages): each with its status, when
+   it started and finished, and how long it took. The times are the
+   emitter's — a platform following the lab clock stamps them on that clock
+   — so the durations are what to compare, not the times with the row's own. */
+function stepsTable(steps) {
+  const took = (s) => {
+    const a = Date.parse(s.started_at || '');
+    const b = Date.parse(s.finished_at || '');
+    if (Number.isNaN(a) || Number.isNaN(b)) return s.status === 'running' ? 'running' : '—';
+    return duration(b - a);
+  };
+  const pill = (st) => `<span class="pill ${st === 'running' ? 'warn' : esc(st || '')}">${esc(st === 'ok' ? 'done' : st || '?')}</span>`;
+  return `<table class="steps">
+    <thead><tr><th>Step</th><th>Status</th><th>Started</th><th>Finished</th><th class="num">Took</th></tr></thead>
+    <tbody>${steps.map((s) => `<tr>
+      <td class="mono">${esc(s.name)}${s.note ? `<div class="hint">${esc(s.note)}</div>` : ''}</td>
+      <td>${pill(s.status)}</td>
+      <td class="mono">${esc(clock(s.started_at) || '—')}</td>
+      <td class="mono">${esc(clock(s.finished_at) || '—')}</td>
+      <td class="mono num">${esc(took(s))}</td>
+    </tr>`).join('')}</tbody>
+  </table>`;
+}
+
+/* 950 ms, 16.1 s, 2 m 43 s, 1 h 5 m — a span at the precision it deserves. */
+function duration(ms) {
+  if (ms < 0) return '—';
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)} s`;
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m} m ${Math.round((ms % 60_000) / 1000)} s`;
+  return `${Math.floor(m / 60)} h ${m % 60} m`;
+}
 
 function clock(iso) {
   if (!iso) return '';
@@ -2810,7 +2845,16 @@ function renderView() {
   // view every few seconds, and a page that jumps back to the top while
   // you are reading the retry table is a page you close.
   const scroll = content.scrollTop;
+  // The same for every box that scrolls on its own (a log's rows): the
+  // re-render replaces it with a new one at the top, so an operator reading
+  // half-way down a log was thrown back to its first row every five seconds.
+  const inner = new Map([...content.querySelectorAll('[data-keep-scroll]')]
+    .map((el) => [el.dataset.keepScroll, el.scrollTop]));
   content.innerHTML = (state.error ? `<div class="note bad">${esc(state.error)}</div>` : '') + html;
+  content.querySelectorAll('[data-keep-scroll]').forEach((el) => {
+    const top = inner.get(el.dataset.keepScroll);
+    if (top) el.scrollTop = top;
+  });
   content.scrollTop = scroll;
   bindCards(content);
   bindActions(content);

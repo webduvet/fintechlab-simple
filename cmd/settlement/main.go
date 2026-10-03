@@ -686,7 +686,8 @@ type verifyDecisionResp struct {
 // 1, GET /internal/accounts/{accountId}/balances) -- only the field
 // checkSgaBalance needs is decoded.
 type bcBalanceEntry struct {
-	IntraDayAmount string `json:"intraDayAmount"`
+	BeginOfDayAmount string `json:"beginOfDayAmount"`
+	IntraDayAmount   string `json:"intraDayAmount"`
 }
 
 type bcInternalBalancesResp struct {
@@ -738,11 +739,16 @@ func (a *app) checkSgaBalance(currency string, requiredCents int64) (sufficient 
 	if len(out.Balances) == 0 {
 		return false, fmt.Errorf("banking circle internal balance check: empty balances for %s", sgaID)
 	}
-	availableCents, err := money.Parse(out.Balances[0].IntraDayAmount)
+	// The balance is the day's opening plus what has moved since.
+	openCents, err := money.Parse(out.Balances[0].BeginOfDayAmount)
 	if err != nil {
-		return false, fmt.Errorf("banking circle internal balance check: unparseable amount: %w", err)
+		return false, fmt.Errorf("banking circle internal balance check: unparseable beginOfDayAmount: %w", err)
 	}
-	return availableCents >= requiredCents, nil
+	movedCents, err := money.Parse(out.Balances[0].IntraDayAmount)
+	if err != nil {
+		return false, fmt.Errorf("banking circle internal balance check: unparseable intraDayAmount: %w", err)
+	}
+	return openCents+movedCents >= requiredCents, nil
 }
 
 // checkVerification calls the merchant-verification mock's async

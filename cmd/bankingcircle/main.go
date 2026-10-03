@@ -443,19 +443,23 @@ type pageInfo struct {
 // 1).
 func (a *app) balanceEntries(acct *bankingcircle.Account) []balanceEntry {
 	now := labclock.Now()
+	day := bankingcircle.FinancialDay(now)
+	open, intraday := acct.DayAmounts(day)
 	return []balanceEntry{{
 		Type:                     "CurrentBalance",
 		Currency:                 acct.Currency,
-		BeginOfDayAmount:         acct.Balance,
-		FinancialDate:            now.Format("2006-01-02"),
-		IntraDayAmount:           acct.Balance,
+		BeginOfDayAmount:         money.Format(open),
+		FinancialDate:            day,
+		IntraDayAmount:           money.Format(intraday),
 		LastTransactionTimestamp: now.Format(time.RFC3339),
 	}}
 }
 
-// balances implements GET /api/v1/accounts/{accountId}/balances. This lab's
-// ledger has no intraday/beginOfDay distinction, so both amounts reflect the
-// current balance — a documented simplification, not a hidden bug.
+// balances implements GET /api/v1/accounts/{accountId}/balances.
+// beginOfDayAmount is the balance the account opened today with and
+// intraDayAmount what has moved since; their sum is the balance, which is
+// how a platform reads them. (Both used to carry the whole balance, so a
+// platform summing them saw twice the money there was.)
 func (a *app) balances(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("accountId")
 	// A malformed id is a 400, not a 404. The distinction matters to the
