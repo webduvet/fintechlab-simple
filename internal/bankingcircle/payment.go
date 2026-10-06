@@ -56,10 +56,16 @@ type Payment struct {
 	// ToHolder is the beneficiary's name as the sender knows it. Carried so
 	// the receiving bank can put a name on the account it opens — an
 	// account identified only by its IBAN is reconcilable but not readable.
-	ToHolder  string `json:"toHolder,omitempty"`
-	Amount    string `json:"amount"`
-	Currency  string `json:"currency"`
-	Reference string `json:"reference,omitempty"`
+	ToHolder string `json:"toHolder,omitempty"`
+	// ToAccountNumber and ToFinancialInstitution name the beneficiary's
+	// account when it has no IBAN — a UK account number and sort code, as
+	// most of a payfac's merchants are paid. The receiving bank is credited
+	// by whichever the payout carried.
+	ToAccountNumber        string `json:"toAccountNumber,omitempty"`
+	ToFinancialInstitution string `json:"toFinancialInstitution,omitempty"`
+	Amount                 string `json:"amount"`
+	Currency               string `json:"currency"`
+	Reference              string `json:"reference,omitempty"`
 	// ReferenceNumber is Banking Circle's own reference for the payment,
 	// the reconciliation report's paymentReferenceNumber. The bank assigns
 	// it; it is never anything the client sent.

@@ -10,6 +10,7 @@ const state = {
   data: {},
   activity: {},         // service id -> {logs} | {error}, fetched only while a card is open
   files: {},            // plugin id -> its settlement files, likewise
+  selected: {},         // plugin id -> Set of ticked file names (design-system.md, Row selection)
   runs: null,           // the settling plugin's run and sweep logs, for the dashboard
   hop: null,            // the arrow whose traffic the drawer is showing
   hopData: null,
@@ -44,7 +45,7 @@ const VIEWS = {
   },
   banks: {
     title: 'Banks',
-    sub: 'The sim banks. The core ledger is a generic bank shape; Banking Circle is a vendor whose accounts happen to hold the safeguarding money.',
+    sub: 'Where the money sits: Banking Circle holds the safeguarding accounts until a payout leaves, and the business bank is where it lands — the merchants\' own accounts.',
   },
   merchants: {
     title: 'Merchants',
@@ -221,6 +222,11 @@ async function load() {
     if (state.view === 'config') {
       state.data.config = await api('GET', '/api/config');
       try {
+        state.standins = await api('GET', '/api/stand-ins');
+      } catch (err) {
+        state.standins = { error: err.message };
+      }
+      try {
         state.connect = await api('GET', '/api/connect');
       } catch (err) {
         state.connect = { error: err.message };
@@ -241,12 +247,12 @@ async function load() {
 
 /* The settlement files a registered platform can run, one row each
    (design-system.md, Plugin card). Every file is a run you can start: on
-   its own, or all at once — which is how two currencies arrive on a real
-   morning, and the case single runs never exercise. Both are one POST to
-   the plugin's run_path; the platform starts the files together and owns
-   the rule that a currency runs once at a time. A file whose merchants are
-   not seeded settles nothing, so it gets the command that seeds them
-   instead of a button. */
+   its own, or several ticked together — which is how two currencies arrive
+   on a real morning, and the case single runs never exercise. Both are one
+   POST to the plugin's run_path; the platform starts the files together and
+   owns the rule that a currency runs once at a time, which the boxes
+   enforce too. A file whose merchants are not seeded settles nothing, so it
+   gets the command that seeds them instead of a button. */
 function filesPanel(s) {
   if (!s.plugin || !s.plugin.settlement || !isUp(s)) return '';
   const d = state.files[s.id];
@@ -260,13 +266,18 @@ function filesPanel(s) {
       ${esc(s.name)} offers nothing to run.</div>${upload}`;
   }
 
-  // One run per currency at a time, so "all together" is the first free,
-  // seeded file of each currency.
   const runnable = (f) => !f.problem && f.seeded !== false && !f.in_flight;
-  const together = [];
-  for (const f of files) {
-    if (runnable(f) && !together.some((t) => t.currency === f.currency)) together.push(f);
-  }
+  const deletable = (f) => !f.in_flight && ((st.delete_path && f.deletable) || (st.upload_path && f.uploaded));
+  // A selection only means something across currencies: within one, the
+  // platform runs one file at a time and Run on the row already does that.
+  const currencies = new Set(files.filter(runnable).map((f) => f.currency));
+  const choosing = currencies.size > 1;
+  const picked = selectedFiles(s.id, files.filter(runnable));
+  const cols = {
+    preview: !!st.preview_path,
+    reveal: !!st.reveal_path,
+    remove: files.some(deletable),
+  };
 
   const rows = files.map((f) => {
     const pills = [];
@@ -291,25 +302,29 @@ function filesPanel(s) {
           `${p ? `${p.count} payouts ${esc(p.total)}` : 'no payouts'}` +
           `${r.finished_at ? ` · ${esc(platformTime(r.finished_at))}` : ''}`;
     }
+    const data = `data-id="${esc(s.id)}" data-name="${esc(f.name)}"`;
+    const box = choosing && runnable(f)
+      ? `<input type="checkbox" data-select-file ${data} data-currency="${esc(f.currency)}"
+          aria-label="Select ${esc(f.name)}"${picked.includes(f.name) ? ' checked' : ''}>`
+      : '';
     const run = runnable(f)
       ? `<button class="btn small" data-action="plugin-run" data-id="${esc(s.id)}" data-files="${esc(f.name)}">Run</button>`
       : '';
-    const preview = st.preview_path
-      ? `<button class="ghost small" data-action="plugin-preview" data-id="${esc(s.id)}" data-name="${esc(f.name)}">Preview</button>`
-      : '';
-    const remove = st.upload_path && f.uploaded && !f.in_flight
-      ? `<button class="danger small" data-action="plugin-remove-file" data-id="${esc(s.id)}" data-name="${esc(f.name)}">Remove</button>`
-      : '';
+    const where = f.location && f.location !== d.dir
+      ? `<div class="hint mono">${esc(f.location)}</div>` : '';
     return `<tr>
-      <td class="mono">${esc(f.name)}</td>
+      ${choosing ? `<td class="actions">${box}</td>` : ''}
+      <td class="mono">${esc(f.name)}${where}</td>
       <td class="mono">${esc(f.currency || '—')}</td>
       <td class="mono">${esc(midList(f.mids))}</td>
       <td class="mono num">${esc(f.total)}</td>
       <td><div class="pill-row">${pills.join('')}</div>${f.problem ? `<div class="hint">${esc(f.problem)}</div>` : ''}</td>
       <td>${last}</td>
-      ${st.preview_path ? `<td class="actions">${preview}</td>` : ''}
+      ${cols.preview ? `<td class="actions"><button class="ghost small" data-action="plugin-preview" ${data}>Preview</button></td>` : ''}
+      ${cols.reveal ? `<td class="actions"><button class="ghost small" data-action="plugin-reveal" ${data}>Open location</button></td>` : ''}
       <td class="actions">${run}</td>
-      ${st.upload_path ? `<td class="actions">${remove}</td>` : ''}
+      ${cols.remove ? `<td class="actions">${deletable(f)
+        ? `<button class="danger small" data-action="plugin-delete-file" ${data}>Delete</button>` : ''}</td>` : ''}
     </tr>`;
   }).join('');
 
@@ -323,20 +338,51 @@ function filesPanel(s) {
   const unknown = d.seeded_error
     ? `<div class="note warn">Could not check which merchants are seeded — ${esc(d.seeded_error)}</div>`
     : '';
+  const together = !choosing ? '' : picked.length
+    ? `<div class="form">
+        <button class="ghost small" data-action="plugin-run" data-id="${esc(s.id)}"
+          data-files="${esc(picked.join('|'))}">Run ${picked.length} selected</button>
+        <button class="ghost small" data-action="plugin-clear-selection" data-id="${esc(s.id)}">Clear</button>
+      </div>
+      <p class="hint">${esc(picked.join(' + '))} — started in the same moment. One file per currency: ticking
+        another ${esc([...currencies].join(' or '))} file swaps it for the one ticked now.</p>`
+    : `<p class="hint">Tick files to run them together — one per currency, started in the same moment, the way
+        two currencies arrive on a real morning.</p>`;
 
   return `<div class="note">Settlement files in <span class="mono">${esc(d.dir || '')}</span>. Run one, or
-      all of them at once — one run per currency at a time, and the lab clock decides the day.</div>
+      tick several and run them together — one run per currency at a time, and the lab clock decides the day.</div>
     <div class="table-scroll"><table>
-      <thead><tr><th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th>
-        <th>State</th><th>Last run</th>${st.preview_path ? '<th class="actions"></th>' : ''}<th class="actions"></th>${st.upload_path ? '<th class="actions"></th>' : ''}</tr></thead>
+      <thead><tr>${choosing ? '<th class="actions"></th>' : ''}<th>File</th><th>Currency</th><th>MIDs</th><th class="num">Total</th>
+        <th>State</th><th>Last run</th>${cols.preview ? '<th class="actions"></th>' : ''}${cols.reveal ? '<th class="actions"></th>' : ''}<th class="actions"></th>${cols.remove ? '<th class="actions"></th>' : ''}</tr></thead>
       <tbody>${rows}</tbody>
     </table></div>
-    ${seedNote}${unknown}
-    ${together.length > 1 ? `<div class="form">
-      <button class="ghost small" data-action="plugin-run" data-id="${esc(s.id)}"
-        data-files="${esc(together.map((f) => f.name).join('|'))}">Run all ${together.length} together</button>
-    </div>` : ''}
+    ${together}${seedNote}${unknown}
     ${upload}`;
+}
+
+/* The files ticked on a plugin's table, in table order, keeping only those
+   that can still run: a file that went busy or vanished since it was
+   ticked drops out rather than being sent. */
+function selectedFiles(id, runnable) {
+  const set = state.selected[id];
+  if (!set) return [];
+  const names = runnable.map((f) => f.name).filter((n) => set.has(n));
+  state.selected[id] = new Set(names);
+  return names;
+}
+
+/* Ticking a file in a currency that already has one ticked swaps them:
+   the platform runs one file per currency at a time. */
+function toggleSelected(id, name, currency, on) {
+  const set = state.selected[id] || new Set();
+  const files = (state.files[id] && state.files[id].files) || [];
+  if (on) {
+    for (const f of files) if (f.currency === currency) set.delete(f.name);
+    set.add(name);
+  } else {
+    set.delete(name);
+  }
+  state.selected[id] = set;
 }
 
 /* A file from anywhere (design-system.md, File field). The picker is not
@@ -966,6 +1012,10 @@ const EMPTY_HINTS = {
   'banking-circle:reports': 'Nothing yet. The platform\'s reconciliation sweep reads the intraday report here about an hour after a settlement — move the platform clock forward an hour and trigger it to see one.',
   'clock:changes': 'Nothing yet. Every move of the clock lands here, and every hold a platform takes on it while a run is in flight.',
   'worldline:sftp': 'Nothing yet. This fills when the platform connects and collects a settlement file — the pull, not the file being cut.',
+  'bank:credits': 'Nothing yet. A payout lands here a couple of seconds after Banking Circle processes it — run a settlement and watch the outlets\' accounts open.',
+  'bank:ledger': 'Nothing yet. make demo-payment moves money between two demo accounts here, through payment-api; the settle path never does.',
+  'payment-api:payments': 'Nothing yet, which is normal: nothing in the settle path calls this. make demo-payment, or the harness, lands a payment here.',
+  'notifier:deliveries': 'Nothing yet, which is normal: only payment-api enqueues webhooks here, and only make demo-payment calls payment-api.',
 };
 
 /* A plugin names its own empty states: only the platform knows what would
@@ -1166,7 +1216,8 @@ function flowDelta(id, count) {
 /* The canvas is measured in CSS pixels and rendered at 1:1 (see app.css):
    an SVG stretched to the viewport magnifies its own text, which is how a
    diagram ends up shouting over the prose around it. */
-const FLOW_W = 1000;
+const FLOW_W = 1000;         // the canvas for five participants; more widen it
+const FLOW_GAP = 202;        // lifeline to lifeline, so neighbouring boxes never touch
 const FLOW_PAD = 96;         // half a box, so the outer lifelines sit inside
 const FLOW_BOX_W = 178;
 const FLOW_SUT_W = 196;      // the system under test's box: wider, still clear of its neighbours
@@ -1199,8 +1250,14 @@ function flowClock() {
     </div>`;
 }
 
+/* Wider for more participants rather than squeezed: a sixth box at the
+   five-box spacing overlaps its neighbours, and the wrapper scrolls. */
+function flowWidth(participants) {
+  return Math.max(FLOW_W, FLOW_PAD * 2 + Math.max(0, participants.length - 1) * FLOW_GAP);
+}
+
 function flowColumns(participants) {
-  const span = FLOW_W - FLOW_PAD * 2;
+  const span = flowWidth(participants) - FLOW_PAD * 2;
   const step = participants.length > 1 ? span / (participants.length - 1) : 0;
   const at = {};
   participants.forEach((p, i) => { at[p.id] = FLOW_PAD + i * step; });
@@ -1327,13 +1384,25 @@ function renderFlow() {
 
   return `${flowClock()}${banner}${unreachable}
     <div class="flow-wrap">
-      <svg class="flow" viewBox="0 0 ${FLOW_W} ${height}" role="img"
+      <svg class="flow" viewBox="0 0 ${flowWidth(parts)} ${height}" style="max-width:${flowWidth(parts)}px" role="img"
            aria-label="Sequence diagram of one settlement run">
         ${lifelines}${boxes}${arrows}
       </svg>
     </div>
+    ${flowHiddenNote(d)}
     ${flowLegend()}
     ${flowReport(d)}`;
+}
+
+/* A stand-in taken out of the diagram is a silence; say what it hides
+   (design-system.md, contract 10). */
+function flowHiddenNote(d) {
+  const hidden = (d.hidden || []);
+  if (!hidden.length) return '';
+  return `<div class="note">${hidden.map((h) => `<b>${esc(shortName(h.name || h.id))}</b> is a hidden stand-in, so it
+      is not drawn${h.steps.length ? ` — nor its ${esc(h.steps.join(', '))} hop` : ''}${h.count
+        ? `, which still carried ${h.count}${h.count >= 256 ? '+' : ''} in this window` : ''}.`).join(' ')}
+      <a href="#config/stand-ins">Stand-ins →</a></div>`;
 }
 
 function flowLegend() {
@@ -1495,7 +1564,7 @@ function widgetServices() {
         ? widgetLine(`<span class="pill bad">${down.length} down</span> ${esc(down.map((s) => shortName(s.name)).join(', '))}`)
         : widgetLine(list.length ? 'every service with a health check answers' : 'not probed yet', list.length ? '' : 'faint')}
       <span class="w-chips">${chips}</span>
-      ${hidden.length ? `<a class="w-line faint" href="#platform">${hidden.length} stand-in${hidden.length === 1 ? '' : 's'} hidden — ${esc(hidden.map((s) => shortName(s.name)).join(', '))}</a>` : ''}
+      ${hidden.length ? `<a class="w-line faint" href="#config/stand-ins">${hidden.length} stand-in${hidden.length === 1 ? '' : 's'} hidden — ${esc(hidden.map((s) => shortName(s.name)).join(', '))}</a>` : ''}
     </div>`;
 }
 
@@ -1939,7 +2008,7 @@ function guideDiagram() {
     ${chip(800, 64, 170, 'B4B :8086')}
     ${chip(620, 96, 170, 'Banking Circle :8085')}
     ${chip(800, 96, 170, 'ACI :8087')}
-    ${chip(620, 128, 350, 'verification · AML · core ledger')}
+    ${chip(620, 128, 350, 'verification · AML · business bank :8081')}
     ${box(620, 160, 170, 76, 'is-core', 'Console :8090', 'cards · buttons · logs')}
     ${chip(840, 186, 130, 'your browser', 'browser')}
     ${arrow(840, 198, 790, '', '', 'is-browse')}
@@ -1948,7 +2017,7 @@ function guideDiagram() {
     ${chip(620, 340, 170, 'settlement', 'standin')}
     ${chip(800, 340, 170, 'webhook receiver', 'standin')}
     <text class="gd-note" x="620" y="386">played the platform before one plugged in —</text>
-    <text class="gd-note" x="620" y="402">switch them off once yours is here</text>
+    <text class="gd-note" x="620" y="402">hidden by default; Configuration → Stand-ins</text>
 
     ${arrow(380, 76, 620, 'SFTP+PGP · JWT · mTLS', '', 'is-traffic')}
     ${arrow(620, 108, 380, 'webhooks · callbacks', '', 'is-traffic')}
@@ -2008,14 +2077,19 @@ function renderServices() {
 function isHidden(s) { return !!(s.stand_in && !s.stand_in.shown); }
 
 /* Hidden is said where the cards would have been (design-system.md,
-   contract 10), each with the button that brings it back. */
+   contract 10): which stand-ins are out of the way, how each is wired, and
+   where the switches are. */
 function hiddenNote(hidden) {
   if (!hidden.length) return '';
-  return `<div class="note">Hidden stand-ins — the platform under test replaces them, so their
-      cards are out of the way. They still run.
-      <div class="form">${hidden.map((s) => `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}"
-        data-shown="true">Show ${esc(shortName(s.name))}${s.stand_in.set_by ? ` <span class="hint">hidden by ${esc(s.stand_in.set_by)}</span>` : ''}</button>`).join('')}</div>
-    </div>`;
+  const views = (state.standins && !state.standins.error && state.standins.stand_ins) || [];
+  const said = hidden.map((s) => {
+    const v = views.find((x) => x.id === s.id);
+    const st = v && v.state !== 'unwired' ? ` <span class="pill${v.state === 'connected' ? ' ok' : v.state === 'unknown' ? '' : ' warn'}">${esc(v.state)}</span>` : '';
+    return `<span class="nowrap">${esc(shortName(s.name))}${st}</span>`;
+  });
+  return `<div class="note">Lab stand-ins, kept out of the way: ${said.join(', ')}. They play the platform's part
+      when none is plugged in — useful for developing a vendor without one, noise once yours is here.
+      <a href="#config/stand-ins">Connect, disconnect or show them in Configuration →</a></div>`;
 }
 
 /* A stand-in's wiring and the two switches (design-system.md, Stand-in).
@@ -2037,8 +2111,9 @@ function standInPanel(s) {
   const toggle = !switchable ? ''
     : v.state === 'connected' || v.state === 'partial'
       ? `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-connected="false">Disconnect</button>`
-      : `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-connected="true">Reconnect</button>`;
+      : `<button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-connected="true">Connect</button>`;
   return `<div class="section-title">Stand-in</div>
+    <p class="hint">${esc(v.plays || '')}</p>
     <div class="note">This service plays your platform's part until your platform does. Disconnect it
       once yours is plugged in: its timers stop and vendors stop delivering to it, so what lands
       in their logs is yours. Hiding takes the card off this view and out of the diagram.
@@ -2046,7 +2121,7 @@ function standInPanel(s) {
     ${conns.length ? `<div class="table-scroll"><table>
       <thead><tr><th>Wiring</th><th>State</th><th>What it is</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`
-      : '<p class="hint">Nothing in the lab calls this service on its own, so there is nothing to disconnect — only to hide.</p>'}
+      : '<p class="hint">Nothing in the lab calls this service on its own, so there is nothing to disconnect — only to hide. Its log below shows whatever did call it.</p>'}
     <div class="form">${toggle}
       <button class="ghost small" data-action="standin" data-id="${esc(s.id)}" data-shown="false">Hide this card</button>
     </div>`;
@@ -2204,8 +2279,12 @@ function bankCard(b) {
   const total = b.accounts.length;
   let body = '';
   if (open) {
+    // The same service as a card on Vendors; this is its accounts, that is
+    // its health and its traffic. Said, so one service is not read as two.
+    const svc = b.service_id ? services().find((x) => x.id === b.service_id) : null;
     body = `<div class="card-body">
-      <div class="note">${esc(b.summary)}</div>
+      <div class="note">${esc(b.summary)}${svc ? ` This is its accounts; its health, endpoints and traffic are on
+        <a href="${esc(serviceHref(svc.id))}">its ${esc(VIEWS[VIEW_OF_KIND[svc.kind]] ? VIEWS[VIEW_OF_KIND[svc.kind]].title : '')} card →</a>` : ''}</div>
       ${b.error ? `<div class="note bad">${esc(b.error)}</div>` : ''}
       ${total ? `<div class="table-scroll"><table>
         <thead><tr><th>Account</th><th>${esc(b.number_label)}</th><th>Holder</th><th>Ccy</th><th class="num">Balance</th></tr></thead>
@@ -2252,6 +2331,41 @@ function renderMerchants() {
       Merchants can still be created; they just cannot be registered as beneficiaries until the key is there.</div>`;
   }
 
+  html += `<div class="note">These merchants are <b>the lab's</b>: this console's registry
+      (<span class="mono">console-data/registry.json</span>) and what it made at the vendors — a B4B beneficiary per
+      outlet, card payments per MID at Worldline. Your platform's own database knows none of them. To settle them end
+      to end, the platform seeds its records from <span class="mono">GET /api/merchants</span> (each outlet's MID,
+      payout account, country and currency); testing only the settle path, the platform's own seeder — a runner's
+      <i>Seed merchants</i> — is the other way round, and these are not needed.</div>`;
+
+  const batches = d.batches || [];
+  if (batches.length) {
+    html += `<div class="section-title">Batches <small>${batches.length} — many merchants made at once</small></div>`;
+    html += `<div class="card"><div class="card-body" style="border-top:0;padding-top:14px"><div class="table-scroll"><table>
+      <thead><tr><th>Batch</th><th class="num">Merchants</th><th class="num">Outlets</th><th class="num">On the rail</th>
+        <th>Countries</th><th class="num">Seed</th><th class="actions"></th><th class="actions"></th><th class="actions"></th></tr></thead>
+      <tbody>${batches.map((b) => {
+        const ms = d.merchants.filter((m) => m.batch === b.id);
+        const outlets = ms.reduce((n, m) => n + m.outlets.length, 0);
+        const onRail = ms.reduce((n, m) => n + m.outlets.filter((o) => o.beneficiary_id).length, 0);
+        const ccs = [...new Set(ms.map((m) => m.country))].sort().join(' ');
+        return `<tr>
+          <td class="mono">${esc(b.id)}<div class="hint">${esc(ago(b.created_at))} ago</div></td>
+          <td class="num mono">${ms.length}</td>
+          <td class="num mono">${outlets}</td>
+          <td class="num mono">${onRail}</td>
+          <td class="mono">${esc(ccs || '—')}</td>
+          <td class="num mono">${esc(String(b.seed))}</td>
+          <td class="actions"><button class="ghost small" data-action="batch-provision" data-id="${esc(b.id)}"${d.provisioning_ready ? '' : ' hidden'}>Register at B4B</button></td>
+          <td class="actions"><button class="ghost small" data-action="batch-trading" data-id="${esc(b.id)}" data-count="5">Seed 5 payments / outlet</button></td>
+          <td class="actions"><button class="danger small" data-action="delete-batch" data-id="${esc(b.id)}" data-count="${ms.length}">Delete</button></td>
+        </tr>`;
+      }).join('')}</tbody></table></div>
+      <p class="hint">Each button is one call over the whole batch, reported per merchant. Payments are dated yesterday
+        (Worldline settles T+1) at each merchant's own typical ticket; run Worldline's morning cycle to cut the file.</p>
+    </div></div>`;
+  }
+
   const partners = d.partners || [];
   html += `<div class="section-title">Hierarchy <small>${d.distributors.length} distributor(s), ${partners.length} partner(s), ${d.merchants.length} merchant(s)</small></div>`;
   html += `<div class="card"><div class="card-body" style="border-top:0;padding-top:14px">
@@ -2275,7 +2389,7 @@ function renderMerchants() {
   html += `<div class="section-title">Merchants</div>`;
   html += d.merchants.length
     ? d.merchants.map((m) => merchantCard(m, d)).join('')
-    : `<div class="empty">No merchants yet. Create one — it is what every outlet, MID and payout in this lab hangs off.</div>`;
+    : `<div class="empty">No merchants yet. Create one — or a batch of them — it is what every outlet, MID and payout in this lab hangs off.</div>`;
   return html;
 }
 
@@ -2335,7 +2449,7 @@ function merchantCard(m, d) {
           <span class="pill ${statusPill}">${esc(m.status)}</span>
           ${blocked ? '<span class="pill bad">sanctions</span>' : ''}
         </span>
-        <span class="desc">${esc(m.id)} · ${esc(m.country)} · ${esc(m.currency)} · ${m.outlets.length} outlet${m.outlets.length === 1 ? '' : 's'}, ${provisioned} on the payout rail</span>
+        <span class="desc">${esc(m.id)}${m.batch ? ` · ${esc(m.batch)}` : ''} · ${esc(m.country)} · ${esc(m.currency)} · ${m.outlets.length} outlet${m.outlets.length === 1 ? '' : 's'}, ${provisioned} on the payout rail</span>
       </div>
       <div class="card-meta"><span>${esc(m.mcc)}</span></div>
     </div>
@@ -2358,6 +2472,9 @@ function renderConfig() {
 
   html += `<div class="section-title">Connect your platform <small>every vendor's addresses, credentials and keys</small></div>`;
   html += connectAllPanel();
+
+  html += `<div class="section-title" data-anchor="stand-ins">Stand-ins <small>the lab's own scaffolding for the platform's part — live switches</small></div>`;
+  html += standInsConfig();
 
   const bc = d.banking_circle;
   html += `<div class="section-title">Banking Circle notification delivery <small>${esc(d.banking_circle_source || d.banking_circle_path || '')}</small></div>`;
@@ -2406,6 +2523,55 @@ function renderConfig() {
         <td>${esc(s.purpose || '')}</td></tr>`).join('')}</tbody></table></div></div></div>`;
   }
   return html;
+}
+
+/* Every stand-in on one table: what it plays, how it is wired right now,
+   and the two switches — connect (where its wiring lives, live) and show
+   (its card on the Platform view and its box in the diagram). Hidden by
+   default; this is the place to bring one back. */
+function standInsConfig() {
+  const all = state.standins;
+  if (!all) return '<div class="note">Reading how the stand-ins are wired…</div>';
+  if (all.error) return `<div class="note bad">Stand-ins unavailable — ${esc(all.error)}</div>`;
+  const rows = (all.stand_ins || []).map((v) => {
+    const conns = v.connections || [];
+    const switchable = conns.some((c) => c.connected != null);
+    const pill = v.state === 'connected' ? '<span class="pill ok">connected</span>'
+      : v.state === 'disconnected' || v.state === 'partial' ? `<span class="pill warn">${esc(v.state)}</span>`
+        : v.state === 'unknown' ? '<span class="pill">unknown</span>'
+          : '<span class="hint">nothing calls it on its own</span>';
+    const wiring = conns.map((c) => `<div class="hint">${esc(c.label)}: ${c.error ? esc(c.error)
+      : c.connected == null ? esc(c.detail || 'not wired here') : `${c.connected ? 'connected' : 'disconnected'}${c.detail ? ' — ' + esc(c.detail) : ''}`}</div>`).join('');
+    const toggle = !switchable ? ''
+      : v.state === 'connected' || v.state === 'partial'
+        ? `<button class="ghost small" data-action="standin" data-id="${esc(v.id)}" data-connected="false">Disconnect</button>`
+        : `<button class="ghost small" data-action="standin" data-id="${esc(v.id)}" data-connected="true">Connect</button>`;
+    const show = `<button class="ghost small" data-action="standin" data-id="${esc(v.id)}" data-shown="${v.shown ? 'false' : 'true'}">${v.shown ? 'Hide card' : 'Show card'}</button>`;
+    return `<tr>
+      <td>${esc(shortName(v.name))}<div class="hint">${v.shown ? 'card shown' : 'card hidden'}${v.set_by ? ` · set by <span class="mono">${esc(v.set_by)}</span>` : ''}</div></td>
+      <td>${esc(v.plays || '')}${v.starts_off ? `<div class="hint">Start it disconnected: <span class="mono">${esc(v.starts_off)}</span> — read at start-up, so it takes a restart (<span class="mono">make up</span>).</div>` : ''}</td>
+      <td>${pill}${wiring}</td>
+      <td class="actions">${toggle}</td>
+      <td class="actions">${show}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="card"><div class="card-body" style="border-top:0;padding-top:14px">
+    <div class="note">Before a platform plugged in, these played its part, so each vendor's outbound half could be
+      proved connected. With yours plugged in they are noise — payouts at B4B nobody made, a second listener taking
+      Banking Circle's batches — so their cards start hidden. Developing a vendor <i>without</i> a platform?
+      Connect them here and the settle path runs end to end on its own: Worldline's file is pulled, paid out
+      through B4B and Banking Circle, and the receiver takes the webhooks. <b>Connect</b> switches the wiring live,
+      where it lives (a lab switch on the service, the subscription at the bank); <b>Show card</b> puts it back on
+      the Platform view and in the diagram.</div>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Stand-in</th><th>Plays</th><th>Wiring now</th><th class="actions"></th><th class="actions"></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="hint">Connected lives in the services and survives a console restart. Shown is the console's own and is
+      not: after a restart every card starts hidden again (<span class="mono">CONSOLE_STAND_INS_SHOWN=true</span> on
+      the console starts them shown). A registered platform may ask for either in its descriptor's
+      <span class="mono">stand_ins</span>; that is applied when it registers or changes its mind, so a switch pressed
+      here holds.</p>
+  </div></div>`;
 }
 
 /* Go renders a duration as "15s", "1m0s", "2h0m0s" -- a sum of components,
@@ -2469,15 +2635,26 @@ const ACTIONS = {
 
   'plugin-preview': async (d) => { await openPreview(d.id, d.name, 100); },
 
-  'plugin-remove-file': async (d) => {
-    if (!confirm(`Remove ${d.name} from the platform's uploads? Runs it already did stay done — only the file goes.`)) return;
+  'plugin-delete-file': async (d) => {
+    if (!confirm(`Delete ${d.name}? It is removed from disk on the platform's machine. Runs it already did stay done — only the file goes, and there is no undo.`)) return;
     await api('DELETE', `/api/plugins/${encodeURIComponent(d.id)}/files?name=${encodeURIComponent(d.name)}`);
-    toast('Removed', d.name, 'good');
+    if (state.selected[d.id]) state.selected[d.id].delete(d.name);
+    toast('Deleted', d.name, 'good');
   },
+
+  /* The platform opens the folder on its own machine; the toast is its
+     answer — the folder, or why it could not and where the file is. */
+  'plugin-reveal': async (d) => {
+    const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/files/reveal`, { name: d.name });
+    toast('Opened its location', r.note || r.path || d.name, 'good');
+  },
+
+  'plugin-clear-selection': async (d) => { delete state.selected[d.id]; },
 
   'plugin-run': async (d) => {
     const files = d.files.split('|');
     const r = await api('POST', `/api/plugins/${encodeURIComponent(d.id)}/run`, { files });
+    if (files.length > 1) delete state.selected[d.id];
     const runs = r.runs || [r];
     toast(runs.length > 1 ? `${runs.length} settlement runs started` : 'Settlement run started',
       `${runs.map((x) => `${x.currency} ${x.run}`).join('\n')}\nWatch the panels below — this takes about a minute.`, 'good');
@@ -2548,7 +2725,7 @@ const ACTIONS = {
     const body = {};
     if (d.connected) body.connected = d.connected === 'true';
     if (d.shown) body.shown = d.shown === 'true';
-    if (body.connected === false && !confirm('Disconnect this stand-in? Its timers stop and vendors stop delivering to it until it is reconnected — nothing already delivered is undone.')) return;
+    if (body.connected === false && !confirm('Disconnect this stand-in? Its timers stop and vendors stop delivering to it until it is connected again — nothing already delivered is undone.')) return;
     const v = await api('POST', `/api/stand-ins/${encodeURIComponent(d.id)}`, body);
     const what = body.shown === undefined ? `now ${v.state}` : body.shown ? 'shown' : 'hidden';
     toast(`${shortName(v.name)} ${what}`, (v.errors || []).join('\n') || '', (v.errors || []).length ? 'bad' : 'good');
@@ -2670,6 +2847,47 @@ const ACTIONS = {
   },
 
   'open-create-merchant': async () => { openMerchantModal(); },
+  'open-create-batch': async () => { openBatchModal(); },
+
+  'create-batch': async (_d, btn) => {
+    const f = fieldsIn(btn.closest('.modal'));
+    const body = {
+      count: parseInt(f.count || '20', 10),
+      max_outlets: parseInt(f.max_outlets || '3', 10),
+      country: f.country || '',
+      partner_id: f.partner_id || '',
+    };
+    if (f.seed !== '') {
+      const seedValue = Number(f.seed);
+      if (!Number.isInteger(seedValue) || seedValue < 0) throw new Error('Seed is a whole number, or blank for a new population.');
+      body.seed = seedValue;
+    }
+    if (!(body.count >= 1 && body.count <= 500)) throw new Error('Merchants is 1 to 500.');
+    const r = await api('POST', '/api/merchants/batches', body);
+    closeModal();
+    toast(`Batch ${r.batch.id} created`, r.note, 'good');
+  },
+
+  /* Batch actions report per merchant: a partial run is a normal outcome,
+     and the merchants that failed are the ones worth reading
+     (design-system.md, contract 4). */
+  'batch-provision': async (d) => {
+    const r = await api('POST', `/api/merchants/batches/${encodeURIComponent(d.id)}/provision`);
+    toast((r.failed || []).length ? 'Registered with failures' : 'Registered at B4B',
+      [r.note, ...(r.failed || [])].join('\n'), (r.failed || []).length ? 'bad' : 'good');
+  },
+
+  'batch-trading': async (d) => {
+    const r = await api('POST', `/api/merchants/batches/${encodeURIComponent(d.id)}/trading`, { count: parseInt(d.count, 10) });
+    toast((r.failed || []).length ? 'Trading seeded with failures' : 'Worldline acquired the trading',
+      [r.note, ...(r.failed || [])].join('\n'), (r.failed || []).length ? 'bad' : 'good');
+  },
+
+  'delete-batch': async (d) => {
+    if (!confirm(`Delete batch ${d.id} and its ${d.count} merchants? Anything already registered at B4B or traded at Worldline stays there — neither has a delete.`)) return;
+    const r = await api('DELETE', `/api/merchants/batches/${encodeURIComponent(d.id)}`);
+    toast('Batch deleted', `${r.deleted}: ${r.merchants} merchant(s) gone from the registry`);
+  },
   refresh: async () => { },
 };
 
@@ -2687,6 +2905,15 @@ function bindChanges(root) {
       if (hint) hint.textContent = pickHint(state.clockPick);
     });
     input.addEventListener('click', (ev) => ev.stopPropagation());
+  });
+  // Ticking a settlement file: held in state, so the next poll draws it
+  // ticked again (design-system.md, Row selection).
+  root.querySelectorAll('[data-select-file]').forEach((box) => {
+    box.addEventListener('click', (ev) => ev.stopPropagation());
+    box.addEventListener('change', () => {
+      toggleSelected(box.dataset.id, box.dataset.name, box.dataset.currency, box.checked);
+      renderView();
+    });
   });
   root.querySelectorAll('[data-action-change="sanctions"]').forEach((sel) => {
     sel.addEventListener('change', async (ev) => {
@@ -2747,6 +2974,51 @@ function openMerchantModal() {
   $('#modal-cancel').addEventListener('click', closeModal);
   bindActions($('#modal'));
   $('#modal').querySelector('[data-field="legal_name"]').focus();
+}
+
+/* Many merchants in one call (internal/console/batch.go): names, trades,
+   countries and outlet counts drawn from a seed, so a batch can be made
+   again. Defaults are filled, so the button works straight away. */
+function openBatchModal() {
+  const d = state.data.merchants || { countries: [], partners: [] };
+  $('#modal').innerHTML = `
+    <div class="modal-head">
+      <h2>Create a batch of merchants</h2>
+      <p>A population in one go — every merchant with a name, a trade and its MCC, a country and its currency, and one
+        to a few outlets, each with its own MID and payout account. Obviously fake, and drawn from a seed rather than at
+        random, so the same seed makes the same names again.</p>
+    </div>
+    <div class="modal-body">
+      <div class="form">
+        <div class="field"><label>Merchants</label><input data-field="count" type="number" min="1" max="500" value="20"></div>
+        <div class="field"><label>Outlets, up to</label><input data-field="max_outlets" type="number" min="1" max="10" value="3"></div>
+        <div class="field"><label>Country</label>${countrySelect(d.countries, '').replace('<option value="">auto</option>', '<option value="">a mix</option>')}</div>
+        <div class="field"><label>Seed</label><input data-field="seed" type="number" min="0" placeholder="new"></div>
+      </div>
+      <div class="form">
+        <div class="field wide"><label>Partner</label>
+          <select data-field="partner_id">
+            <option value="">none</option>
+            ${(d.partners || []).map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <p class="hint"><b>Outlets</b> — most merchants get one, about a quarter two, a few more, never above this.</p>
+      <p class="hint"><b>Country</b> — a mix draws from the EUR and GBP countries, the currencies Banking Circle holds
+        safeguarding accounts in; a country picked by name is made whatever it settles in.</p>
+      <p class="hint"><b>Seed</b> — blank for a new population; the toast says the seed used, and that seed makes the
+        same names, trades and countries again (with new ids and MIDs).</p>
+      <p class="hint">Then, on the batch's row: register its outlets at B4B, and seed card payments at Worldline — the
+        settlement file pays them once the platform knows them too (see the note on this view).</p>
+    </div>
+    <div class="modal-foot">
+      <button class="ghost" id="modal-cancel">Cancel</button>
+      <button class="btn" data-action="create-batch">Create batch</button>
+    </div>`;
+  $('#modal-backdrop').hidden = false;
+  $('#modal-cancel').addEventListener('click', closeModal);
+  bindActions($('#modal'));
+  $('#modal').querySelector('[data-field="count"]').focus();
 }
 
 /* The action a plugin declares now, not the one it declared when the page
@@ -2829,6 +3101,7 @@ function renderView() {
 
   $('#topbar-actions').innerHTML = state.view === 'merchants'
     ? `<button class="ghost small" data-action="refresh">Refresh</button>
+       <button class="ghost" data-action="open-create-batch">Create a batch…</button>
        <button class="btn" data-action="open-create-merchant">+ Create merchant</button>`
     : `<button class="ghost small" data-action="refresh">Refresh</button>`;
 
@@ -2922,6 +3195,8 @@ function scrollToFocus() {
 
 function isEditing() {
   const el = document.activeElement;
+  // A ticked checkbox holds nothing half-typed, so it does not pause the poll.
+  if (el && el.tagName === 'INPUT' && el.type === 'checkbox') return false;
   return !!el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName);
 }
 

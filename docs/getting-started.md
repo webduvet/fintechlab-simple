@@ -119,8 +119,16 @@ platform's own fee), each confirmed by the bank.
 - **Break it on purpose:** queue a rejected payout, pause the platform's
   webhooks, return or reverse a payout — [agent.runbooks.md](../agent.runbooks.md),
   *Make Banking Circle misbehave on purpose*, and [console.md](console.md).
-- **Two currencies at once:** seed the GBP merchant, then **Run all 2
-  together** ([agent.runbooks.md](../agent.runbooks.md)).
+- **Two currencies at once:** seed the GBP merchant, then tick both files
+  and **Run 2 selected** ([agent.runbooks.md](../agent.runbooks.md)).
+- **Developing a vendor without a platform:** the lab's stand-ins play the
+  platform's part — `settlement` pulls Worldline's file and pays it out
+  through B4B and Banking Circle, `receiver` takes the webhooks. They run
+  and are connected from `make up`, so the settle path works end to end on
+  its own; only their cards are hidden. **Configuration → Stand-ins**
+  shows them, and connects or disconnects each live. Once your platform
+  plugs in, disconnect them (its `stand_ins` may do it for you) so what
+  lands in the vendors' logs is yours.
 - **A platform that does not read the lab's disk:** **Connect your
   platform** on the Configuration view downloads one `.env` with every
   address, credential and key inlined.

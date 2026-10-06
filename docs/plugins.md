@@ -155,6 +155,8 @@ and is the platform the Dashboard's diagram draws:
   "status_path": "/status",
   "upload_path": "/sim/files/upload",
   "preview_path": "/sim/files/preview",
+  "delete_path": "/sim/files",
+  "reveal_path": "/sim/files/reveal",
   "runs_log": "runs",
   "stages": {
     "ingest": ["SETTLEMENT_FILE_INGESTION", "DAILY_MOVEMENT_PROCESSING"],
@@ -178,7 +180,16 @@ and is the platform the Dashboard's diagram draws:
 A file may also carry `"uploaded": true`, `"bytes"`, and `"problem"` —
 why it cannot be run (not a Worldline file) — and the answer
 `"upload_dir"`, where uploads are kept. A file with a `problem` gets no
-*Run*.
+*Run*. `"deletable": true` gives the row *Delete* (through `delete_path`,
+below), and `"location"` — the directory it is in, as the platform names
+it — is shown under the file's name when it is not the answer's `dir`:
+files can live in more than one place, and the operator should not have to
+guess which.
+
+The table runs one file per row (*Run*), or several ticked together (*Run N
+selected*) — the console lets only one file per currency be ticked at a
+time, since that is the platform's rule, and the platform's `409` is still
+the last word.
 
 **Files from anywhere** (optional; no `upload_path`, no upload button):
 
@@ -187,6 +198,18 @@ why it cannot be run (not a Worldline file) — and the answer
 | `POST /api/plugins/{id}/files?name=<file>` | `POST upload_path?name=` | the raw bytes, streamed — the console holds none of it and caps it at `CONSOLE_UPLOAD_MAX_MB` (512). Answer `201 {"name", "bytes", "note"}`; `name` is what it was kept as, `note` the toast |
 | `DELETE /api/plugins/{id}/files?name=` | `DELETE upload_path?name=` | forget an uploaded file; `204` |
 | `GET /api/plugins/{id}/files/preview?name=&lines=` | `GET preview_path?name=&lines=` | the head of any listed file, `lines` clamped to 1–1000: `{"name", "lines": […], "truncated", "long_lines", "bytes"}` |
+
+**Delete and open location** (both optional; no path, no button):
+
+| Console | Forwarded to | |
+| --- | --- | --- |
+| `DELETE /api/plugins/{id}/files?name=` | `DELETE delete_path?name=` | delete a listed file the platform marked `deletable` — its generated files, say, never a fixture its repo tracks. `204`; `403` with the platform's reason for one it will not delete; `404` for a name it does not list. Without `delete_path` this goes to `upload_path` and only uploads can be removed |
+| `POST /api/plugins/{id}/files/reveal` | `POST reveal_path` `{"name"}` | *Open location*: show the file in the file manager **of the machine the platform runs on**. Only the platform can — the console may be in a container, and a web page may not open a local folder. `200 {"path", "dir", "note"}`, the `note` being the toast; `409` with the path when there is no desktop to show it on (a server, an SSH session) |
+
+`fintechlab-runner` has both: `deleteHandler` (the platform says which
+files may go, and why not) and `revealHandler` (`open -R` on macOS,
+`explorer /select,` on Windows, the freedesktop FileManager1 D-Bus call
+on Linux with `xdg-open` on the folder as the fallback).
 
 The platform keeps uploads where it likes and lists them with the rest.
 `fintechlab-runner` has all three: `FileStore` (streamed to disk under a
@@ -246,7 +269,10 @@ The lab's **stand-ins** played the platform's part before one plugged in:
 `settlement` pulls Worldline's files on a timer and pays outlets at the
 daily cutoff; `receiver` is where Banking Circle's seeded subscription and
 ACI deliver. `payment-api` and `notifier` are stand-ins nothing calls on its
-own. A platform that replaces them says so:
+own — only `make demo-payment` and the harness do. Their cards start
+hidden in the console (Configuration → *Stand-ins* has the switches); their
+wiring starts connected, so the lab runs end to end with no platform at
+all. A platform that replaces them says so:
 
 ```json
 "stand_ins": {

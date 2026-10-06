@@ -164,10 +164,18 @@ From the console: Platform → **Local runner** (the runner's own card) → the
   the settle DB has no master account for them.
 - **Last run** — root (first 8), payouts and total, and when it finished *on
   the lab clock* (e.g. `Fri 25 Sept, 13:00 UTC`).
-- **Run** on a row is one `POST /sim/run {"files":[name]}`; **Run all N
-  together** is one call with the first free, seeded file of each currency.
-  A busy or unseeded row has no *Run*; an unseeded one gets a note with the
-  seed command instead.
+- **Run** on a row is one `POST /sim/run {"files":[name]}`. Tick files in
+  the first column (one per currency — ticking a second of a currency
+  swaps it) and **Run N selected** is one call with those files.
+  A busy or unseeded row has no *Run* and no box; an unseeded one gets a
+  note with the seed command instead.
+- **Delete** (generated files only; fixtures are refused with a 403) is
+  `DELETE /sim/files?name=`; **Open location** is `POST /sim/files/reveal
+  {"name"}` and opens the file manager *on the runner's machine* — both
+  need the runner on buddy's `feature/fintechlab-file-actions` (or later)
+  and `@fintechlab/runner` with `deleteHandler`/`revealHandler`. A runner
+  without them declares no `delete_path`/`reveal_path`, and the rows have
+  no such buttons.
 
 Below it, the **Settlement runs** log: one row per run, rewritten as it goes.
 Amber there is *with failed stages* — normally just the two report-email
@@ -211,9 +219,9 @@ print('in flight:', [r['currency'] for r in d['runs_now']])
 for c,r in d['last_runs'].items(): print(c, r['root'], r['payouts'])"
 ```
 
-In the console that is **Run all 2 together** on the settlement files panel
-(see *Run a settlement*); both rows go amber `running — …`, then each shows
-its own root and payout count.
+In the console: tick both files and **Run 2 selected** on the settlement
+files panel (see *Run a settlement*); both rows go amber `running — …`,
+then each shows its own root and payout count.
 
 Pick a morning, not `auto-business-day`: that can land late on a Friday, and
 the sweep's +1h then crosses 22:00 UTC, when Stockholm is already Saturday.
@@ -355,9 +363,11 @@ print(d['step']['count'], d['step'].get('source'), d['step'].get('source_log'))
 for e in d['events'][:5]: print('   ', e['at'], e['status'], e['summary'])"
 ```
 
-The stand-ins (settlement, receiver) can be disconnected so their own
-traffic stops competing with the platform's — the runner's `fintechlab.json`
-may already have asked for it on registration:
+The stand-ins (settlement, receiver; payment-api and notifier only hide) can
+be disconnected so their own traffic stops competing with the platform's —
+the runner's `fintechlab.json` may already have asked for it on
+registration. Their cards start hidden (console: Configuration →
+Stand-ins):
 
 ```sh
 curl -s localhost:8090/api/stand-ins | python3 -c "
@@ -393,7 +403,13 @@ for a busy currency). A log's `labels` is what its amber and red mean; the
 console's pills use them.
 
 Step ids, top to bottom: `pull`, `collect`, `ingest`, `fund`, `payouts`,
-`bridge`, `callbacks`, `notify`, `confirm`, `reports`, `recon`.
+`bridge`, `land`, `callbacks`, `notify`, `confirm`, `reports`, `recon`.
+`land` is Banking Circle → the business bank (`bank`, :8081): each processed
+payout credited to the merchant's account there, read from the bank's
+*Payouts credited* log (`curl -s localhost:8081/sim/activity`). It stays at 0
+on a lab started before B4B's bridge carried the creditor account — `make up`.
+`notify` is left out while the receiver's card is hidden; `hidden` in
+`/api/flow` says how much it still carried.
 
 ## Screenshots without a browser window
 
@@ -417,7 +433,8 @@ const { chromium } = require('/home/andrej/infinite/buddy/node_modules/playwrigh
 
 Inside the runner card: the settlement files table is
 `table:has(th:text("Last run"))`, its buttons
-`button:has-text("Run all 2 together")` and `[data-action="plugin-run"]`,
+`[data-select-file][data-name="<file>"]` (the tick boxes),
+`button:has-text("selected")` and `[data-action="plugin-run"]`,
 and the runs log opens with `[data-card="infinite-local-runner:runs"]`.
 Switch views with `.nav-item[data-view="dashboard"]` clicks, or go straight
 to a card with `#vendors/b4b` (or `#vendors/b4b:payments` for its log) — a

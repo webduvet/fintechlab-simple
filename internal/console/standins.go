@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,22 @@ type StandInInfo struct {
 	Shown bool      `json:"shown"`
 	SetBy string    `json:"set_by,omitempty"`
 	SetAt time.Time `json:"set_at,omitempty"`
+	// Plays is the part of the platform it stands in for, and who calls
+	// it: the sentence that says whether a developer needs it at all.
+	Plays string `json:"plays"`
+	// StartsOff is how to have it start disconnected — an environment
+	// variable read at start-up, so it takes a restart. Empty when there is
+	// no wiring to switch.
+	StartsOff string `json:"starts_off,omitempty"`
+}
+
+// standInsShown is whether stand-in cards start shown. They are hidden by
+// default: a developer with a platform plugged in has no use for them, and
+// one developing without a platform turns them on in Configuration.
+// CONSOLE_STAND_INS_SHOWN=true starts them shown.
+func standInsShown() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("CONSOLE_STAND_INS_SHOWN")))
+	return v == "true" || v == "1" || v == "yes"
 }
 
 // ErrNotStandIn is a request about a service that is not one.

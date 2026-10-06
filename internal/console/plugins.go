@@ -95,6 +95,14 @@ type PluginSettlement struct {
 	UploadPath string `json:"upload_path,omitempty"`
 	// PreviewPath shows the head of a file: GET ?name=&lines=. Optional.
 	PreviewPath string `json:"preview_path,omitempty"`
+	// DeletePath deletes a listed file the platform marked deletable:
+	// DELETE ?name=. Optional; without it, only uploads can be removed
+	// (DELETE upload_path).
+	DeletePath string `json:"delete_path,omitempty"`
+	// RevealPath opens the folder a file is in, in the file manager of the
+	// machine the platform runs on: POST {"name": "<file>"}. Optional —
+	// only the platform can do it, since only it is on that machine.
+	RevealPath string `json:"reveal_path,omitempty"`
 	// RunsLog names the activity log that counts runs.
 	RunsLog string `json:"runs_log,omitempty"`
 	// Stages maps the diagram's two self-arrows ("ingest", "reports") to
@@ -318,6 +326,12 @@ func (p *Plugin) validate(static func(string) bool) error {
 			return err
 		}
 		if err := pluginPath("settlement.preview_path", s.PreviewPath, false); err != nil {
+			return err
+		}
+		if err := pluginPath("settlement.delete_path", s.DeletePath, false); err != nil {
+			return err
+		}
+		if err := pluginPath("settlement.reveal_path", s.RevealPath, false); err != nil {
 			return err
 		}
 		if s.RunsLog != "" && !logName.MatchString(s.RunsLog) {

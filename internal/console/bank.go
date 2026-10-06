@@ -14,10 +14,11 @@ import (
 	"time"
 )
 
-// The Banks view. "Sim banks" in this lab are not one thing: the core
-// ledger is a generic bank shape the platform side talks to, and Banking
-// Circle is a vendor whose accounts happen to be where the safeguarding
-// money sits. Both are listed, and the difference is stated rather than
+// The Banks view. "Sim banks" in this lab are not one thing: the business
+// bank is where a payout ends up — the merchants' own accounts, credited by
+// Banking Circle — and Banking Circle is the vendor whose accounts are where
+// the safeguarding money sits until then. Each is also a service card on
+// the Vendors view; this view is their accounts. Both are listed, and the difference is stated rather than
 // smoothed over -- an operator who does not know which of these holds the
 // SGA cannot reason about a payout at all.
 
@@ -91,8 +92,8 @@ type CoreLedgerBank struct {
 
 func (c *CoreLedgerBank) Meta() Bank {
 	return Bank{
-		ID: "core-ledger", Name: "Core ledger", Kind: KindPlatform, ServiceID: "bank",
-		Summary:     "The lab's in-memory bank: fake GB00SIM IBANs, balances and transfers. Scaffolding for whatever core ledger your platform actually books against.",
+		ID: "core-ledger", Name: "Business bank", Kind: KindVendor, ServiceID: "bank",
+		Summary:     "The merchants' own bank — the far end of every payout. Banking Circle credits each processed payout here by IBAN, and an outlet's account opens the first time money arrives for it, as a beneficiary bank's would. The InfinitePay accounts get the platform's fee; the demo accounts are make demo-payment's. In memory, fake GB00SIM IBANs.",
 		NumberLabel: "IBAN", CanOpen: true,
 	}
 }

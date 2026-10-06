@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/labclock"
 	"github.com/webduvet/fintechlab-simple/internal/money"
@@ -94,12 +95,18 @@ func (s *store) mustSeed(id, iban, holder, ccy string, cents int64, kind string)
 // beneficiary by IBAN, because that is all it has — it does not know this
 // bank's internal account ids, and a real one would not.
 type creditReq struct {
-	IBAN      string `json:"iban"`
-	Holder    string `json:"holder"`
-	Amount    string `json:"amount"`
-	Currency  string `json:"currency"`
-	Reference string `json:"reference"`
-	Kind      string `json:"kind"`
+	IBAN string `json:"iban"`
+	// AccountNumber and FinancialInstitution name the account where there is
+	// no IBAN — a UK account number and sort code. The account is then
+	// keyed "<institution> <number>", in the field an IBAN would be in:
+	// it is the identifier the rail named, whichever shape it had.
+	AccountNumber        string `json:"account_number"`
+	FinancialInstitution string `json:"financial_institution"`
+	Holder               string `json:"holder"`
+	Amount               string `json:"amount"`
+	Currency             string `json:"currency"`
+	Reference            string `json:"reference"`
+	Kind                 string `json:"kind"`
 }
 
 // credit implements POST /internal/credit: money arriving from outside.
@@ -114,8 +121,11 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 		httputilx.Error(w, 400, err.Error())
 		return
 	}
+	if req.IBAN == "" && req.AccountNumber != "" {
+		req.IBAN = strings.TrimSpace(req.FinancialInstitution + " " + req.AccountNumber)
+	}
 	if req.IBAN == "" {
-		httputilx.Error(w, 400, "iban required: a rail names the beneficiary by IBAN")
+		httputilx.Error(w, 400, "iban or account_number required: a rail names the beneficiary's account")
 		return
 	}
 	cents, err := money.Parse(req.Amount)
@@ -145,7 +155,7 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 			holder = "Beneficiary " + req.IBAN
 		}
 		a = &account{
-			ID: "acc_" + strings.ToLower(req.IBAN), IBAN: req.IBAN, Holder: holder,
+			ID: "acc_" + strings.ToLower(strings.ReplaceAll(req.IBAN, " ", "_")), IBAN: req.IBAN, Holder: holder,
 			Currency: ccy, Kind: kind, OpenedBy: req.Reference,
 		}
 		s.accts[a.ID] = a
@@ -167,26 +177,82 @@ func (s *store) credit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func main() {
-	addr := env("LISTEN", ":8081")
-	labclock.FollowEnv(context.Background(), "bank")
-	s := newStore()
+// The two conversations worth watching at the far end of a payout: money
+// arriving over the rail, and the ledger's own moves (make demo-payment's
+// transfers, accounts opened by hand). The console draws a panel for each,
+// and the Dashboard's last arrow counts the first.
+func newLogs() (credits, ledger *activity.Log) {
+	credits = activity.New("credits", "Payouts credited",
+		"Every payout Banking Circle passed on, by IBAN, and the account it landed in. An account opens the first time money arrives for it.")
+	ledger = activity.New("ledger", "Accounts and transfers",
+		"Accounts opened and transfers between them — make demo-payment's ledger move, through payment-api.")
+	return credits, ledger
+}
+
+// routes is the bank's HTTP surface, watched by its logs.
+func routes(s *store, credits, ledger *activity.Log) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "bank"})
 	})
 	mux.HandleFunc("GET /accounts", s.listAccounts)
 	mux.HandleFunc("GET /accounts/{id}", s.getAccount)
-	mux.HandleFunc("POST /accounts", s.createAccount)
-	mux.HandleFunc("POST /transfers", s.transfer)
+	mux.HandleFunc("POST /accounts", ledger.Watch("account.open", summarizeOpen, s.createAccount))
+	mux.HandleFunc("POST /transfers", ledger.Watch("transfer", summarizeTransfer, s.transfer))
 	mux.HandleFunc("GET /ledger", s.listLedger)
+	mux.HandleFunc("GET /sim/activity", activity.Handler(credits, ledger))
 
 	// The rail hop: a payout leaving the settlement bank has to arrive
 	// somewhere, and this is where. No auth — it is a lab seam, and the
 	// allowlist on the sending side is what governs who may call it.
-	mux.HandleFunc("POST /internal/credit", s.credit)
+	mux.HandleFunc("POST /internal/credit", credits.Watch("credit", summarizeCredit, s.credit))
+	return mux
+}
+
+func main() {
+	addr := env("LISTEN", ":8081")
+	labclock.FollowEnv(context.Background(), "bank")
+	credits, ledger := newLogs()
+	mux := routes(newStore(), credits, ledger)
 	log.Printf("bank listening on %s", addr)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
+}
+
+// summarizeCredit: "credited 733.34 EUR to GB00SIM… (Acme Ltd) — account opened".
+func summarizeCredit(c *activity.Call) (string, map[string]string) {
+	detail := map[string]string{
+		"iban":      c.JSONField("iban"),
+		"reference": c.JSONField("reference"),
+	}
+	if c.Status >= 400 {
+		return fmt.Sprintf("credit of %s %s to %s refused", c.JSONField("amount"), c.JSONField("currency"), c.JSONField("iban")), detail
+	}
+	holder := c.RespField("account", "holder")
+	sum := fmt.Sprintf("credited %s %s to %s", c.RespField("credited"), c.RespField("account", "currency"), c.JSONField("iban"))
+	if holder != "" {
+		sum += " (" + holder + ")"
+	}
+	if c.RespField("opened") == "true" {
+		sum += " — account opened"
+		detail["opened"] = "true"
+	}
+	detail["balance"] = c.RespField("account", "balance")
+	detail["account"] = c.RespField("account", "id")
+	return sum, detail
+}
+
+func summarizeTransfer(c *activity.Call) (string, map[string]string) {
+	to := c.JSONField("toIban")
+	if to == "" {
+		to = c.JSONField("toAccountId")
+	}
+	sum := fmt.Sprintf("transfer %s %s from %s to %s", c.JSONField("amount"), c.JSONField("currency"), c.JSONField("fromAccountId"), to)
+	return sum, map[string]string{"payment": c.JSONField("paymentId"), "reference": c.JSONField("reference")}
+}
+
+func summarizeOpen(c *activity.Call) (string, map[string]string) {
+	return fmt.Sprintf("opened %s for %s", c.RespField("iban"), c.JSONField("holder")),
+		map[string]string{"account": c.RespField("id"), "currency": c.RespField("currency")}
 }
 
 func (s *store) listAccounts(w http.ResponseWriter, r *http.Request) {

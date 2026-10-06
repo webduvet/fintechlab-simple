@@ -244,10 +244,23 @@ total, and its last run (root, payouts, when).
   stages to the end. It answers `202` at once: the run takes about forty
   seconds, and the part worth watching is the traffic arriving in the vendor
   panels, not a spinner. While it runs it **holds the lab clock**.
-- **Run all N together** — still one call, with every file that can run
-  (the first free, seeded one per currency). The platform starts them in
-  the same moment, which is how two currencies arrive on a real morning and
-  the case a single run never exercises.
+- **Run N selected** — tick files in the first column and run them as
+  one call. The platform starts them in the same moment, which is how two
+  currencies arrive on a real morning and the case a single run never
+  exercises. One file per currency: ticking a second EUR file unticks the
+  first, because the platform runs one per currency at a time. The column
+  is only there when the runnable files span more than one currency.
+- **Delete** — on a file the platform marks deletable (buddy's runner: its
+  generated files, never the fixtures the repo tracks), after a confirm
+  that says there is no undo. One `DELETE /api/plugins/{id}/files?name=`,
+  forwarded to the platform's `delete_path`.
+- **Open location** — the platform opens the file's folder in the file
+  manager of the machine it runs on, the file selected where the desktop
+  allows (`POST /api/plugins/{id}/files/reveal`). The console cannot do it
+  itself — it is in a container, and a web page may not open a local
+  folder — so a platform that does not declare `reveal_path` gets no
+  button. On a machine with no desktop session the toast says so and gives
+  the path.
 
 **Files from anywhere.** *Upload a file to …* under the table sends any
 file on your machine to the platform, which keeps it in its own directory
@@ -256,8 +269,8 @@ if it is a Worldline file, *cannot run* with the reason if not. The bytes
 are streamed through the console and never held by it (capped at
 `CONSOLE_UPLOAD_MAX_MB`, 512); progress shows above the button. **Preview**
 on any row opens the head of the file — the first 100 lines, or 1000 —
-read no further however long the file is. **Remove** forgets an uploaded
-file; the fixtures have none. A platform that declares no `upload_path` or
+read no further however long the file is. **Delete** removes a file the
+platform says may go (below). A platform that declares no `upload_path` or
 `preview_path` gets no such buttons ([plugins.md](plugins.md#settlement)).
 
 A row has no *Run* while its currency has a run in flight (one per
@@ -299,9 +312,23 @@ live from the services that own it, and two buttons:
   cards were lists what is hidden and by whom, with a *Show* for each.
 
 `payment-api` and `notifier` are stand-ins with nothing calling them on
-their own: they can be hidden, not disconnected. Both switches start on;
+their own — only `make demo-payment` and the harness's first scenario do —
+so they can be hidden, not disconnected. Their cards say what they play, and
+each now keeps a log (*Payments received*, *Webhooks delivered*) so it is
+plain whether anything has called them.
+
+**Every stand-in card starts hidden.** With a platform plugged in they are
+noise; developing a vendor without one, you want them, and the place to
+switch them is **Configuration → Stand-ins**: one table with what each
+plays, how it is wired right now, *Connect* / *Disconnect* (live, where the
+wiring lives) and *Show card* / *Hide card*. The Platform view lists the
+hidden ones in a note linking there, and a hidden receiver is said under
+the diagram, with how many batches still went to it.
+`CONSOLE_STAND_INS_SHOWN=true` on the console starts the cards shown. The
+wiring starts connected, so the lab runs end to end with no platform:
 `SETTLEMENT_CONNECTED=false` on the settlement service and
-`ACI_WEBHOOK_CONNECTED=false` on ACI start them off.
+`ACI_WEBHOOK_CONNECTED=false` on ACI start it off — read at start-up, so
+they take a `make up`.
 
 A platform can ask for this itself, in its descriptor's `stand_ins`
 ([plugins.md](plugins.md#stand-ins)). The console applies that when the
@@ -478,14 +505,33 @@ late.
 
 ## Banks
 
-Two "sim banks", and they are not the same kind of thing:
+Two banks, and they are where the money is at two different moments:
 
-- **Core ledger** (`bank`) — scaffolding. A generic in-memory bank with
-  fake `GB00SIM…` IBANs. You can open accounts here.
 - **Banking Circle** — a vendor. Its accounts are where the safeguarding
-  money actually sits. Read over mTLS with a real `Basic` → `Bearer`
-  exchange, exactly as a client would; the console has no privileged back
-  door into a vendor's state, which is what keeps the view honest.
+  money sits until a payout leaves. Read over mTLS with a real `Basic` →
+  `Bearer` exchange, exactly as a client would; the console has no
+  privileged back door into a vendor's state, which is what keeps the view
+  honest.
+- **Business bank** (`bank`, once called the *core ledger*) — the
+  merchants' own bank, the far end of every payout. Banking Circle credits
+  each processed payout here (`BANK_CREDIT_URL`) by the account B4B handed
+  it — an IBAN, or an account number and sort code — and the outlet's
+  account opens the first time money arrives for it. The InfinitePay
+  accounts take the platform's fee; the Alice/Bob demo accounts are
+  `make demo-payment`'s. In memory, fake `GB00SIM…` IBANs. You can open
+  accounts here.
+
+Each is also a card on the Vendors view, and each bank card here links to
+it: this view is their accounts; the service card is their health,
+endpoints and traffic. The business bank's card keeps two logs —
+*Payouts credited* and *Accounts and transfers* — and the Dashboard's
+*payouts credited* arrow, Banking Circle → business bank, counts the first.
+
+Until this change, B4B's bridge into Banking Circle never said which account
+a payout was for, so Banking Circle had nothing to credit and logged "no
+beneficiary IBAN" for every platform payout: the last hop of the money's
+path did not happen. The bridge now carries the creditor account the payout
+named (or the beneficiary's registered one).
 
 Banking Circle has **no account-opening endpoint**, so the console does not
 offer one, and says why. An account there appears when it is first paid
@@ -499,6 +545,15 @@ The hierarchy the platform sells through: **distributor → partner →
 merchant → outlet**. The outlet is the unit the money cares about —
 Worldline calls it a submerchant and identifies it by **MID**, and the
 platform pays out per MID, not per merchant.
+
+**Whose these are.** The merchants here are the lab's: this registry and
+what it made at the vendors (a beneficiary per outlet at B4B, card payments
+per MID at Worldline). The platform's own database knows none of them. To
+settle them end to end, a platform seeds its records from
+`GET /api/merchants` — each outlet's MID, payout account, country and
+currency. Testing only the settle path, the platform's own seeder (buddy's
+runner: *Seed merchants*) works the other way round, and these are not
+needed. The view opens with a note saying so.
 
 Before this view, MIDs were string literals in tests. That is fine for a
 scenario and useless for a demo, where the first question is "who am I
@@ -520,6 +575,32 @@ Per merchant:
 | **Seed card payments** | `POST /sim/transactions` on Worldline. This is the **acquirer's** own data posted to the acquirer — the platform never learns of a transaction except through the settlement file, and nothing here shortcuts that. Dated yesterday, because Worldline settles T+1. |
 | **Sanctions dropdown** | `PUT /sim/beneficiaries/{mid}/sanctions`. Move an outlet to `fail` and watch the payout gate stop it, rather than reading that it would. |
 | **Suspend / Delete** | Registry-local. Deleting does **not** unwind anything already registered at B4B — the rail has no beneficiary-delete endpoint, and pretending otherwise would be a lie about what it supports. |
+
+### Batches: many merchants at once
+
+**Create a batch…** (top right) makes up to 500 merchants in one call:
+each with a name and a trade (and that trade's MCC), a country and its
+currency, a company form to match (*Ltd*, *GmbH*, *B.V.*…), and one outlet
+— about a quarter two, a few more, never above the cap you set. A mix of
+countries draws only from the EUR and GBP ones, the currencies Banking
+Circle holds safeguarding accounts in; pick a country by name for any
+other. Everything
+is drawn from a **seed**, not at random (the design system's contract 8):
+the toast says the seed, and the same seed makes the same names, trades
+and countries again, with new ids and so new MIDs.
+
+Each batch is a row under **Batches**, with one call per button over the
+whole batch, reported per merchant: **Register at B4B** (every outlet a
+beneficiary), **Seed 5 payments / outlet** (dated yesterday, each merchant
+at its own typical ticket rather than one amount for all), **Delete** (the
+registry only — B4B and Worldline keep what they were sent).
+
+```sh
+curl -s -XPOST localhost:8090/api/merchants/batches -d '{"count":50,"max_outlets":3,"country":"","seed":42}'
+curl -s -XPOST localhost:8090/api/merchants/batches/bat_0007/provision
+curl -s -XPOST localhost:8090/api/merchants/batches/bat_0007/trading -d '{"count":5}'
+curl -s -XDELETE localhost:8090/api/merchants/batches/bat_0007
+```
 
 The registry is on disk and B4B's beneficiary store is in memory, so after
 `b4b` restarts an outlet shown here as registered is one B4B has
@@ -553,10 +634,14 @@ console just saves you finding it.
 
 ## Configuration
 
-Three things, kept strictly apart by whether they are **live** or merely
+Four things, kept strictly apart by whether they are **live** or merely
 **documented** — a console that shows a stale value as if it were live will
 send you debugging the wrong thing for an hour:
 
+- **Stand-ins** — the lab's scaffolding for the platform's part, with the
+  live switches: connect or disconnect each, show or hide its card (see
+  *Stand-ins* above). The one section here that changes what the lab does
+  the moment you press it.
 - **Banking Circle notification delivery** — the retry table, rendered
   with both the documented wait and the compressed one, so you can see that
   `time_scale` turns a 48-hour story into a few seconds. Asked of the
@@ -589,6 +674,7 @@ send you debugging the wrong thing for an hour:
 | `CONSOLE_BC_INTERNAL_URL` | `http://127.0.0.1:8095` | Banking Circle's internal bridge, for *Fund safeguarding accounts* |
 | `CONSOLE_UPLOAD_MAX_MB` | `512` | the largest settlement file the console passes on to a platform |
 | `CONSOLE_URL_CLOCK` | `http://127.0.0.1:8096` | the lab clock, for the clock card and `/api/clock` |
+| `CONSOLE_STAND_INS_SHOWN` | `false` | start the stand-ins' cards shown rather than hidden |
 | `CA_FILE`, `CLIENT_CERT`, `CLIENT_KEY` | `keys/certs/…` | mTLS material for Banking Circle |
 | `B4B_JWT_PRIVATE_KEY_PATH`, `B4B_JWT_KEY_ID` | `keys/b4b-keys/private.pem`, `b4b-mock-1` | signs the bearer token for beneficiary registration |
 

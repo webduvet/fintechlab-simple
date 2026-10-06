@@ -254,9 +254,16 @@ func (a *app) pluginUpload(w http.ResponseWriter, r *http.Request) {
 	a.relay(w, client, req)
 }
 
-// pluginDeleteFile removes a file the plugin took: DELETE upload_path?name=.
+// pluginDeleteFile deletes a file: DELETE delete_path?name= when the plugin
+// declares one (any file it marked deletable), otherwise DELETE
+// upload_path?name= (only the files it was handed).
 func (a *app) pluginDeleteFile(w http.ResponseWriter, r *http.Request) {
-	p, path, ok := a.settlementPath(w, r, func(s *console.PluginSettlement) string { return s.UploadPath }, "uploads")
+	p, path, ok := a.settlementPath(w, r, func(s *console.PluginSettlement) string {
+		if s.DeletePath != "" {
+			return s.DeletePath
+		}
+		return s.UploadPath
+	}, "file deletion")
 	if !ok {
 		return
 	}
@@ -269,6 +276,19 @@ func (a *app) pluginDeleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.relay(w, a.client, req)
+}
+
+// pluginReveal asks the platform to open the folder a file is in, in the
+// file manager of the machine it runs on: POST reveal_path {"name"}. Only
+// the platform can — the console is in a container, and a browser may not
+// open a local folder from a web page — so it is forwarded, body and answer
+// untouched.
+func (a *app) pluginReveal(w http.ResponseWriter, r *http.Request) {
+	p, path, ok := a.settlementPath(w, r, func(s *console.PluginSettlement) string { return s.RevealPath }, "opening a file's location")
+	if !ok {
+		return
+	}
+	a.forward(w, r, http.MethodPost, p.BaseURL+path)
 }
 
 // maxPreviewLines is the most a preview asks for: enough to read a file's

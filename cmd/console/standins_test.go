@@ -127,7 +127,18 @@ func TestAHiddenReceiverLeavesTheDiagram(t *testing.T) {
 		t.Error("the platform's own confirmations must stay")
 	}
 	w := call(t, a, http.MethodGet, "/api/flow", "")
-	if strings.Contains(w.Body.String(), `"id":"receiver"`) {
-		t.Error("the hidden receiver is still a participant")
+	var got flowResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range got.Participants {
+		if p.ID == "receiver" {
+			t.Error("the hidden receiver is still a participant")
+		}
+	}
+	// Taken out of the picture is not the same as nothing happening: the
+	// batch that went to it is still counted, under the diagram.
+	if len(got.Hidden) != 1 || got.Hidden[0].ID != "receiver" || got.Hidden[0].Count != 1 {
+		t.Errorf("hidden = %+v, want the receiver with its one batch", got.Hidden)
 	}
 }

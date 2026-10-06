@@ -9,7 +9,7 @@ func TestCatalogueCoversTheVendorsAndLabelsTheSides(t *testing.T) {
 	c := DefaultCatalogue()
 	// The vendor/scaffolding line is the one docs/catalogue.md draws, and
 	// the console is where most people will meet it.
-	for _, id := range []string{"worldline", "b4b", "banking-circle", "aci"} {
+	for _, id := range []string{"worldline", "b4b", "banking-circle", "aci", "bank"} {
 		s, ok := c.Get(id)
 		if !ok {
 			t.Fatalf("%s missing from the catalogue", id)
@@ -21,10 +21,15 @@ func TestCatalogueCoversTheVendorsAndLabelsTheSides(t *testing.T) {
 			t.Errorf("%s does not say how to point it at the real thing", id)
 		}
 	}
-	for _, id := range []string{"settlement", "receiver", "bank"} {
+	for _, id := range []string{"settlement", "receiver", "payment-api", "notifier"} {
 		s, _ := c.Get(id)
 		if s.Kind != KindPlatform {
 			t.Errorf("%s kind = %q, want platform", id, s.Kind)
+		}
+		// A stand-in says what it plays, or nobody can decide whether
+		// they need it.
+		if s.StandIn == nil || s.StandIn.Plays == "" {
+			t.Errorf("%s is not a stand-in that says what it plays", id)
 		}
 	}
 	if _, ok := c.Get("nope"); ok {
@@ -105,5 +110,17 @@ func TestBothVerificationServicesAreListed(t *testing.T) {
 		if s.Kind != KindVerification {
 			t.Errorf("%s has kind %q, want %q", id, s.Kind, KindVerification)
 		}
+	}
+}
+
+// TestStandInsStartHidden: with a platform plugged in they are noise, so
+// their cards start hidden unless CONSOLE_STAND_INS_SHOWN says otherwise.
+func TestStandInsStartHidden(t *testing.T) {
+	if !DefaultCatalogue().Hidden("receiver") {
+		t.Error("receiver starts shown by default")
+	}
+	t.Setenv("CONSOLE_STAND_INS_SHOWN", "true")
+	if DefaultCatalogue().Hidden("receiver") {
+		t.Error("CONSOLE_STAND_INS_SHOWN=true did not show it")
 	}
 }

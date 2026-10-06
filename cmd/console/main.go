@@ -157,6 +157,10 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/merchants", a.listMerchants)
 	mux.HandleFunc("POST /api/merchants", a.createMerchant)
 	mux.HandleFunc("DELETE /api/merchants/{id}", a.deleteMerchant)
+	mux.HandleFunc("POST /api/merchants/batches", a.createBatch)
+	mux.HandleFunc("DELETE /api/merchants/batches/{id}", a.deleteBatch)
+	mux.HandleFunc("POST /api/merchants/batches/{id}/provision", a.provisionBatch)
+	mux.HandleFunc("POST /api/merchants/batches/{id}/trading", a.tradeBatch)
 	mux.HandleFunc("POST /api/merchants/{id}/outlets", a.addOutlet)
 	mux.HandleFunc("POST /api/merchants/{id}/status", a.setMerchantStatus)
 	mux.HandleFunc("POST /api/merchants/{id}/provision", a.provisionMerchant)
@@ -188,6 +192,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("POST /api/plugins/{id}/files", a.pluginUpload)
 	mux.HandleFunc("DELETE /api/plugins/{id}/files", a.pluginDeleteFile)
 	mux.HandleFunc("GET /api/plugins/{id}/files/preview", a.pluginPreview)
+	mux.HandleFunc("POST /api/plugins/{id}/files/reveal", a.pluginReveal)
 
 	sub, err := fs.Sub(webFS, "web")
 	if err != nil {

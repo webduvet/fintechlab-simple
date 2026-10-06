@@ -147,3 +147,54 @@ func TestCreditRefusesNonsense(t *testing.T) {
 		t.Error("a refused credit must not write a ledger entry")
 	}
 }
+
+// TestACreditIsLoggedWhereTheConsoleReadsIt: the far end of a payout is
+// visible — the credits log says what landed, where, and whether the
+// account was opened by it — so the Dashboard's last arrow has something
+// true to count.
+func TestACreditIsLoggedWhereTheConsoleReadsIt(t *testing.T) {
+	credits, ledger := newLogs()
+	mux := routes(newStore(), credits, ledger)
+	r := httptest.NewRequest(http.MethodPost, "/internal/credit", strings.NewReader(
+		`{"iban":"GB00SIMMERCH0000009","holder":"Quiet Coffee","amount":"10.50","currency":"EUR","reference":"SETL-9"}`))
+	mux.ServeHTTP(httptest.NewRecorder(), r)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/sim/activity", nil))
+	var got struct {
+		Logs []struct {
+			Name   string `json:"name"`
+			Events []struct {
+				Op, Summary, Status string
+				Detail              map[string]string
+			} `json:"events"`
+		} `json:"logs"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || len(got.Logs) != 2 || got.Logs[0].Name != "credits" {
+		t.Fatalf("activity = %s", w.Body.String())
+	}
+	evs := got.Logs[0].Events
+	if len(evs) != 1 || evs[0].Op != "credit" || evs[0].Status != "ok" ||
+		evs[0].Summary != "credited 10.50 EUR to GB00SIMMERCH0000009 (Quiet Coffee) — account opened" ||
+		evs[0].Detail["reference"] != "SETL-9" {
+		t.Fatalf("credit event = %+v", evs)
+	}
+}
+
+// TestACreditByAccountNumberOpensThatAccount: a UK merchant is paid by
+// account number and sort code, not IBAN. The account opens under them.
+func TestACreditByAccountNumberOpensThatAccount(t *testing.T) {
+	s := newStore()
+	code, body := post(t, s, `{"account_number":"12345678","financial_institution":"SC112233",
+		"holder":"Quiet Coffee","amount":"12.50","currency":"GBP","reference":"sttl_1"}`)
+	if code != http.StatusOK {
+		t.Fatalf("status %d body %v", code, body)
+	}
+	a := accountFor(s, "SC112233 12345678")
+	if a == nil || a.Balance != "12.50" || a.Holder != "Quiet Coffee" || a.Currency != "GBP" {
+		t.Fatalf("account = %+v", a)
+	}
+	if code, _ := post(t, s, `{"amount":"1.00"}`); code != http.StatusBadRequest {
+		t.Errorf("a credit naming no account = %d, want 400", code)
+	}
+}

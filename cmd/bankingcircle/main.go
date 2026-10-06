@@ -800,11 +800,15 @@ type internalPaymentReq struct {
 	// carried rather than derived: the settlement bank knows where it is
 	// sending money, and without it the receiving bank has nothing to open
 	// an account against.
-	IBAN        string `json:"iban"`
-	Holder      string `json:"holder"`
-	Amount      string `json:"amount"`
-	Currency    string `json:"currency"`
-	ExternalRef string `json:"externalRef"`
+	IBAN   string `json:"iban"`
+	Holder string `json:"holder"`
+	// AccountNumber and FinancialInstitution are the beneficiary's account
+	// when it is not an IBAN (account number and sort code).
+	AccountNumber        string `json:"accountNumber"`
+	FinancialInstitution string `json:"financialInstitution"`
+	Amount               string `json:"amount"`
+	Currency             string `json:"currency"`
+	ExternalRef          string `json:"externalRef"`
 }
 
 // createInternalPayment implements POST /internal/payments — the seam the
@@ -863,10 +867,13 @@ func (a *app) createInternalPayment(w http.ResponseWriter, r *http.Request) {
 		ToAccountID:   to.ID,
 		ToIBAN:        req.IBAN,
 		ToHolder:      req.Holder,
-		Amount:        money.Format(cents),
-		Currency:      ccy,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+
+		ToAccountNumber:        req.AccountNumber,
+		ToFinancialInstitution: req.FinancialInstitution,
+		Amount:                 money.Format(cents),
+		Currency:               ccy,
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}
 	a.engine.Create(p)
 	got, _ := a.engine.Get(p.ID)

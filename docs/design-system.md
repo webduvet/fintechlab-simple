@@ -423,10 +423,17 @@ components on this page and nothing else.
   applies; the empty states are the plugin's `empty_hints`, so the hint
   names what *that* platform would do to fill it.
 - **Settlement files are a table the lab defines.** A plugin that settles
-  declares `settlement.files_path`; the rows, their pills and the *Run* /
-  *Run all together* buttons are this console's component, in the shape
-  the contract fixes. One run per currency at a time is the platform's rule
-  and arrives as its own 409.
+  declares `settlement.files_path`; the rows, their pills and their buttons
+  are this console's component, in the shape the contract fixes. Each row
+  can be run on its own (*Run*); several are run together by ticking them
+  (*Row selection*, below) and pressing *Run N selected* — never by a
+  button that guesses which ones "all" means. One run per currency at a
+  time is the platform's rule: ticking a second file in a currency swaps it
+  for the first, and the platform's own 409 is still the last word. A row
+  the platform marks deletable has *Delete*; a platform that can open a
+  file's folder on its own machine gives every row *Open location*. Each
+  of those columns exists only when the platform declares the path behind
+  it.
 
 ### Dashboard — the home view
 
@@ -538,8 +545,24 @@ they are noise, so each carries two switches:
   action; the pill in the card head says the state.
 - **Hide this card** takes it off its view and out of the diagram, hop and
   all. Contract 10 applies: where the cards were, a note lists what is
-  hidden, by whom, each with a *Show* button. The dashboard's services
-  widget says how many are hidden.
+  hidden and how each is wired, linking to where the switches are; under
+  the diagram, a note names the hidden box and the hops that went with it,
+  with how much they still carried. The dashboard's services widget says
+  how many are hidden.
+- **Hidden by default, switched in one place.** Scaffolding is not what a
+  developer opens the app to see, so its cards start hidden, and the
+  switches for all of them live together in the app's settings view (the
+  console: Configuration → Stand-ins) — one row each: what it plays, its
+  wiring as read just now, *Connect*/*Disconnect*, *Show card*/*Hide
+  card*, and, where a start-up state is set by an environment variable,
+  that variable and the restart it takes. The wiring keeps its own default
+  (connected), so the app still works end to end with nothing plugged in.
+- **Say what it plays.** Every stand-in card and row carries one sentence
+  on the part it stands in for and who calls it — "nothing in the settle
+  path calls it; make demo-payment does" — because that sentence is how a
+  developer decides whether they need it at all. A stand-in that nothing
+  calls still keeps a log, so "has anything called it?" is answered by
+  looking, not by assuming.
 
 A platform can ask for both in its descriptor (`stand_ins`,
 [plugins.md](plugins.md)); the console applies that when the platform
@@ -855,6 +878,29 @@ if a row has a toggle and a probe, that is two columns. Leave the header
 blank where the button says what it is, and label it where a reader would
 otherwise have to click to find out.
 
+### Row selection
+
+When a table's rows can be acted on together — settlement files run in the
+same moment — the first column is a **native checkbox**, `width: 1%`, and
+the action sits under the table as a `.ghost` naming the count: *Run 2
+selected*, beside a *Clear*. Nothing is ticked to begin with.
+
+- **Only rows the action can take get a box.** A row that cannot run has an
+  empty cell, not a disabled box.
+- **A rule about which rows go together is enforced by the boxes**, and
+  said in a hint under the table: ticking a second file in a currency
+  unticks the first, because the platform runs one per currency.
+- **No column at all when there is nothing to choose between** — every
+  runnable row in the same currency means a selection could only ever hold
+  one, and *Run* on the row already does that.
+- The selection is held in app state keyed by the table's owner, like open
+  cards, so a poll's re-render keeps it; a row that stops being runnable
+  drops out of it. A ticked checkbox having focus does **not** pause the
+  poll the way a text field does — there is nothing half-typed to lose.
+
+This is not a toggle (below): a checkbox here selects a row for an action
+named elsewhere, it does not switch anything on.
+
 ### Form
 
 `.form` is a **flex row of `.field` columns**, `align-items: flex-end`, so
@@ -931,6 +977,20 @@ and offers the first 1000; never more, and the head says so: "The first
 100 lines of 214.3 MB — the rest is not read, however long the file is."
 A line cut short says that too. The server reads only as far as it
 returns, so a million-line file previews as fast as a short one.
+
+### Open location
+
+**Open location** on a file's row asks the machine the file is on to show
+it in its own file manager. The console cannot do that itself — it may be
+in a container, and a web page may not open a local folder — so it is a
+call to the platform, which is on that machine. A `.ghost`, never a link:
+`file://` URLs are blocked from an `http` page, and a link that does
+nothing on click is a broken control.
+
+The toast is the platform's answer: the folder it opened, or — on a
+machine with no desktop session — why it could not, with the absolute path
+so the operator can go there by hand. A platform that cannot open folders
+declares no `reveal_path` and its rows carry no button.
 
 ### Note
 

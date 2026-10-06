@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 )
 
@@ -49,11 +51,17 @@ func main() {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		httputilx.WriteJSON(w, 200, map[string]string{"status": "ok", "service": "payment-api"})
 	})
-	mux.HandleFunc("POST /payments", func(w http.ResponseWriter, r *http.Request) {
+	// What reached it, for the console: nothing in the settle path calls
+	// this service, so an empty log is the normal state and a row here is
+	// make demo-payment, the harness or somebody's curl.
+	payLog := activity.New("payments", "Payments received",
+		"Every POST /payments: the ledger move at the business bank and whether the webhook was enqueued at the notifier. Only make demo-payment and the harness call this.")
+	mux.HandleFunc("POST /payments", payLog.Watch("payment.create", summarizePayment, func(w http.ResponseWriter, r *http.Request) {
 		s.create(w, r, client, bankURL, notifierURL)
-	})
+	}))
 	mux.HandleFunc("GET /payments/{id}", s.get)
 	mux.HandleFunc("GET /payments", s.list)
+	mux.HandleFunc("GET /sim/activity", activity.Handler(payLog))
 	log.Printf("payment-api listening on %s bank=%s notifier=%s", addr, bankURL, notifierURL)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
@@ -214,4 +222,20 @@ func logReq(next http.Handler) http.Handler {
 		log.Printf("%s %s", r.Method, r.URL.Path)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// summarizePayment: "payment 25.00 EUR acc_alice → GB00SIM… — accepted, webhook enqueued".
+func summarizePayment(c *activity.Call) (string, map[string]string) {
+	detail := map[string]string{
+		"payment":         c.RespField("id"),
+		"idempotency_key": c.Request.Header.Get("Idempotency-Key"),
+	}
+	sum := fmt.Sprintf("payment %s %s %s → %s", c.JSONField("amount"), c.JSONField("currency"), c.JSONField("debtorAccountId"), c.JSONField("creditorIban"))
+	switch {
+	case c.Status == 200:
+		sum += " — replayed: this Idempotency-Key was seen before"
+	case c.Status == 201:
+		sum += " — " + c.RespField("status") + ", webhook " + c.RespField("notification")
+	}
+	return sum, detail
 }

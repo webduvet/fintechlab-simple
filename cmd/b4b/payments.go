@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/webduvet/fintechlab-simple/internal/activity"
@@ -231,13 +232,7 @@ func (a *app) approveAndBridge(p *b4b.Payment) {
 	bcPaymentID := "bcp_" + shortID()
 	bcResp := map[string]any{"paymentId": bcPaymentID}
 
-	reqBody, err := json.Marshal(map[string]any{
-		"paymentId":   bcPaymentID,
-		"accountId":   bankingcircle.AccountIDFor(p.BeneficiaryID),
-		"amount":      p.Amount.Amount,
-		"currency":    p.CurrencyOfTransfer,
-		"externalRef": p.ExternalRef,
-	})
+	reqBody, err := json.Marshal(a.bridgeBody(p, bcPaymentID))
 	if err != nil {
 		log.Printf("b4b: marshal banking circle bridge request for payment %s: %v", p.ID, err)
 		bcResp["error"] = err.Error()
@@ -317,3 +312,39 @@ func summarizePayment(c *activity.Call) (string, map[string]string) {
 	}
 	return summary, detail
 }
+
+// bridgeBody is what B4B hands Banking Circle for an approved payout —
+// including where the money is going, so Banking Circle can pass it on to
+// the beneficiary's own bank: the creditor account the payout named, or
+// failing that the account the beneficiary was registered with. An IBAN
+// travels as one; anything else as an account number and institution.
+func (a *app) bridgeBody(p *b4b.Payment, bcPaymentID string) map[string]any {
+	acct, inst, holder := p.CreditorAccount.Account, p.CreditorAccount.FinancialInstitution, p.CreditorName
+	if acct == "" {
+		ben := a.beneficiaries.Get(p.BeneficiaryID)
+		acct, inst = ben.AccountNumber, ben.FinancialInstitution
+		if holder == "" {
+			holder = ben.AccountName
+		}
+	}
+	body := map[string]any{
+		"paymentId":   bcPaymentID,
+		"accountId":   bankingcircle.AccountIDFor(p.BeneficiaryID),
+		"amount":      p.Amount.Amount,
+		"currency":    p.CurrencyOfTransfer,
+		"externalRef": p.ExternalRef,
+		"holder":      holder,
+	}
+	if looksLikeIBAN(acct) {
+		body["iban"] = strings.ReplaceAll(acct, " ", "")
+	} else {
+		body["accountNumber"], body["financialInstitution"] = acct, inst
+	}
+	return body
+}
+
+// ibanShape is an IBAN's outline: country, check digits, then the account.
+// Shape only — the lab's GB00SIM… accounts pass it and fail any real check.
+var ibanShape = regexp.MustCompile(`^[A-Z]{2}[0-9]{2}[A-Z0-9]{8,30}$`)
+
+func looksLikeIBAN(s string) bool { return ibanShape.MatchString(strings.ReplaceAll(s, " ", "")) }

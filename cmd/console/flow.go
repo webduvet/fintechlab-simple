@@ -86,6 +86,18 @@ type flowResponse struct {
 	Run          any               `json:"run"`
 	Report       []flowStat        `json:"report"`
 	Errors       map[string]string `json:"errors,omitempty"`
+	// Hidden is what the diagram leaves out because a stand-in's card is
+	// hidden, and how much traffic went to it all the same: an arrow taken
+	// away is a silence, and a silence has to say why (design-system.md,
+	// contract 10).
+	Hidden []flowHidden `json:"hidden,omitempty"`
+}
+
+type flowHidden struct {
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Steps []string `json:"steps"`
+	Count int      `json:"count"`
 }
 
 // flowLog is one log as a vendor serves it, pared to what is needed here.
@@ -216,7 +228,7 @@ func (a *app) readFlow(ctx context.Context) flowInputs {
 	// The platform is whichever registered plugin settles. With none, the
 	// diagram still draws the vendors' side of whatever reached them.
 	plat, _, hasPlat := a.cat.SettlementPlugin()
-	ids := []string{"worldline", "b4b", "banking-circle"}
+	ids := []string{"worldline", "b4b", "banking-circle", "bank"}
 	if hasPlat {
 		ids = append(ids, plat.ID)
 	}
@@ -296,10 +308,23 @@ func (a *app) flow(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Report = flowReport(in.at, in.runner, in.isLab)
 	// A hidden stand-in is hidden here too, with the hop into it: the
-	// developer said the receiver is not part of their picture.
+	// developer said the receiver is not part of their picture. What still
+	// went to it is counted under the diagram rather than dropped.
 	if a.cat.Hidden("receiver") {
+		into := func(s flowStep) bool { return s.To == "receiver" || s.From == "receiver" }
+		h := flowHidden{ID: "receiver", Steps: []string{}}
+		if svc, ok := a.cat.Get("receiver"); ok {
+			h.Name = svc.Name
+		}
+		for _, st := range out.Steps {
+			if into(st) {
+				h.Steps = append(h.Steps, st.Label)
+				h.Count += st.Count
+			}
+		}
+		out.Hidden = append(out.Hidden, h)
 		out.Participants = without(out.Participants, func(p flowParticipant) bool { return p.ID == "receiver" })
-		out.Steps = without(out.Steps, func(s flowStep) bool { return s.To == "receiver" || s.From == "receiver" })
+		out.Steps = without(out.Steps, into)
 	}
 	httputilx.WriteJSON(w, 200, out)
 }
@@ -407,7 +432,14 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 	wl := at("worldline")
 	b4b := at("b4b")
 	bc := at("banking-circle")
+	bank := at("bank")
 	labBatches, _ := splitEvents(bc.find("notifications", "notification"), isLab)
+	opened := 0
+	for _, e := range bank.find("credits", "credit") {
+		if e.Detail["opened"] == "true" {
+			opened++
+		}
+	}
 
 	return []flowParticipant{
 		{
@@ -447,6 +479,16 @@ func (a *app) flowParticipants(at func(string) *flowLogs, errs map[string]string
 			},
 		},
 		{
+			// The far end of the money: the merchants' own bank, credited by
+			// Banking Circle once a payout is processed.
+			ID: "bank", Label: label("bank", "Business bank"), Role: "merchants' bank",
+			Kind: "vendor", Status: state("bank"), Error: errs["bank"],
+			Stats: []flowStat{
+				{Label: "payouts credited", Value: itoa(countOK(bank.find("credits", "credit")))},
+				{Label: "accounts opened", Value: itoa(opened)},
+			},
+		},
+		{
 			ID: "receiver", Label: label("receiver", "Webhook receiver"), Role: "notification sink",
 			Kind: "platform", Status: state("receiver"),
 			Stats: []flowStat{
@@ -460,6 +502,7 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 	wl := at("worldline")
 	b4b := at("b4b")
 	bc := at("banking-circle")
+	bank := at("bank")
 	labBatches, platformBatches := splitEvents(bc.find("notifications", "notification"), isLab)
 
 	step := func(id, from, to, label, note, source string, multi bool, evs []activity.Event) flowStep {
@@ -505,6 +548,9 @@ func flowSteps(at func(string) *flowLogs, runner map[string]any, isLab func(acti
 		step("bridge", "b4b", "banking-circle",
 			"bridge approved payouts", "B4B moves the money at the bank", "banking-circle:payments", true,
 			bc.find("payments", "payment.create")),
+		step("land", "banking-circle", "bank",
+			"payouts credited", "a processed payout arrives at the merchant's own bank, by IBAN — the end of the money's path",
+			"bank:credits", true, bank.find("credits", "credit")),
 		step("callbacks", "b4b", "platform",
 			"lifecycle callbacks", "SUBMITTED → IN_PROGRESS happens here", "b4b:callbacks", true,
 			b4b.find("callbacks", "callback")),
@@ -600,6 +646,7 @@ func flowReport(at func(string) *flowLogs, runner map[string]any, isLab func(act
 	b4b := at("b4b")
 	bc := at("banking-circle")
 	wl := at("worldline")
+	bank := at("bank")
 	stages := runStages(runner)
 	batches := bc.find("notifications", "notification")
 	_, platformBatches := splitEvents(batches, isLab)
@@ -644,6 +691,7 @@ func flowReport(at func(string) *flowLogs, runner map[string]any, isLab func(act
 	}
 	stats = append(stats,
 		flowStat{Label: "payouts at the bank", Value: itoa(len(bc.find("payments", "payment.create")))},
+		flowStat{Label: "credited to merchants' banks", Value: itoa(countOK(bank.find("credits", "credit")))},
 		flowStat{Label: "callbacks delivered", Value: itoa(countOK(b4b.find("callbacks", "callback")))},
 		flowStat{Label: "notification batches", Value: itoa(len(batches))},
 		flowStat{Label: "confirmations to the platform", Value: itoa(len(platformBatches))},

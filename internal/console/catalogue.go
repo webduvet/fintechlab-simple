@@ -112,6 +112,7 @@ func (c *Catalogue) Get(id string) (Service, bool) {
 // be run from a shell, or pointed at a real vendor host), so the catalogue
 // describes the *shape* and the environment says where it currently lives.
 func DefaultCatalogue() *Catalogue {
+	shown := standInsShown()
 	svcs := []Service{
 		{
 			ID: "worldline", Name: "Worldline", Kind: KindVendor,
@@ -233,6 +234,28 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
+			// The far end of every payout. Banking Circle credits a
+			// processed payout here by IBAN (BANK_CREDIT_URL), and the
+			// account opens on first sight, as a beneficiary bank's would.
+			ID: "bank", Name: "Business bank", Kind: KindVendor,
+			Summary:    "The merchants' own bank, where a payout lands: Banking Circle credits every processed payout here by IBAN, and the outlet's account opens the first time money arrives for it. Also the in-memory ledger make demo-payment moves money in. Fake GB00SIM… IBANs throughout.",
+			BaseURL:    "http://127.0.0.1:8081",
+			HealthPath: "/health",
+			Activity:   "/sim/activity",
+			Ports:      []string{"8081/http"},
+			Transport:  "HTTP",
+			Auth:       "none (lab rail; Banking Circle's allowlist governs who may credit it)",
+			SwapFor:    "Nothing to swap: a merchant's real bank is not something a platform integrates with. Banking Circle stops crediting it when BANK_CREDIT_URL is empty.",
+			Endpoints: []Endpoint{
+				{"POST", "/internal/credit", "a payout arriving over the rail, by IBAN; opens the account on first sight"},
+				{"GET|POST", "/accounts", "accounts, and open one"},
+				{"GET", "/accounts/{id}", "by id or IBAN"},
+				{"POST", "/transfers", "move money between two accounts (payment-api's call)"},
+				{"GET", "/ledger", "every entry"},
+				{"GET", "/sim/activity", "credits received, transfers"},
+			},
+		},
+		{
 			ID: "verify", Name: "AML decision", Kind: KindVerification,
 			Summary:    "Stub verification/compliance service gating a payout. Always approves unless an id is force-declined.",
 			BaseURL:    "http://127.0.0.1:8088",
@@ -292,7 +315,12 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "settlement", Name: "Settlement (platform stand-in)", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
+			ID: "settlement", Name: "Settlement (platform stand-in)", Kind: KindPlatform,
+			StandIn: &StandInInfo{
+				Shown:     shown,
+				Plays:     "your settle pipeline: pulls Worldline's file on a timer and pays each outlet through B4B at the daily cutoff. Wanted only when no platform is plugged in — otherwise its payouts at B4B are payouts nobody made.",
+				StartsOff: "SETTLEMENT_CONNECTED=false on the settlement service",
+			},
 			Summary:    "Scaffolding for your platform: pulls Worldline's file over real SFTP+PGP, decrypts, parses, splits it per MID and pays each outlet through B4B.",
 			BaseURL:    "http://127.0.0.1:8083",
 			HealthPath: "/health",
@@ -315,7 +343,12 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "receiver", Name: "Webhook receiver (platform stand-in)", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
+			ID: "receiver", Name: "Webhook receiver (platform stand-in)", Kind: KindPlatform,
+			StandIn: &StandInInfo{
+				Shown:     shown,
+				Plays:     "your webhook listener: Banking Circle's seeded subscription and ACI deliver here. Wanted only when nothing of yours subscribes — otherwise it is a second listener taking the same batches.",
+				StartsOff: "ACI_WEBHOOK_CONNECTED=false on aci; the Banking Circle subscription is switched live through the bank's own API",
+			},
 			Summary:    "Stand-in for your own listener: verifies the HMAC scheme, and captures raw bodies for wire formats it holds no key for.",
 			BaseURL:    "https://127.0.0.1:8443",
 			HealthPath: "/health",
@@ -329,37 +362,39 @@ func DefaultCatalogue() *Catalogue {
 			},
 		},
 		{
-			ID: "payment-api", Name: "Payment API", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
-			Summary: "Generic payment facade with Idempotency-Key. Scaffolding, not vendor-shaped.",
-			BaseURL: "http://127.0.0.1:8080", HealthPath: "/health",
+			// Not on the settle path: payment-api, the business bank's
+			// transfers and the notifier make the lab's oldest scenario,
+			// `make demo-payment` — payment, ledger move, signed webhook,
+			// stored event — which the harness still runs.
+			ID: "payment-api", Name: "Payment API (demo stand-in)", Kind: KindPlatform,
+			StandIn: &StandInInfo{
+				Shown: shown,
+				Plays: "a payment facade of the platform's own: POST /payments with an Idempotency-Key moves money between two accounts at the business bank and enqueues a signed webhook at the notifier. Nothing in the settle path calls it; make demo-payment and the harness's first scenario do.",
+			},
+			Summary: "Generic payment facade with Idempotency-Key: one POST /payments moves money at the business bank and enqueues a signed webhook at the notifier. Only make demo-payment and the harness call it — the settle path never does.",
+			BaseURL: "http://127.0.0.1:8080", HealthPath: "/health", Activity: "/sim/activity",
 			Ports: []string{"8080/http"}, Transport: "HTTP", Auth: "none (lab)",
 			SwapFor: "-- generic shape, not a vendor.",
 			Endpoints: []Endpoint{
-				{"POST", "/payments", ""}, {"GET", "/payments", ""},
+				{"POST", "/payments", "Idempotency-Key header; moves the ledger, then enqueues the webhook"},
+				{"GET", "/payments", ""}, {"GET", "/payments/{id}", ""},
+				{"GET", "/sim/activity", "payments received"},
 			},
 		},
 		{
-			ID: "bank", Name: "Core ledger", Kind: KindPlatform,
-			Summary: "In-memory ledger with obviously fake IBANs. The sim bank behind the Banks view.",
-			BaseURL: "http://127.0.0.1:8081", HealthPath: "/health",
-			Ports: []string{"8081/http"}, Transport: "HTTP", Auth: "none (lab)",
-			SwapFor: "-- generic shape, not a vendor.",
-			Endpoints: []Endpoint{
-				{"GET|POST", "/accounts", ""},
-				{"GET", "/accounts/{id}", ""},
-				{"POST", "/transfers", ""},
-				{"GET", "/ledger", ""},
-				{"POST", "/internal/credit", "money arriving from outside; opens the account on first sight"},
+			ID: "notifier", Name: "Notifier (demo stand-in)", Kind: KindPlatform,
+			StandIn: &StandInInfo{
+				Shown: shown,
+				Plays: "a webhook worker of the platform's own: HMAC-signs what payment-api enqueues and delivers it to the receiver, with retries and a destination allowlist. Nothing in the settle path calls it; make demo-payment does.",
 			},
-		},
-		{
-			ID: "notifier", Name: "Notifier", Kind: KindPlatform, StandIn: &StandInInfo{Shown: true},
-			Summary: "Signed webhook worker with retries and an allowlist.",
-			BaseURL: "http://127.0.0.1:8082", HealthPath: "/health",
+			Summary: "Signed webhook worker: HMAC-signs what payment-api enqueues and POSTs it to the receiver, with retries and an allowlist. Only make demo-payment and the harness call it — the settle path never does.",
+			BaseURL: "http://127.0.0.1:8082", HealthPath: "/health", Activity: "/sim/activity",
 			Ports: []string{"8082/http"}, Transport: "HTTP", Auth: "HMAC out",
 			SwapFor: "-- generic shape, not a vendor.",
 			Endpoints: []Endpoint{
+				{"POST", "/enqueue", "what payment-api calls"},
 				{"GET", "/subscriptions", ""}, {"GET", "/deliveries", ""},
+				{"GET", "/sim/activity", "deliveries and their attempts"},
 			},
 		},
 	}

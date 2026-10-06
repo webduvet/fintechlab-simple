@@ -155,6 +155,7 @@ func (a *app) listMerchants(w http.ResponseWriter, r *http.Request) {
 		"distributors":       a.reg.Distributors(),
 		"partners":           a.reg.Partners(),
 		"merchants":          a.reg.Merchants(),
+		"batches":            a.reg.Batches(),
 		"countries":          console.Countries(),
 		"provisioning_ready": a.prov.Ready(),
 		"provisioning_error": a.provErr,
@@ -173,6 +174,136 @@ func (a *app) createMerchant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httputilx.WriteJSON(w, 201, m)
+}
+
+// --- batches: many merchants at once (internal/console/batch.go) --------
+
+func (a *app) createBatch(w http.ResponseWriter, r *http.Request) {
+	var p console.BatchParams
+	if err := httputilx.ReadJSON(r, &p); err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	b, ms, err := a.reg.AddBatch(p)
+	if err != nil {
+		httputilx.Error(w, statusFor(err), err.Error())
+		return
+	}
+	outlets := 0
+	for _, m := range ms {
+		outlets += len(m.Outlets)
+	}
+	httputilx.WriteJSON(w, 201, map[string]any{
+		"batch": b, "merchants": len(ms), "outlets": outlets,
+		"note": fmt.Sprintf("%d merchants, %d outlets — seed %d makes the same names again.", len(ms), outlets, b.Seed),
+	})
+}
+
+func (a *app) deleteBatch(w http.ResponseWriter, r *http.Request) {
+	n, err := a.reg.DeleteBatch(r.PathValue("id"))
+	if err != nil {
+		httputilx.Error(w, statusFor(err), err.Error())
+		return
+	}
+	httputilx.WriteJSON(w, 200, map[string]any{"deleted": r.PathValue("id"), "merchants": n})
+}
+
+// batchTimeout is how long a whole batch may take at a vendor: one call per
+// outlet (B4B) or per merchant (Worldline), a few hundred of them.
+const batchTimeout = 2 * time.Minute
+
+// batchOutcome is a batch action's answer: per merchant, because a partial
+// run is a normal outcome and the ones that failed are the ones to see
+// (design-system.md, contract 4).
+type batchOutcome struct {
+	Merchants int      `json:"merchants"`
+	Done      int      `json:"done"`
+	Failed    []string `json:"failed,omitempty"`
+	Note      string   `json:"note"`
+}
+
+// provisionBatch registers every outlet of a batch at B4B.
+func (a *app) provisionBatch(w http.ResponseWriter, r *http.Request) {
+	ids, err := a.reg.BatchMerchantIDs(r.PathValue("id"))
+	if err != nil {
+		httputilx.Error(w, statusFor(err), err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), batchTimeout)
+	defer cancel()
+	out := batchOutcome{Merchants: len(ids)}
+	outlets, failedOutlets := 0, 0
+	for _, id := range ids {
+		res, err := a.prov.ProvisionMerchant(ctx, id)
+		if err != nil {
+			if errors.Is(err, console.ErrUnsupported) || !a.prov.Ready() {
+				httputilx.Error(w, statusFor(err), err.Error())
+				return
+			}
+			out.Failed = append(out.Failed, id+": "+err.Error())
+			continue
+		}
+		bad := 0
+		for _, o := range res {
+			outlets++
+			if o.Error != "" {
+				bad++
+				failedOutlets++
+			}
+		}
+		if bad > 0 {
+			out.Failed = append(out.Failed, fmt.Sprintf("%s: %d of %d outlet(s) refused — %s", id, bad, len(res), firstError(res)))
+		} else {
+			out.Done++
+		}
+	}
+	out.Note = fmt.Sprintf("%d of %d merchants on the payout rail, %d outlet(s) registered at B4B", out.Done, out.Merchants, outlets-failedOutlets)
+	httputilx.WriteJSON(w, 200, out)
+}
+
+func firstError(res []console.OutletProvision) string {
+	for _, o := range res {
+		if o.Error != "" {
+			return o.Error
+		}
+	}
+	return ""
+}
+
+// tradeBatch seeds card payments at Worldline for every outlet of a batch,
+// each merchant at its own typical ticket rather than one amount for all.
+func (a *app) tradeBatch(w http.ResponseWriter, r *http.Request) {
+	var tp console.TradeParams
+	if err := httputilx.ReadJSON(r, &tp); err != nil {
+		httputilx.Error(w, 400, err.Error())
+		return
+	}
+	ids, err := a.reg.BatchMerchantIDs(r.PathValue("id"))
+	if err != nil {
+		httputilx.Error(w, statusFor(err), err.Error())
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), batchTimeout)
+	defer cancel()
+	out := batchOutcome{Merchants: len(ids)}
+	accepted, date := 0, ""
+	for _, id := range ids {
+		p := tp
+		if p.AmountCents <= 0 {
+			p.AmountCents = console.TradeAmountFor(id)
+		}
+		n, d, err := a.prov.SeedTrading(ctx, id, p)
+		date = d
+		if err != nil {
+			out.Failed = append(out.Failed, id+": "+err.Error())
+			continue
+		}
+		accepted += n
+		out.Done++
+	}
+	out.Note = fmt.Sprintf("%d card payment(s) at Worldline for %d of %d merchants, dated %s — Worldline settles T+1: run its morning cycle to have them in a settlement file.",
+		accepted, out.Done, out.Merchants, date)
+	httputilx.WriteJSON(w, 201, out)
 }
 
 func (a *app) deleteMerchant(w http.ResponseWriter, r *http.Request) {

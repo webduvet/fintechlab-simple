@@ -375,6 +375,10 @@ func flowPeers(t *testing.T) *httptest.Server {
 				{"seq":3,"at":"2026-09-18T22:05:01Z","op":"report.intraday","summary":"intraday report 2026-09-18, page 1 → 6 row(s)","status":"ok"},
 				{"seq":2,"at":"2026-09-18T22:05:00Z","op":"report.intraday","summary":"intraday report refused — PageSize","status":"warn"},
 				{"seq":1,"at":"2026-09-18T22:04:00Z","op":"report.rejection","summary":"rejection report 2026-09-18 → 0 row(s)","status":"ok"}]}]}`,
+		"/bank/sim/activity": `{"logs":[{"name":"credits","total":2,"events":[
+			{"seq":2,"at":"2026-09-18T21:03:03Z","op":"credit","summary":"credited 951.98 EUR to GB00SIMM1","status":"ok"},
+			{"seq":1,"at":"2026-09-18T21:03:02Z","op":"credit","summary":"credited 12.00 EUR to GB00SIMM2 — account opened","status":"ok","detail":{"opened":"true"}}]},
+			{"name":"ledger","total":0,"events":[]}]}`,
 		"/runner/sim/activity": `{"logs":[{"name":"runs","total":4,"events":[]}]}`,
 		"/runner/status": `{"status":"ok","running_now":null,"last_run":{"id":"run-1","root":"r1",
 			"payouts":{"count":6,"total":"27698.78","statuses":{"SUCCESS":2,"IN_PROGRESS":4}},
@@ -404,6 +408,7 @@ func flowApp(t *testing.T, peers *httptest.Server) *app {
 		{ID: "worldline", Name: "Worldline", Kind: console.KindVendor, BaseURL: peers.URL + "/worldline", Activity: "/sim/activity", HealthPath: "/health"},
 		{ID: "b4b", Name: "B4B Payments", Kind: console.KindVendor, BaseURL: peers.URL + "/b4b", Activity: "/sim/activity", HealthPath: "/health"},
 		{ID: "banking-circle", Name: "Banking Circle", Kind: console.KindVendor, BaseURL: peers.URL + "/bc", Activity: "/sim/activity", HealthPath: "/health"},
+		{ID: "bank", Name: "Business bank", Kind: console.KindVendor, BaseURL: peers.URL + "/bank", Activity: "/sim/activity", HealthPath: "/health"},
 		{ID: "receiver", Name: "Webhook receiver", Kind: console.KindPlatform, BaseURL: peers.URL, HealthPath: "/health"},
 	}
 	a.bc.BaseURL = peers.URL + "/bc"
@@ -480,6 +485,7 @@ func TestFlowCountsWhatEachHopActuallyCarried(t *testing.T) {
 		{"fund", 1, "platform", "banking-circle"}, // payment.incoming only
 		{"callbacks", 2, "b4b", "platform"},
 		{"notify", 1, "banking-circle", "receiver"},
+		{"land", 2, "banking-circle", "bank"},      // the credits at the merchants' bank
 		{"recon", 2, "banking-circle", "platform"}, // intraday report reads only, refused one included
 	} {
 		got := steps[tc.id]
@@ -675,7 +681,7 @@ func TestFlowSurvivesAVendorBeingDown(t *testing.T) {
 	if got.Errors["b4b"] == "" {
 		t.Error("the unreachable vendor should be named in errors")
 	}
-	if len(got.Participants) != 5 || len(got.Steps) != 11 {
+	if len(got.Participants) != 6 || len(got.Steps) != 12 {
 		t.Errorf("the diagram should still be whole: %d participants, %d steps",
 			len(got.Participants), len(got.Steps))
 	}

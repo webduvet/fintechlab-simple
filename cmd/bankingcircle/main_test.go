@@ -1582,3 +1582,34 @@ func TestReconciliationReadsAreLogged(t *testing.T) {
 		t.Errorf("intraday detail = %v, want the properties asked for", events[3].Detail)
 	}
 }
+
+// TestAPayoutWithoutAnIBANStillReachesTheBeneficiaryBank: most of a
+// payfac's merchants are paid by account number and sort code. A payout
+// carrying those is credited at the receiving bank under them — before,
+// only an IBAN would do, and no platform payout ever carried one, so the
+// last hop of the money's path never happened.
+func TestAPayoutWithoutAnIBANStillReachesTheBeneficiaryBank(t *testing.T) {
+	got := make(chan map[string]string, 1)
+	bank := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		got <- body
+		w.WriteHeader(200)
+	}))
+	defer bank.Close()
+	a := newTestApp(t)
+	a.bankCreditURL = bank.URL + "/internal/credit"
+	a.creditBeneficiaryBank(bankingcircle.Payment{
+		ID: "bcp_1", Amount: "12.50", Currency: "GBP", ToHolder: "Quiet Coffee",
+		ToAccountNumber: "12345678", ToFinancialInstitution: "SC112233", SettlementID: "sttl_1",
+	})
+	select {
+	case b := <-got:
+		if b["account_number"] != "12345678" || b["financial_institution"] != "SC112233" || b["iban"] != "" ||
+			b["amount"] != "12.50" || b["holder"] != "Quiet Coffee" || b["reference"] != "sttl_1" {
+			t.Fatalf("the beneficiary bank was sent %v", b)
+		}
+	default:
+		t.Fatal("the beneficiary bank was not credited")
+	}
+}

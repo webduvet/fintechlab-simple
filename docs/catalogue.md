@@ -19,7 +19,8 @@ the harness can prove each vendor hop is really connected.**
 | **aci** | vendor | — it is a *sender*; point `ACI_WEBHOOK_TARGET_URL` at your listener |
 | **settlement** | scaffolding | replacing it with your own platform |
 | **receiver** | scaffolding | pointing the vendors' webhook URLs at your own listener |
-| **bank**, **payment-api**, **notifier** | scaffolding | — generic shapes, not vendor-specific |
+| **bank** (*business bank*) | the far end | — the merchants' own bank: Banking Circle credits each processed payout here. Nothing to swap; a platform never calls it |
+| **payment-api**, **notifier** | scaffolding (demo stand-ins) | — generic shapes, not vendor-specific; only `make demo-payment` and the harness call them |
 | **verify**, **verification** | verification | real KYC/AML vendors: Creditsafe, iban.com, KYC6, LexisNexis |
 | **clock** | platform | nothing — the lab's business clock; vendors and a registered platform follow it ([plugins.md](plugins.md#the-clock)) |
 | *a registered platform* | platform (plugin) | nothing — it *is* the platform; it registers its own card ([plugins.md](plugins.md)) |
@@ -34,7 +35,7 @@ your platform, not a model of it.
 | Service | What it fakes | What's stubbed | Still vendor-shaped |
 | --- | --- | --- | --- |
 | **ca** | Private CA + server certs (SAN `receiver`, `banking-circle`, `localhost`, plus `.test` demo domains — see `docs/local-domains.md`) + client cert | No CRL/OCSP, no HSM | Same *job* as a corporate PKI issuing mTLS material |
-| **bank** | Ledger, balances, fake IBANs, transfers | No rails, no FX, no reserved funds, memory only | Internal core-ledger call that a payment API would make |
+| **bank** *(business bank)* | The beneficiary's bank: takes each payout Banking Circle passes on (`POST /internal/credit`, by IBAN or account number + sort code) and opens the outlet's account on first sight; also a ledger with balances and transfers for `make demo-payment`. Logs *Payouts credited* and *Accounts and transfers* at `/sim/activity` | No rails, no FX, no reserved funds, memory only | The money's last hop, observable — and the internal core-ledger call a payment API would make |
 | **payment-api** | `POST /payments` + `Idempotency-Key`, `GET /payments/{id}` | No authN/Z, no cut-off, no batch files | Generic payment facade (not B4B-shaped — see B4B below) |
 | **notifier** | Signed webhook POST, retries, allowlist, failed subscription | No signed-cert pinning, no multi-tenant routing | PSP webhook worker |
 | **receiver** *(scaffolding)* | HTTPS endpoint that verifies HMAC and stores events, plus a raw unvalidated capture sink (`/raw-events`) for wire formats it holds no key for (Banking Circle's AES-GCM, ACI's). Bodies are retained (bounded, base64) so a holder of the key can decrypt a capture and assert on what was delivered | No replay store beyond one process, no business handler, no keys of its own | Stand-in for your own webhook listener |

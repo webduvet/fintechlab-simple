@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf16"
 
@@ -387,24 +388,32 @@ func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 	if a.bankCreditURL == "" {
 		return
 	}
-	// The rail names the beneficiary by IBAN. Without one there is nothing
-	// for the receiving bank to open an account against, and inventing an
-	// identifier here would put money into an account nobody can reconcile.
+	// The rail names the beneficiary by IBAN, or by account number and
+	// sort code where there is none — how a UK merchant is paid. Without
+	// either there is nothing for the receiving bank to open an account
+	// against, and inventing an identifier here would put money into an
+	// account nobody can reconcile.
 	iban := p.ToIBAN
-	if iban == "" {
-		log.Printf("banking-circle: payment %s has no beneficiary IBAN; not crediting the beneficiary bank", p.ID)
+	if iban == "" && p.ToAccountNumber == "" {
+		log.Printf("banking-circle: payment %s names no beneficiary account (IBAN or account number); not crediting the beneficiary bank", p.ID)
 		return
+	}
+	beneficiary := iban
+	if beneficiary == "" {
+		beneficiary = strings.TrimSpace(p.ToFinancialInstitution + " " + p.ToAccountNumber)
 	}
 	if err := a.list.Allowed(a.bankCreditURL); err != nil {
 		log.Printf("banking-circle: beneficiary bank %s not allowlisted: %v", a.bankCreditURL, err)
 		return
 	}
 	body, err := json.Marshal(map[string]any{
-		"iban":      iban,
-		"holder":    p.ToHolder,
-		"amount":    p.Amount,
-		"currency":  p.Currency,
-		"reference": firstNonEmpty(p.Reference, p.SettlementID, p.ID),
+		"iban":                  iban,
+		"account_number":        p.ToAccountNumber,
+		"financial_institution": p.ToFinancialInstitution,
+		"holder":                p.ToHolder,
+		"amount":                p.Amount,
+		"currency":              p.Currency,
+		"reference":             firstNonEmpty(p.Reference, p.SettlementID, p.ID),
 	})
 	if err != nil {
 		log.Printf("banking-circle: credit payload for %s: %v", p.ID, err)
@@ -429,7 +438,7 @@ func (a *app) creditBeneficiaryBank(p bankingcircle.Payment) {
 		log.Printf("banking-circle: beneficiary bank returned %s for payment %s", resp.Status, p.ID)
 		return
 	}
-	log.Printf("banking-circle: %s %s credited to %s at the beneficiary bank", p.Amount, p.Currency, iban)
+	log.Printf("banking-circle: %s %s credited to %s at the beneficiary bank", p.Amount, p.Currency, beneficiary)
 }
 
 func firstNonEmpty(vals ...string) string {

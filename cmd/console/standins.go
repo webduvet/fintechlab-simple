@@ -43,6 +43,10 @@ type standInView struct {
 	Shown bool   `json:"shown"`
 	SetBy string `json:"set_by,omitempty"`
 	SetAt string `json:"set_at,omitempty"`
+	// Plays and StartsOff are the catalogue's: what it stands in for, and
+	// how to have it start disconnected (a restart).
+	Plays     string `json:"plays,omitempty"`
+	StartsOff string `json:"starts_off,omitempty"`
 	// State sums the connections up: connected, disconnected, partial
 	// (some of each), unwired (nothing reaches it) or unknown (a read
 	// failed).
@@ -206,6 +210,7 @@ func (a *app) standIn(ctx context.Context, id string) standInView {
 	v := standInView{ID: id, Name: svc.Name, Shown: true, Connections: []standInConn{}}
 	if svc.StandIn != nil {
 		v.Shown, v.SetBy = svc.StandIn.Shown, svc.StandIn.SetBy
+		v.Plays, v.StartsOff = svc.StandIn.Plays, svc.StandIn.StartsOff
 		if !svc.StandIn.SetAt.IsZero() {
 			v.SetAt = svc.StandIn.SetAt.Format(time.RFC3339)
 		}

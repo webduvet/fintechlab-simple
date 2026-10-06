@@ -82,18 +82,20 @@ type Outlet struct {
 
 // Merchant is the customer.
 type Merchant struct {
-	ID          string    `json:"id"`
-	PartnerID   string    `json:"partner_id,omitempty"`
-	LegalName   string    `json:"legal_name"`
-	TradingName string    `json:"trading_name,omitempty"`
-	Country     string    `json:"country"`
-	Currency    string    `json:"currency"`
-	MCC         string    `json:"mcc"`
-	Address     Address   `json:"address"`
-	Email       string    `json:"email"`
-	Status      string    `json:"status"` // draft | active | suspended
-	Outlets     []Outlet  `json:"outlets"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID          string  `json:"id"`
+	PartnerID   string  `json:"partner_id,omitempty"`
+	LegalName   string  `json:"legal_name"`
+	TradingName string  `json:"trading_name,omitempty"`
+	Country     string  `json:"country"`
+	Currency    string  `json:"currency"`
+	MCC         string  `json:"mcc"`
+	Address     Address `json:"address"`
+	Email       string  `json:"email"`
+	Status      string  `json:"status"` // draft | active | suspended
+	// Batch is the batch it was made in, when it was (batch.go).
+	Batch     string    `json:"batch,omitempty"`
+	Outlets   []Outlet  `json:"outlets"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Registry holds the whole hierarchy, persisted to one JSON file. A file
@@ -109,6 +111,7 @@ type Registry struct {
 	distributors map[string]*Distributor
 	partners     map[string]*Partner
 	merchants    map[string]*Merchant
+	batches      map[string]*Batch
 }
 
 type registryFile struct {
@@ -116,6 +119,7 @@ type registryFile struct {
 	Distributors []*Distributor `json:"distributors"`
 	Partners     []*Partner     `json:"partners"`
 	Merchants    []*Merchant    `json:"merchants"`
+	Batches      []*Batch       `json:"batches,omitempty"`
 }
 
 var (
@@ -137,6 +141,7 @@ func NewRegistry(path string) (*Registry, error) {
 		distributors: map[string]*Distributor{},
 		partners:     map[string]*Partner{},
 		merchants:    map[string]*Merchant{},
+		batches:      map[string]*Batch{},
 	}
 	if path != "" {
 		if err := r.load(); err != nil {
@@ -172,6 +177,9 @@ func (r *Registry) load() error {
 	for _, m := range f.Merchants {
 		r.merchants[m.ID] = m
 	}
+	for _, b := range f.Batches {
+		r.batches[b.ID] = b
+	}
 	return nil
 }
 
@@ -191,9 +199,13 @@ func (r *Registry) save() error {
 	for _, m := range r.merchants {
 		f.Merchants = append(f.Merchants, m)
 	}
+	for _, b := range r.batches {
+		f.Batches = append(f.Batches, b)
+	}
 	sort.Slice(f.Distributors, func(i, j int) bool { return f.Distributors[i].ID < f.Distributors[j].ID })
 	sort.Slice(f.Partners, func(i, j int) bool { return f.Partners[i].ID < f.Partners[j].ID })
 	sort.Slice(f.Merchants, func(i, j int) bool { return f.Merchants[i].ID < f.Merchants[j].ID })
+	sort.Slice(f.Batches, func(i, j int) bool { return f.Batches[i].ID < f.Batches[j].ID })
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err

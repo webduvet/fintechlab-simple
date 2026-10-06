@@ -8,12 +8,14 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/webduvet/fintechlab-simple/internal/activity"
 	"github.com/webduvet/fintechlab-simple/internal/allowlist"
 	"github.com/webduvet/fintechlab-simple/internal/httputilx"
 	"github.com/webduvet/fintechlab-simple/internal/retry"
@@ -55,6 +57,8 @@ type app struct {
 	backs   []time.Duration
 	maxTry  int
 	deliver []*delivery
+	// log is every delivery attempt's outcome, for the console.
+	log *activity.Log
 }
 
 func main() {
@@ -92,6 +96,8 @@ func main() {
 		client: client,
 		backs:  backs,
 		maxTry: envInt("MAX_ATTEMPTS", 4),
+		log: activity.New("deliveries", "Webhooks delivered",
+			"Each signed webhook payment-api enqueued, and how its delivery to "+dest+" went — attempts, the status it got, retries. Only make demo-payment and the harness enqueue anything."),
 	}
 
 	mux := http.NewServeMux()
@@ -102,6 +108,7 @@ func main() {
 	mux.HandleFunc("POST /subscriptions", a.putSub)
 	mux.HandleFunc("POST /enqueue", a.enqueue)
 	mux.HandleFunc("GET /deliveries", a.listDeliveries)
+	mux.HandleFunc("GET /sim/activity", activity.Handler(a.log))
 	log.Printf("notifier listening on %s dest=%s allowlist=%s", addr, dest, spec)
 	log.Fatal(http.ListenAndServe(addr, logReq(mux)))
 }
@@ -208,10 +215,20 @@ func (a *app) run(d *delivery, dest string, payload []byte) {
 			d.State = "delivered"
 			a.mu.Unlock()
 			log.Printf("delivered %s attempt=%d status=%d", d.ID, attempt, st)
+			a.log.Record(activity.Event{
+				Op: "delivery", Peer: dest, Status: activity.StatusOK,
+				Summary: fmt.Sprintf("%s for %s delivered — HTTP %d on attempt %d", d.Type, d.PaymentID, st, attempt),
+				Detail:  map[string]string{"event": d.ID, "payment": d.PaymentID, "endpoint": dest},
+			})
 			return
 		}
 		a.mu.Unlock()
 		log.Printf("delivery %s attempt=%d status=%d err=%v", d.ID, attempt, st, err)
+		a.log.Record(activity.Event{
+			Op: "delivery", Peer: dest, Status: activity.StatusWarn,
+			Summary: fmt.Sprintf("%s for %s, attempt %d of %d — %v", d.Type, d.PaymentID, attempt, a.maxTry, err),
+			Detail:  map[string]string{"event": d.ID, "payment": d.PaymentID, "endpoint": dest},
+		})
 		if !retry.ShouldRetry(st, attempt, a.maxTry) {
 			break
 		}
@@ -228,6 +245,11 @@ func (a *app) run(d *delivery, dest string, payload []byte) {
 	}
 	a.mu.Unlock()
 	log.Printf("subscription marked failed after %s exhausted retries", d.ID)
+	a.log.Record(activity.Event{
+		Op: "delivery.failed", Peer: dest, Status: activity.StatusBad,
+		Summary: fmt.Sprintf("%s for %s gave up after %d attempt(s); the subscription is marked failed", d.Type, d.PaymentID, d.Attempts),
+		Detail:  map[string]string{"event": d.ID, "payment": d.PaymentID, "endpoint": dest},
+	})
 }
 
 func (a *app) listDeliveries(w http.ResponseWriter, r *http.Request) {
